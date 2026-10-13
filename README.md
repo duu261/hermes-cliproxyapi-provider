@@ -84,8 +84,10 @@ and reasoning levels. It is read-only and bounded:
 - At most 32 requests and 20 seconds per pass, at most one pass per 15 minutes
   per instance, never on the request path.
 - CPA blocks an address after five failed management logins. The plugin stops
-  at the first 401 and never retries that key, across restarts, until the key
-  changes. Any other failure falls back to public grouping.
+  at the first 401 and never retries that key against that CPA, from any
+  instance or across restarts, until the key changes. If the cache cannot be
+  written, it says so in a warning, because the restart latch lives there. Any
+  other failure falls back to public grouping.
 - CPA must allow management from the plugin's address (`remote-management`
   in CPA's config) unless both run on the same host.
 
@@ -130,6 +132,11 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
   loopback, RFC 1918, 100.64/10 or IPv6 ULA. Anything else needs `https://`.
 - No redirects, capped responses, and failures reported as an HTTP status and
   category only, never bodies, URLs or keys.
+- Catalog requests send `User-Agent: hermes-cliproxyapi-provider/<version>`.
+  One extra `/v1/models` request appends `grok-shell-compatible`, because that is
+  the client CPA publishes context windows and reasoning levels to; its ids are
+  matched against the normal list, so it adds metadata, never models. Inference
+  requests carry Hermes' own headers; the plugin sets none.
 - The cache at `$HERMES_HOME/cache/cliproxyapi/` (mode 0600) holds model ids,
   owners, provider membership and metadata. No keys, no account names. A
   rejected management key is remembered as a salted HMAC, not the key.

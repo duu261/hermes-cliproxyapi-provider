@@ -325,6 +325,53 @@ class PluginTests(unittest.TestCase):
         wide.fetch_models(api_key=API_KEY)
         self.assertIsNotNone(hermes_providers.get_provider_profile("cpa-t-claude"))
 
+    def test_late_registration_lands_in_the_importing_home_layer(self):
+        # Multi-profile gateways import each home's plugins with a per-home
+        # registration target; discoveries after import must land there too.
+        import providers as hermes_providers
+
+        layer = hermes_providers._HomeLayer()
+        token = hermes_providers._REGISTRATION_TARGET.set(layer)
+        try:
+            _load_plugin()
+        finally:
+            hermes_providers._REGISTRATION_TARGET.reset(token)
+        self.assertIn("cpa-t", layer.registry)
+        before = set(hermes_providers._REGISTRY)
+        layer.registry["cpa-t"].fetch_models(api_key=API_KEY)
+        self.assertIn("cpa-t-claude", layer.registry)
+        self.assertEqual(set(hermes_providers._REGISTRY), before)
+
+    def test_capabilities_are_swapped_not_mutated(self):
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        old = wide.model_capabilities
+        wide.fetch_models(api_key=API_KEY)
+        self.assertIsNot(wide.model_capabilities, old)
+        self.assertEqual(old, {})
+
+    def test_cache_write_failure_after_rejected_key_warns(self):
+        os.environ["T_MGMT"] = "wrong-mgmt-2"
+        self.write_config(
+            {"t": {"base_url": self.root, "key_env": "T_KEY", "mgmt_key_env": "T_MGMT"}}
+        )
+        module, profiles = self.load()
+        real = module.cpa.save_cache
+
+        def broken(*_a, **_k):
+            raise PermissionError("read-only")
+
+        module.cpa.save_cache = broken
+        try:
+            with self.assertLogs(level="WARNING") as logs:
+                profiles["cpa-t"].fetch_models(api_key=API_KEY)
+        finally:
+            module.cpa.save_cache = real
+        joined = "\n".join(logs.output)
+        self.assertIn("tried again at next start", joined)
+        self.assertIn("T_MGMT", joined)
+        self.assertNotIn("wrong-mgmt-2", joined)
+
 
 @unittest.skipUnless(HAVE_HERMES, "Hermes not importable")
 class NoNetworkAtImportTests(unittest.TestCase):

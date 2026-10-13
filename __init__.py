@@ -13,6 +13,7 @@ registers providers that appeared since startup.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import threading
@@ -119,7 +120,22 @@ class _Instance:
             try:
                 cpa.save_cache(self.home, self.spec.name, catalog)
             except OSError as exc:
-                logger.debug("cliproxyapi %s: cache write failed: %s", self.spec.name, exc)
+                if catalog.mgmt_status == "auth_failed":
+                    # Without the cache the rejection is forgotten at restart, and CPA
+                    # bans an address after five failed management logins.
+                    logger.warning(
+                        "cliproxyapi %s: cache write failed (%s); the rejected management key "
+                        "will be tried again at next start. Fix the key or unset %s.",
+                        self.spec.name,
+                        type(exc).__name__,
+                        self.spec.mgmt_key_env,
+                    )
+                else:
+                    logger.warning(
+                        "cliproxyapi %s: cache write failed (%s)",
+                        self.spec.name,
+                        type(exc).__name__,
+                    )
             self.catalog = catalog
             self.groups = cpa.compute_groups(catalog, self.spec.overrides)
             self.refreshed_at = time.monotonic()
@@ -146,8 +162,8 @@ class CLIProxyAPIProfile(ProviderProfile):
     def _cpa_sync(self) -> None:
         ids = self._cpa_instance.members(self._cpa_group)
         self.fallback_models = tuple(ids)
-        self.model_capabilities.clear()
-        self.model_capabilities.update(cpa.capabilities_for(self._cpa_instance.catalog, ids))
+        # Swap, never mutate: Hermes reads these without the instance lock.
+        self.model_capabilities = cpa.capabilities_for(self._cpa_instance.catalog, ids)
 
     def fetch_models(
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
@@ -173,6 +189,7 @@ class CLIProxyAPIProfile(ProviderProfile):
 _INSTANCES: dict[str, _Instance] = {}
 _TAKEN: dict[str, str] = {}  # registered profile name -> owning instance
 _TAKEN_LOCK = threading.Lock()
+_IMPORT_CONTEXT = contextvars.copy_context()
 
 
 def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile:
@@ -225,7 +242,12 @@ def _register(instance: _Instance, group: str | None) -> None:
         return
     profile = _build_profile(instance, group)
     instance.profiles[name] = profile
-    register_provider(profile)
+    # Run in the import-time context: Hermes binds the registration target (this
+    # profile home's layer, in multi-profile gateways) in a ContextVar during the
+    # plugin import. Later registrations from fetch_models must land in the same
+    # home, not in the process-wide registry. A fresh copy per call, because one
+    # Context object cannot be entered by two threads at once.
+    _IMPORT_CONTEXT.copy().run(register_provider, profile)
 
 
 def _register_groups(instance: _Instance) -> None:

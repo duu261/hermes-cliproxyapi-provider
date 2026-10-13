@@ -17,6 +17,7 @@ import os
 import re
 import socket
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -588,9 +589,27 @@ def fingerprint_matches(key: str, stored: str) -> bool:
     salt, _, _digest = stored.partition(":")
     try:
         bytes.fromhex(salt)
-    except ValueError:
+        expected = management_fingerprint(key, salt).encode("ascii")
+        return bool(salt) and hmac.compare_digest(expected, stored.encode("utf-8"))
+    except (ValueError, TypeError):
         return False
-    return bool(salt) and hmac.compare_digest(management_fingerprint(key, salt), stored)
+
+
+# Keys CPA rejected in this process, per gateway root. Another instance (or
+# another refresh racing the cache write) never sends the same rejected key to
+# the same CPA again. In memory only; the cache carries the latch across restarts.
+_REJECTED: dict[str, list[str]] = {}
+_REJECTED_LOCK = threading.Lock()
+
+
+def _rejected_here(root: str, key: str) -> bool:
+    with _REJECTED_LOCK:
+        return any(fingerprint_matches(key, fp) for fp in _REJECTED.get(root, ()))
+
+
+def _remember_rejected(root: str, key: str) -> None:
+    with _REJECTED_LOCK:
+        _REJECTED.setdefault(root, []).append(management_fingerprint(key))
 
 
 def choose_accounts(listing: Any, per_provider: int) -> dict[str, list[str]]:
@@ -828,7 +847,11 @@ def refresh_catalog(
     elif not mgmt_key:
         catalog.mgmt_status = "missing_key"
     else:
-        if previous.mgmt_auth_failed and fingerprint_matches(mgmt_key, previous.mgmt_auth_failed):
+        if (
+            previous.mgmt_auth_failed and fingerprint_matches(mgmt_key, previous.mgmt_auth_failed)
+        ) or _rejected_here(root, mgmt_key):
+            catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
+            catalog.mgmt_auth_failed = previous.mgmt_auth_failed or management_fingerprint(mgmt_key)
             catalog.mgmt_status = "auth_failed"
         elif not previous.mgmt_auth_failed and 0 <= now - previous.mgmt_checked_at < MANAGEMENT_TTL:
             catalog.mgmt_status = "cached"
@@ -845,6 +868,7 @@ def refresh_catalog(
                 }
                 catalog.mgmt_auth_failed = ""
             elif result.status == "auth_failed":
+                _remember_rejected(root, mgmt_key)
                 catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
                 catalog.mgmt_auth_failed = management_fingerprint(mgmt_key)
             # "unavailable": keep previous results; retry after the TTL.

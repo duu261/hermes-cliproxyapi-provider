@@ -593,6 +593,24 @@ class GroupingTests(unittest.TestCase):
 
 
 class RefreshTests(GatewayTestCase):
+    def setUp(self):
+        super().setUp()
+        cpa._REJECTED.clear()
+
+    def test_rejected_key_is_not_sent_again_from_another_instance(self):
+        # Two config instances pointing at one CPA share the process-wide latch.
+        first = cpa.refresh_catalog(
+            self.root, API_KEY, "wrong", cpa.Catalog(), timeout=5, now=10**9
+        )
+        self.assertEqual(first.mgmt_status, "auth_failed")
+        _Gateway.seen = []
+        other = cpa.refresh_catalog(
+            self.root, API_KEY, "wrong", cpa.Catalog(), timeout=5, now=10**9
+        )
+        self.assertEqual(other.mgmt_status, "auth_failed")
+        self.assertTrue(other.mgmt_auth_failed)  # persisted by the second instance too
+        self.assertEqual(self.mgmt_requests(), [])
+
     def test_management_off_uses_public_owners(self):
         catalog = cpa.refresh_catalog(self.root, API_KEY, "", cpa.Catalog(), timeout=5, now=1000)
         self.assertEqual(catalog.mgmt_status, "off")
@@ -661,6 +679,12 @@ class FingerprintTests(unittest.TestCase):
         self.assertTrue(cpa.fingerprint_matches("k", one))
         self.assertFalse(cpa.fingerprint_matches("other", one))
         self.assertFalse(cpa.fingerprint_matches("k", "garbage"))
+
+    def test_corrupt_stored_values_never_raise(self):
+        good = cpa.management_fingerprint("k")
+        salt = good.split(":")[0]
+        for stored in (f"{salt}:short", f"{salt}:é", "", ":", "zz:00", good[:-1]):
+            self.assertFalse(cpa.fingerprint_matches("k", stored), stored)
 
 
 class CacheTests(unittest.TestCase):
