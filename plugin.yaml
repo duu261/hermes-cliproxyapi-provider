@@ -1,0 +1,9 @@
+name: cliproxyapi-provider
+version: 0.1.0
+description: "Mirror CLIProxyAPI provider groups as native-wire Hermes model providers."
+author: Duu
+kind: model-provider
+platforms:
+  - linux
+  - macos
+  - windows
