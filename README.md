@@ -13,6 +13,16 @@ This plugin mirrors CPA's own provider groups into Hermes instead. Each
 format that group's upstream speaks, so CPA translates as little as possible,
 and each model carries the metadata CPA publishes for it.
 
+## Do you need this plugin?
+
+Hermes can already reach CPA as one custom OpenAI-compatible provider. That
+works, but every model then runs on one wire (CPA translates the rest) and
+Hermes knows nothing about each model's context or reasoning levels.
+
+Use this plugin when you want each provider group on its native wire, per-model
+metadata from CPA, or several CPA instances side by side. If one chat endpoint
+is enough, the built-in custom provider is simpler.
+
 ## What you get
 
 - One Hermes provider per declared group, for example `cpa-main-claude` on the
@@ -35,7 +45,9 @@ and each model carries the metadata CPA publishes for it.
 hermes plugins install duu261/hermes-cliproxyapi-provider
 ```
 
-Restart running Hermes gateways afterwards so they load the new providers.
+Requires Hermes 0.21.7 or newer. Restart running Hermes gateways afterwards so
+they load the new providers. `hermes doctor` then lists each provider whose
+key is set and checks it against the instance's `/v1/models`.
 
 ## Quick start (zero config)
 

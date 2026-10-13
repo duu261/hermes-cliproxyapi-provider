@@ -439,5 +439,16 @@ class MatchTests(unittest.TestCase):
         self.assertEqual(cpa.match_models(ids, ("gpt-b", "claude-a")), ["claude-a", "gpt-b"])
 
 
+class VersionTests(unittest.TestCase):
+    def test_versions_match(self):
+        # The catalog User-Agent carries cpa.VERSION; keep every copy in step.
+        root = Path(__file__).resolve().parent.parent
+        manifest = (root / "plugin.yaml").read_text(encoding="utf-8")
+        project = (root / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn(f"\nversion: {cpa.VERSION}\n", manifest)
+        self.assertIn(f'\nversion = "{cpa.VERSION}"\n', project)
+        self.assertTrue(cpa.USER_AGENT.endswith("/" + cpa.VERSION))
+
+
 if __name__ == "__main__":
     unittest.main()

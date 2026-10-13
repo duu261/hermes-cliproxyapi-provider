@@ -1,7 +1,12 @@
 name: cliproxyapi-provider
-version: 0.1.0
+version: 0.1.1
+manifest_version: 2
+requires_hermes: ">=0.21.7"
 description: "Mirror CLIProxyAPI provider groups as native-wire Hermes model providers."
-author: Duu
+author: duu261
+license: MIT
+homepage: https://github.com/duu261/hermes-cliproxyapi-provider
+tags: [model-provider, cliproxyapi, gateway]
 kind: model-provider
 platforms:
   - linux
