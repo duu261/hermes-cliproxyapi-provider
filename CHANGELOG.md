@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0
+
+Breaking: providers now come from what the CPA instance serves, not from
+hand-declared groups.
+
+- One Hermes provider per CPA provider found on the instance (`cpa-<instance>-<provider>`),
+  plus `cpa-<instance>` with every model on the chat wire. Providers found after
+  startup are registered in the running process and cached for the next start.
+- Wire map from CPA v8.0.27 executors: `claude`, `kimi`, `kiro` on Anthropic Messages;
+  `codex`, `xai`, `meta` on Responses; everything else on chat completions.
+- Public grouping by `/v1/models` `owned_by`. Optional exact grouping and model
+  definitions through a read-only, bounded management pass (`mgmt_key_env`) that stops
+  at the first 401 and never retries a rejected key.
+- `groups:` is now optional and only overrides `api_mode`, `models` or `display_name`.
+- `cpa-local` is registered only when no instances are configured.
+- Cache format v2; v1 caches are read.
+
 ## 0.1.1
 
 - Manifest v2 metadata: `requires_hermes: ">=0.21.7"` (`hermes plugins install` refuses older

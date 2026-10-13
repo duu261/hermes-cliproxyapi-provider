@@ -10,167 +10,162 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cpa  # noqa: E402
 
+API_KEY = "test-key"
+MGMT_KEY = "mgmt-key"
+
+
+def _instance(**body):
+    base = {"base_url": "http://127.0.0.1:8317", "key_env": "CPA_A_API_KEY"}
+    base.update(body)
+    return {"cliproxyapi": {"instances": {"a": base}}}
+
 
 class ParseConfigTests(unittest.TestCase):
-    def test_declared_instance_builds_one_spec_per_group(self):
-        specs, errors = cpa.parse_config(
-            {
-                "cliproxyapi": {
-                    "instances": {
-                        "fast": {
-                            "base_url": "http://127.0.0.1:8317",
-                            "key_env": "CPA_FAST_API_KEY",
-                            "groups": {
-                                "claude": {"models": ["claude-*"]},
-                                "codex": {"models": ["gpt-*"]},
-                            },
-                        }
-                    }
-                }
-            }
-        )
+    def test_minimal_instance_needs_only_url_and_key(self):
+        specs, errors = cpa.parse_config(_instance())
         self.assertEqual(errors, [])
-        by_name = {s.name: s for s in specs}
-        self.assertEqual(set(by_name), {"cpa-fast-claude", "cpa-fast-codex"})
-        claude = by_name["cpa-fast-claude"]
-        self.assertEqual(claude.api_mode, "anthropic_messages")
-        self.assertEqual(claude.base_url, "http://127.0.0.1:8317")
-        self.assertEqual(claude.key_env, "CPA_FAST_API_KEY")
-        self.assertEqual(claude.patterns, ("claude-*",))
-        codex = by_name["cpa-fast-codex"]
-        self.assertEqual(codex.api_mode, "codex_responses")
-        self.assertEqual(codex.base_url, "http://127.0.0.1:8317/v1")
+        self.assertEqual(len(specs), 1)
+        spec = specs[0]
+        self.assertEqual(spec.name, "a")
+        self.assertEqual(spec.root, "http://127.0.0.1:8317")
+        self.assertEqual(spec.key_env, "CPA_A_API_KEY")
+        self.assertEqual(spec.mgmt_key_env, "")
+        self.assertEqual(spec.overrides, {})
+        self.assertEqual(spec.wide_name, "cpa-a")
+        self.assertEqual(spec.group_name("claude"), "cpa-a-claude")
 
     def test_trailing_v1_and_slash_are_normalized_to_root(self):
-        specs, _ = cpa.parse_config(
-            {
-                "cliproxyapi": {
-                    "instances": {
-                        "a": {
-                            "base_url": "http://127.0.0.1:8317/v1/",
-                            "key_env": "K",
-                            "groups": {"claude": {"models": ["*"]}},
-                        }
-                    }
-                }
-            }
-        )
+        specs, _ = cpa.parse_config(_instance(base_url="http://127.0.0.1:8317/v1/"))
         self.assertEqual(specs[0].root, "http://127.0.0.1:8317")
-        self.assertEqual(specs[0].base_url, "http://127.0.0.1:8317")
 
-    def test_wire_map_rows(self):
-        expected = {
-            "claude": "anthropic_messages",
-            "codex": "codex_responses",
-            "gemini": "chat_completions",
-            "antigravity": "chat_completions",
-            "openai-compatibility": "chat_completions",
-            "something-new": "chat_completions",
-        }
-        for group, mode in expected.items():
-            self.assertEqual(cpa.wire_for_group(group), mode, group)
+    def test_no_instances_gives_default_local(self):
+        for config in ({}, None, {"cliproxyapi": None}, {"cliproxyapi": {"instances": {}}}):
+            specs, errors = cpa.parse_config(config)
+            self.assertEqual(errors, [])
+            self.assertEqual([s.name for s in specs], ["local"])
+            self.assertEqual(specs[0].root, cpa.DEFAULT_ROOT)
+            self.assertEqual(specs[0].key_env, cpa.DEFAULT_KEY_ENV)
+            self.assertEqual(specs[0].url_env, cpa.DEFAULT_URL_ENV)
 
-    def test_group_api_mode_override(self):
+    def test_management_key_and_overrides(self):
         specs, errors = cpa.parse_config(
-            {
-                "cliproxyapi": {
-                    "instances": {
-                        "pre": {
-                            "base_url": "http://127.0.0.1:8317",
-                            "key_env": "K",
-                            "groups": {
-                                "xai": {"models": ["grok-*"], "api_mode": "codex_responses"}
-                            },
-                        }
-                    }
-                }
-            }
+            _instance(
+                mgmt_key_env="CPA_A_MGMT_KEY",
+                groups={
+                    "xai": {"api_mode": "chat_completions"},
+                    "custom": {"models": ["foo-*"], "display_name": "Foo"},
+                },
+            )
         )
         self.assertEqual(errors, [])
-        self.assertEqual(specs[0].api_mode, "codex_responses")
+        spec = specs[0]
+        self.assertEqual(spec.mgmt_key_env, "CPA_A_MGMT_KEY")
+        self.assertEqual(spec.overrides["xai"].api_mode, "chat_completions")
+        self.assertEqual(spec.overrides["xai"].models, ())
+        self.assertEqual(spec.overrides["custom"].models, ("foo-*",))
+        self.assertEqual(spec.overrides["custom"].display_name, "Foo")
 
-    def test_rejects_unknown_api_mode(self):
-        specs, errors = cpa.parse_config(
-            {
-                "cliproxyapi": {
-                    "instances": {
-                        "pre": {
-                            "base_url": "http://127.0.0.1:8317",
-                            "key_env": "K",
-                            "groups": {"xai": {"models": ["*"], "api_mode": "bogus"}},
-                        }
-                    }
-                }
-            }
-        )
-        self.assertEqual(specs, [])
-        self.assertTrue(errors)
-
-    def test_rejects_bad_names_and_missing_fields(self):
+    def test_rejects_bad_input_without_leaking_values(self):
         bad = [
-            {
-                "Bad Name": {
-                    "base_url": "http://127.0.0.1:1",
-                    "key_env": "K",
-                    "groups": {"claude": {"models": ["*"]}},
-                }
-            },
-            {"a": {"key_env": "K", "groups": {"claude": {"models": ["*"]}}}},
-            {"a": {"base_url": "http://127.0.0.1:1", "groups": {"claude": {"models": ["*"]}}}},
-            {
-                "a": {
-                    "base_url": "http://127.0.0.1:1",
-                    "key_env": "bad key",
-                    "groups": {"claude": {"models": ["*"]}},
-                }
-            },
+            {"Bad Name": {"base_url": "http://127.0.0.1:1", "key_env": "K"}},
+            {"a": {"key_env": "K"}},
+            {"a": {"base_url": "http://127.0.0.1:1"}},
+            {"a": {"base_url": "http://127.0.0.1:1", "key_env": "bad key"}},
+            {"a": {"base_url": "http://127.0.0.1:1", "key_env": "K", "mgmt_key_env": "x y"}},
+            {"a": {"base_url": "ftp://127.0.0.1:1", "key_env": "K"}},
+            {"a": {"base_url": "http://user:pw@8.8.8.8:1", "key_env": "K"}},
+            {"a": {"base_url": "http://8.8.8.8:1", "key_env": "K"}},
             {
                 "a": {
                     "base_url": "http://127.0.0.1:1",
                     "key_env": "K",
-                    "groups": {"claude": {"models": []}},
+                    "groups": {"xai": {"api_mode": "bogus"}},
                 }
             },
-            {
-                "a": {
-                    "base_url": "ftp://127.0.0.1:1",
-                    "key_env": "K",
-                    "groups": {"claude": {"models": ["*"]}},
-                }
-            },
+            {"a": {"base_url": "http://127.0.0.1:1", "key_env": "K", "groups": {"Bad": {}}}},
         ]
         for instances in bad:
             specs, errors = cpa.parse_config({"cliproxyapi": {"instances": instances}})
             self.assertEqual(specs, [], instances)
-            self.assertTrue(errors, instances)
+            self.assertEqual(len(errors), 1, instances)
+            self.assertNotIn("8.8.8.8", errors[0])
+            self.assertNotIn("pw", errors[0])
 
-    def test_missing_or_malformed_section_is_empty_not_error(self):
-        for config in ({}, None, {"cliproxyapi": None}, {"cliproxyapi": {"instances": None}}):
-            self.assertEqual(cpa.parse_config(config), ([], []))
-
-    def test_errors_never_contain_urls(self):
-        _, errors = cpa.parse_config(
+    def test_one_bad_instance_does_not_drop_the_others(self):
+        specs, errors = cpa.parse_config(
             {
                 "cliproxyapi": {
                     "instances": {
-                        "a": {
-                            "base_url": "http://user:pw@8.8.8.8:1",
-                            "key_env": "K",
-                            "groups": {"claude": {"models": ["*"]}},
-                        }
+                        "good": {"base_url": "http://127.0.0.1:1", "key_env": "K"},
+                        "bad": {"base_url": "http://8.8.8.8:1", "key_env": "K"},
                     }
                 }
             }
         )
-        self.assertTrue(errors)
-        for err in errors:
-            self.assertNotIn("8.8.8.8", err)
-            self.assertNotIn("pw", err)
+        self.assertEqual([s.name for s in specs], ["good"])
+        self.assertEqual(len(errors), 1)
+
+
+class WireMapTests(unittest.TestCase):
+    def test_every_cpa_provider_has_a_sourced_wire(self):
+        expected = {
+            "claude": "anthropic_messages",
+            "kimi": "anthropic_messages",
+            "kiro": "anthropic_messages",
+            "codex": "codex_responses",
+            "xai": "codex_responses",
+            "meta": "codex_responses",
+            "gemini": "chat_completions",
+            "vertex": "chat_completions",
+            "aistudio": "chat_completions",
+            "gemini-interactions": "chat_completions",
+            "antigravity": "chat_completions",
+            "devin": "chat_completions",
+            "opencode-go": "chat_completions",
+            "something-new": "chat_completions",
+        }
+        for group, mode in expected.items():
+            self.assertEqual(cpa.wire_for(group), mode, group)
+
+    def test_override_wins(self):
+        self.assertEqual(
+            cpa.wire_for("xai", cpa.GroupOverride(api_mode="chat_completions")),
+            "chat_completions",
+        )
+
+    def test_base_url_per_wire(self):
+        self.assertEqual(cpa.base_url_for("http://h", "anthropic_messages"), "http://h")
+        self.assertEqual(cpa.base_url_for("http://h", "codex_responses"), "http://h/v1")
+        self.assertEqual(cpa.base_url_for("http://h", "chat_completions"), "http://h/v1")
+
+    def test_owner_and_provider_normalization(self):
+        self.assertEqual(cpa.provider_for_owner("anthropic"), "claude")
+        self.assertEqual(cpa.provider_for_owner("openai"), "codex")
+        self.assertEqual(cpa.provider_for_owner("moonshot"), "kimi")
+        self.assertEqual(cpa.provider_for_owner("google"), "gemini")
+        self.assertEqual(cpa.provider_for_owner("Opencode-go"), "opencode-go")
+        self.assertEqual(cpa.provider_for_owner("google-antigravity"), "google-antigravity")
+        self.assertEqual(cpa.provider_for_owner(""), "")
+        for raw in ("kimi", "kimi-ai", "kimi.ai", "kimi.com"):
+            self.assertEqual(cpa.normalize_provider(raw), "kimi")
+        for raw, want in (
+            ("x-ai", "xai"),
+            ("grok", "xai"),
+            ("muse", "meta"),
+            ("gemini-interactions", "gemini-interactions"),
+            ("kimi-k2", "kimi-k2"),
+        ):
+            self.assertEqual(cpa.normalize_provider(raw), want)
+        self.assertIn(cpa.normalize_provider("gemini-interactions"), cpa.DEFINITION_CHANNEL)
+        self.assertEqual(
+            cpa.normalize_provider("openai-compatible-OpenRouter"), "openai-compatible-openrouter"
+        )
 
 
 class UrlPolicyTests(unittest.TestCase):
@@ -217,48 +212,7 @@ class UrlPolicyTests(unittest.TestCase):
         self.assertFalse(cpa.transport_allowed("https://u:p@cpa.example.com"))
 
 
-class _Gateway(BaseHTTPRequestHandler):
-    """Fake CPA public model lists keyed by request shape."""
-
-    routes: dict = {}
-    seen: list = []
-
-    def log_message(self, *args):  # silence
-        pass
-
-    def do_GET(self):  # noqa: N802
-        type(self).seen.append(
-            {
-                "path": self.path,
-                "ua": self.headers.get("User-Agent", ""),
-                "auth": self.headers.get("Authorization", ""),
-            }
-        )
-        if self.headers.get("Authorization") != "Bearer test-key":
-            self.send_response(401)
-            self.end_headers()
-            self.wfile.write(b'{"error":"secret-body"}')
-            return
-        if self.path == "/redirect":
-            self.send_response(302)
-            self.send_header("Location", "http://127.0.0.1:1/elsewhere")
-            self.end_headers()
-            return
-        key = self.path
-        if key == "/v1/models" and "grok-shell" in self.headers.get("User-Agent", ""):
-            key = "grok"
-        body = type(self).routes.get(key)
-        if body is None:
-            self.send_response(404)
-            self.end_headers()
-            return
-        data = json.dumps(body).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
+# ── Fake CPA ────────────────────────────────────────────────────────────────
 
 OPENAI_LIST = {
     "object": "list",
@@ -266,6 +220,8 @@ OPENAI_LIST = {
         {"id": "claude-opus-5-5", "object": "model", "owned_by": "anthropic"},
         {"id": "gpt-5.6", "object": "model", "owned_by": "openai"},
         {"id": "gemini-3.8-flash-high", "object": "model", "owned_by": "google"},
+        {"id": "grok-4.6", "object": "model", "owned_by": "xai"},
+        {"id": "glm-5.3", "object": "model", "owned_by": "Opencode-go"},
     ],
 }
 GROK_LIST = {
@@ -273,11 +229,7 @@ GROK_LIST = {
     "data": [
         {
             "id": "claude-opus-5-5",
-            "model": "claude-opus-5-5",
-            "name": "Claude Opus 5.5",
             "context_window": 1000000,
-            "api_backend": "responses",
-            "supported_in_api": True,
             "reasoning_efforts": [
                 {"value": "low"},
                 {"value": "high"},
@@ -285,21 +237,8 @@ GROK_LIST = {
                 {"value": "auto"},
             ],
         },
-        {
-            "id": "gpt-5.6",
-            "model": "gpt-5.6",
-            "name": "gpt-5.6",
-            "api_backend": "responses",
-            "supported_in_api": True,
-        },
-        {
-            "id": "gemini-3.8-flash-high",
-            "model": "gemini-3.8-flash-high",
-            "name": "Gemini",
-            "context_window": 1048576,
-            "api_backend": "responses",
-            "supported_in_api": True,
-        },
+        {"id": "gpt-5.6"},
+        {"id": "gemini-3.8-flash-high", "context_window": 1048576},
     ],
 }
 GEMINI_LIST = {
@@ -313,16 +252,127 @@ GEMINI_LIST = {
         {"name": "models/claude-opus-5-5"},
     ]
 }
+CREDENTIALS = {
+    "observed_at": "now",
+    "files": [
+        # Devin serves Claude ids but labels them "anthropic" on /v1/models.
+        {"name": "devin-1.json", "provider": "devin", "disabled": False, "api_key": "leak-me"},
+        {"name": "claude-1.json", "provider": "claude", "disabled": False},
+        {"name": "claude-2.json", "provider": "claude", "disabled": True},
+        {"name": "kimi-a.json", "provider": "kimi-ai", "unavailable": True},
+        {"name": "x-1.json", "provider": "xai"},
+        {"name": "x-2.json", "provider": "xai"},
+        {"name": "x-3.json", "provider": "xai"},
+        {"name": "x-4.json", "provider": "xai"},
+    ],
+}
+ACCOUNT_MODELS = {
+    "devin-1.json": ["claude-opus-5-5", "gpt-5.6"],
+    "claude-1.json": ["claude-opus-5-5"],
+    "kimi-a.json": ["kimi-k3"],
+    "x-1.json": ["grok-4.6"],
+    "x-2.json": ["grok-4.6"],
+    "x-3.json": ["grok-4.6"],
+    "x-4.json": ["grok-4.6"],
+}
+DEFINITIONS = {
+    "claude": {
+        "channel": "claude",
+        "models": [
+            {
+                "id": "claude-opus-5-5",
+                "context_length": 1000000,
+                "max_completion_tokens": 64000,
+                "supportedInputModalities": ["text", "image"],
+                "thinking": {"levels": ["low", "medium", "high", "xhigh", "max"]},
+            }
+        ],
+    },
+    "xai": {"channel": "xai", "models": [{"id": "grok-4.6", "context_length": 2000000}]},
+}
+
+
+class _Gateway(BaseHTTPRequestHandler):
+    """Fake CPA: public lists for API_KEY, management routes for MGMT_KEY."""
+
+    routes: dict = {}
+    seen: list = []
+    mgmt_status: int = 200  # force a status on every management request
+    v8: bool = True
+
+    def log_message(self, *args):  # silence
+        pass
+
+    def _send(self, status, body=None):
+        data = json.dumps(body if body is not None else {"error": "secret-body"}).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):  # noqa: N802
+        cls = type(self)
+        parts = urlsplit(self.path)
+        auth = self.headers.get("Authorization", "")
+        cls.seen.append(
+            {
+                "path": parts.path,
+                "query": parts.query,
+                "ua": self.headers.get("User-Agent", ""),
+                "auth": auth,
+                "method": "GET",
+            }
+        )
+        if "/management/" in parts.path:
+            return self._management(parts, auth)
+        if auth != f"Bearer {API_KEY}":
+            return self._send(401)
+        if parts.path == "/redirect":
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:1/elsewhere")
+            self.end_headers()
+            return
+        key = parts.path
+        if key == "/v1/models" and "grok-shell" in self.headers.get("User-Agent", ""):
+            key = "grok"
+        body = cls.routes.get(key)
+        return self._send(200, body) if body is not None else self._send(404)
+
+    def _management(self, parts, auth):
+        cls = type(self)
+        if cls.mgmt_status != 200:
+            return self._send(cls.mgmt_status)
+        if auth != f"Bearer {MGMT_KEY}":
+            return self._send(401)
+        version = "v8" if parts.path.startswith("/v8/") else "v0"
+        if (version == "v8") != cls.v8:
+            return self._send(404)
+        tail = parts.path.split("/management/", 1)[1]
+        if tail in ("credentials", "auth-files"):
+            return self._send(200, CREDENTIALS)
+        if tail in ("credentials/models", "auth-files/models"):
+            name = parse_qs(parts.query).get("name", [""])[0]
+            ids = ACCOUNT_MODELS.get(name, [])
+            return self._send(
+                200, {"models": [{"id": i, "type": "x", "owned_by": "y"} for i in ids]}
+            )
+        for prefix in ("routing/model-definitions/", "model-definitions/"):
+            if tail.startswith(prefix):
+                body = DEFINITIONS.get(tail[len(prefix) :])
+                return (
+                    self._send(200, body) if body else self._send(400, {"error": "unknown channel"})
+                )
+        return self._send(404)
+
+
+PUBLIC_ROUTES = {"/v1/models": OPENAI_LIST, "grok": GROK_LIST, "/v1beta/models": GEMINI_LIST}
 
 
 class GatewayTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        _Gateway.routes = {
-            "/v1/models": OPENAI_LIST,
-            "grok": GROK_LIST,
-            "/v1beta/models": GEMINI_LIST,
-        }
+        _Gateway.routes = dict(PUBLIC_ROUTES)
         cls.server = HTTPServer(("127.0.0.1", 0), _Gateway)
         cls.root = f"http://127.0.0.1:{cls.server.server_address[1]}"
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
@@ -335,32 +385,39 @@ class GatewayTestCase(unittest.TestCase):
 
     def setUp(self):
         _Gateway.seen = []
+        _Gateway.routes = dict(PUBLIC_ROUTES)
+        _Gateway.mgmt_status = 200
+        _Gateway.v8 = True
+
+    def mgmt_requests(self):
+        return [r for r in _Gateway.seen if "/management/" in r["path"]]
 
 
 class PublicCatalogTests(GatewayTestCase):
-    def test_fetch_catalog_merges_three_public_lists(self):
-        catalog = cpa.fetch_public_catalog(self.root, "test-key", timeout=5)
-        self.assertEqual(catalog.ids, ["claude-opus-5-5", "gpt-5.6", "gemini-3.8-flash-high"])
+    def test_fetch_catalog_merges_three_public_lists_and_owners(self):
+        catalog = cpa.fetch_public_catalog(self.root, API_KEY, timeout=5)
+        self.assertEqual(
+            catalog.ids,
+            ["claude-opus-5-5", "gpt-5.6", "gemini-3.8-flash-high", "grok-4.6", "glm-5.3"],
+        )
+        self.assertEqual(catalog.owners["glm-5.3"], "Opencode-go")
         opus = catalog.meta["claude-opus-5-5"]
         self.assertEqual(opus["context_window"], 1000000)
         self.assertEqual(opus["reasoning_efforts"], ["low", "high", "max"])
         self.assertTrue(opus["supports_reasoning"])
         self.assertNotIn("supports_vision", opus)  # unknown stays unknown
-        gpt = catalog.meta["gpt-5.6"]
-        self.assertNotIn("context_window", gpt)
-        self.assertNotIn("supports_reasoning", gpt)
-        self.assertFalse(gpt["supports_vision"])
+        self.assertFalse(catalog.meta["gpt-5.6"]["supports_vision"])
         gem = catalog.meta["gemini-3.8-flash-high"]
         self.assertEqual(gem["context_window"], 1048576)
         self.assertEqual(gem["max_output_tokens"], 65536)
         self.assertTrue(gem["supports_vision"])
 
     def test_requests_send_identifying_user_agent_and_bearer(self):
-        cpa.fetch_public_catalog(self.root, "test-key", timeout=5)
+        cpa.fetch_public_catalog(self.root, API_KEY, timeout=5)
         self.assertEqual(len(_Gateway.seen), 3)
         for req in _Gateway.seen:
             self.assertTrue(req["ua"].startswith("hermes-cliproxyapi-provider/"), req["ua"])
-            self.assertEqual(req["auth"], "Bearer test-key")
+            self.assertEqual(req["auth"], f"Bearer {API_KEY}")
         self.assertTrue(any("grok-shell" in r["ua"] for r in _Gateway.seen))
 
     def test_auth_failure_raises_safe_error(self):
@@ -373,54 +430,278 @@ class PublicCatalogTests(GatewayTestCase):
 
     def test_metadata_lists_are_optional(self):
         _Gateway.routes = {"/v1/models": OPENAI_LIST}
-        try:
-            catalog = cpa.fetch_public_catalog(self.root, "test-key", timeout=5)
-        finally:
-            _Gateway.routes = {
-                "/v1/models": OPENAI_LIST,
-                "grok": GROK_LIST,
-                "/v1beta/models": GEMINI_LIST,
-            }
-        self.assertEqual(len(catalog.ids), 3)
-        self.assertEqual(catalog.meta.get("claude-opus-5-5", {}), {})
+        catalog = cpa.fetch_public_catalog(self.root, API_KEY, timeout=5)
+        self.assertEqual(len(catalog.ids), 5)
+        self.assertEqual(catalog.meta, {})
 
     def test_redirects_are_refused(self):
         with self.assertRaises(cpa.GatewayError) as ctx:
-            cpa.get_json(self.root + "/redirect", "test-key", timeout=5)
+            cpa.get_json(self.root + "/redirect", API_KEY, timeout=5)
         self.assertEqual(ctx.exception.category, "redirect")
 
     def test_refuses_public_http_before_sending_key(self):
         with self.assertRaises(cpa.GatewayError) as ctx:
-            cpa.fetch_public_catalog("http://8.8.8.8:9", "test-key", timeout=1)
+            cpa.fetch_public_catalog("http://8.8.8.8:9", API_KEY, timeout=1)
         self.assertEqual(ctx.exception.category, "transport_policy")
 
 
+class ManagementTests(GatewayTestCase):
+    def test_groups_by_account_provider_and_reads_definitions(self):
+        result = cpa.fetch_management(self.root, MGMT_KEY, timeout=5)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.groups["devin"], ["claude-opus-5-5", "gpt-5.6"])
+        self.assertEqual(result.groups["claude"], ["claude-opus-5-5"])
+        self.assertEqual(result.groups["kimi"], ["kimi-k3"])
+        self.assertEqual(result.groups["xai"], ["grok-4.6"])
+        opus = result.definitions["claude-opus-5-5"]
+        self.assertEqual(opus["context_window"], 1000000)
+        self.assertEqual(opus["max_output_tokens"], 64000)
+        self.assertTrue(opus["supports_vision"])
+        self.assertEqual(opus["reasoning_efforts"], ["low", "medium", "high", "xhigh", "max"])
+        self.assertEqual(result.definitions["grok-4.6"], {"context_window": 2000000})
+
+    def test_samples_accounts_and_skips_disabled(self):
+        cpa.fetch_management(self.root, MGMT_KEY, timeout=5, per_provider=3)
+        names = [r["query"] for r in self.mgmt_requests() if r["path"].endswith("/models")]
+        self.assertNotIn("name=claude-2.json", names)  # disabled
+        self.assertEqual(sum(1 for n in names if n.startswith("name=x-")), 3)  # capped
+
+    def test_only_read_only_allowlisted_gets(self):
+        cpa.fetch_management(self.root, MGMT_KEY, timeout=5)
+        allowed = (
+            "/v8/management/credentials",
+            "/v8/management/credentials/models",
+            "/v8/management/routing/model-definitions/",
+        )
+        for req in self.mgmt_requests():
+            self.assertEqual(req["method"], "GET")
+            self.assertTrue(
+                req["path"] in allowed[:2] or req["path"].startswith(allowed[2]), req["path"]
+            )
+            self.assertEqual(req["auth"], f"Bearer {MGMT_KEY}")
+
+    def test_wrong_key_stops_after_one_request(self):
+        result = cpa.fetch_management(self.root, "wrong", timeout=5)
+        self.assertEqual(result.status, "auth_failed")
+        self.assertEqual(len(self.mgmt_requests()), 1)
+
+    def test_remote_disabled_is_unavailable_after_one_request(self):
+        _Gateway.mgmt_status = 403
+        result = cpa.fetch_management(self.root, MGMT_KEY, timeout=5)
+        self.assertEqual(result.status, "unavailable")
+        self.assertEqual(len(self.mgmt_requests()), 1)
+
+    def test_v0_fallback_on_404_only(self):
+        _Gateway.v8 = False
+        result = cpa.fetch_management(self.root, MGMT_KEY, timeout=5)
+        self.assertEqual(result.status, "ok")
+        paths = [r["path"] for r in self.mgmt_requests()]
+        self.assertEqual(paths[0], "/v8/management/credentials")
+        self.assertTrue(all(p.startswith("/v0/") for p in paths[1:]))
+
+    def test_call_cap_is_hard(self):
+        result = cpa.fetch_management(self.root, MGMT_KEY, timeout=5, max_calls=3)
+        self.assertLessEqual(len(self.mgmt_requests()), 3)
+        self.assertEqual(result.status, "ok")
+
+    def test_refuses_public_http(self):
+        result = cpa.fetch_management("http://8.8.8.8:9", MGMT_KEY, timeout=1)
+        self.assertEqual(result.status, "unavailable")
+        self.assertEqual(result.calls, 0)
+
+    def test_choose_accounts_reads_only_routing_fields(self):
+        chosen = cpa.choose_accounts(CREDENTIALS, 2)
+        self.assertEqual(chosen["claude"], ["claude-1.json"])
+        self.assertEqual(chosen["kimi"], ["kimi-a.json"])
+        self.assertEqual(chosen["xai"], ["x-1.json", "x-2.json"])
+        self.assertNotIn("leak-me", json.dumps(chosen))
+
+
+class GroupingTests(unittest.TestCase):
+    def _catalog(self, **kw):
+        return cpa.Catalog(
+            ids=["claude-opus-5-5", "gpt-5.6", "gemini-3.8-flash-high", "grok-4.6", "glm-5.3"],
+            owners={
+                "claude-opus-5-5": "anthropic",
+                "gpt-5.6": "openai",
+                "gemini-3.8-flash-high": "google",
+                "grok-4.6": "xai",
+                "glm-5.3": "Opencode-go",
+            },
+            **kw,
+        )
+
+    def test_public_grouping_by_owned_by(self):
+        groups = cpa.compute_groups(self._catalog())
+        self.assertEqual(
+            groups,
+            {
+                "claude": ["claude-opus-5-5"],
+                "codex": ["gpt-5.6"],
+                "gemini": ["gemini-3.8-flash-high"],
+                "xai": ["grok-4.6"],
+                "opencode-go": ["glm-5.3"],
+            },
+        )
+
+    def test_management_membership_wins_and_ids_can_be_shared(self):
+        catalog = self._catalog(
+            mgmt_groups={
+                "devin": ["claude-opus-5-5", "gpt-5.6", "not-served"],
+                "claude": ["claude-opus-5-5"],
+            }
+        )
+        groups = cpa.compute_groups(catalog)
+        self.assertEqual(groups["devin"], ["claude-opus-5-5", "gpt-5.6"])
+        self.assertEqual(groups["claude"], ["claude-opus-5-5"])
+        self.assertNotIn("codex", groups)  # gpt-5.6 is covered by management
+        self.assertEqual(groups["xai"], ["grok-4.6"])  # not covered: owned_by fallback
+
+    def test_override_patterns_replace_a_group(self):
+        groups = cpa.compute_groups(self._catalog(), {"custom": cpa.GroupOverride(models=("g*",))})
+        self.assertEqual(
+            groups["custom"], ["gpt-5.6", "gemini-3.8-flash-high", "grok-4.6", "glm-5.3"]
+        )
+
+    def test_merge_meta_prefers_definitions_and_handles_prefixes(self):
+        merged = cpa.merge_meta(
+            ["claude-opus-5-5", "pro/claude-opus-5-5"],
+            {"claude-opus-5-5": {"context_window": 200000, "supports_vision": False}},
+            {"claude-opus-5-5": {"context_window": 1000000}},
+        )
+        self.assertEqual(
+            merged["claude-opus-5-5"], {"context_window": 1000000, "supports_vision": False}
+        )
+        self.assertEqual(merged["pro/claude-opus-5-5"], {"context_window": 1000000})
+
+    def test_capabilities_keep_only_hermes_keys(self):
+        catalog = cpa.Catalog(
+            ids=["m"],
+            meta={
+                "m": {
+                    "context_window": 5,
+                    "max_output_tokens": 9,
+                    "reasoning_efforts": ["low"],
+                    "supports_reasoning": True,
+                }
+            },
+        )
+        self.assertEqual(
+            cpa.capabilities_for(catalog, ["m"]),
+            {"m": {"context_window": 5, "supports_reasoning": True}},
+        )
+
+
+class RefreshTests(GatewayTestCase):
+    def test_management_off_uses_public_owners(self):
+        catalog = cpa.refresh_catalog(self.root, API_KEY, "", cpa.Catalog(), timeout=5, now=1000)
+        self.assertEqual(catalog.mgmt_status, "off")
+        self.assertEqual(self.mgmt_requests(), [])
+        self.assertEqual(cpa.compute_groups(catalog)["claude"], ["claude-opus-5-5"])
+
+    def test_management_ok_enriches_and_regroups(self):
+        catalog = cpa.refresh_catalog(
+            self.root, API_KEY, MGMT_KEY, cpa.Catalog(), timeout=5, now=1000
+        )
+        self.assertEqual(catalog.mgmt_status, "ok")
+        self.assertEqual(catalog.meta["claude-opus-5-5"]["max_output_tokens"], 64000)
+        self.assertEqual(catalog.meta["grok-4.6"]["context_window"], 2000000)
+        groups = cpa.compute_groups(catalog)
+        self.assertIn("claude-opus-5-5", groups["devin"])
+        self.assertNotIn("kimi-k3", groups.get("kimi", []))  # not served on /v1/models
+
+    def test_management_ttl_reuses_previous_result(self):
+        first = cpa.refresh_catalog(
+            self.root, API_KEY, MGMT_KEY, cpa.Catalog(), timeout=5, now=1000
+        )
+        _Gateway.seen = []
+        second = cpa.refresh_catalog(self.root, API_KEY, MGMT_KEY, first, timeout=5, now=1100)
+        self.assertEqual(second.mgmt_status, "cached")
+        self.assertEqual(self.mgmt_requests(), [])
+        self.assertEqual(second.mgmt_groups, first.mgmt_groups)
+
+    def test_rejected_key_is_never_retried_until_it_changes(self):
+        first = cpa.refresh_catalog(self.root, API_KEY, "wrong", cpa.Catalog(), timeout=5, now=1000)
+        self.assertEqual(first.mgmt_status, "auth_failed")
+        self.assertNotIn("wrong", first.mgmt_auth_failed)
+        self.assertEqual(len(self.mgmt_requests()), 1)
+        _Gateway.seen = []
+        later = cpa.refresh_catalog(self.root, API_KEY, "wrong", first, timeout=5, now=10**9)
+        self.assertEqual(later.mgmt_status, "auth_failed")
+        self.assertEqual(self.mgmt_requests(), [])
+        fixed = cpa.refresh_catalog(self.root, API_KEY, MGMT_KEY, later, timeout=5, now=10**9)
+        self.assertEqual(fixed.mgmt_status, "ok")
+        self.assertEqual(fixed.mgmt_auth_failed, "")
+
+    def test_unavailable_keeps_previous_results(self):
+        good = cpa.refresh_catalog(self.root, API_KEY, MGMT_KEY, cpa.Catalog(), timeout=5, now=1000)
+        _Gateway.mgmt_status = 403
+        later = cpa.refresh_catalog(
+            self.root, API_KEY, MGMT_KEY, good, timeout=5, now=1000 + cpa.MANAGEMENT_TTL + 1
+        )
+        self.assertEqual(later.mgmt_status, "unavailable")
+        self.assertEqual(later.mgmt_groups, good.mgmt_groups)
+
+    def test_configured_but_unreadable_key_keeps_previous_results(self):
+        good = cpa.refresh_catalog(self.root, API_KEY, MGMT_KEY, cpa.Catalog(), timeout=5, now=1000)
+        _Gateway.seen = []
+        later = cpa.refresh_catalog(
+            self.root, API_KEY, "", good, mgmt_configured=True, timeout=5, now=10**9
+        )
+        self.assertEqual(later.mgmt_status, "missing_key")
+        self.assertEqual(later.mgmt_groups, good.mgmt_groups)
+        self.assertEqual(self.mgmt_requests(), [])
+
+
+class FingerprintTests(unittest.TestCase):
+    def test_salted_and_matching(self):
+        one = cpa.management_fingerprint("k")
+        two = cpa.management_fingerprint("k")
+        self.assertNotEqual(one, two)
+        self.assertTrue(cpa.fingerprint_matches("k", one))
+        self.assertFalse(cpa.fingerprint_matches("other", one))
+        self.assertFalse(cpa.fingerprint_matches("k", "garbage"))
+
+
 class CacheTests(unittest.TestCase):
-    def test_round_trip_and_capabilities(self):
+    def test_round_trip_v2(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             catalog = cpa.Catalog(
                 ids=["claude-opus-5-5", "gpt-5.6"],
-                meta={
-                    "claude-opus-5-5": {
-                        "context_window": 1000000,
-                        "supports_reasoning": True,
-                        "reasoning_efforts": ["low", "high"],
-                    },
-                    "gpt-5.6": {"supports_vision": False, "max_output_tokens": 128000},
-                },
+                meta={"claude-opus-5-5": {"context_window": 1000000}},
+                owners={"claude-opus-5-5": "anthropic", "gpt-5.6": "openai"},
+                fetched_at=12.5,
+                mgmt_groups={"devin": ["gpt-5.6"]},
+                mgmt_defs={"gpt-5.6": {"max_output_tokens": 128000}},
+                mgmt_checked_at=11.0,
+                mgmt_auth_failed="",
             )
             cpa.save_cache(home, "fast", catalog)
             loaded = cpa.load_cache(home, "fast")
-            self.assertEqual(loaded.ids, catalog.ids)
-            self.assertEqual(loaded.meta, catalog.meta)
-            caps = cpa.capabilities_for(loaded, ("claude-*",))
-            self.assertEqual(
-                caps,
-                {"claude-opus-5-5": {"context_window": 1000000, "supports_reasoning": True}},
-            )
+            for attr in (
+                "ids",
+                "meta",
+                "owners",
+                "fetched_at",
+                "mgmt_groups",
+                "mgmt_defs",
+                "mgmt_checked_at",
+                "mgmt_auth_failed",
+            ):
+                self.assertEqual(getattr(loaded, attr), getattr(catalog, attr), attr)
             mode = os.stat(cpa.cache_path(home, "fast")).st_mode & 0o777
             self.assertEqual(mode, 0o600)
+
+    def test_reads_v1_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            path = cpa.cache_path(home, "old")
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"version": 1, "ids": ["a"], "meta": {"a": {"x": 1}}}))
+            loaded = cpa.load_cache(home, "old")
+            self.assertEqual(loaded.ids, ["a"])
+            self.assertEqual(loaded.owners, {})
 
     def test_missing_or_corrupt_cache_is_empty(self):
         with tempfile.TemporaryDirectory() as tmp:

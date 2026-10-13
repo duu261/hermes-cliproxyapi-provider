@@ -1,46 +1,109 @@
-"""CLIProxyAPI bridge core: config parsing, transport policy, public catalog, cache.
+"""CLIProxyAPI bridge core: config, transport policy, catalogs, grouping, cache.
 
 Pure standard library. Nothing here imports Hermes, so it is unit-testable and
 safe to import during Hermes provider discovery.
+
+Source references are to CLIProxyAPI (CPA) v8.0.27 unless noted.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
 import re
 import socket
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 USER_AGENT = f"hermes-cliproxyapi-provider/{VERSION}"
 # CPA serves its richest public list (context window, reasoning levels) only to
 # Grok Shell clients: internal/client/grokbuild IsGrokShellUserAgent.
 GROK_LIST_USER_AGENT = f"{USER_AGENT} grok-shell-compatible"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# The credentials list carries per-account request history; large pools need room.
+MAX_MANAGEMENT_LIST_BYTES = 32 * 1024 * 1024
 PROFILE_PREFIX = "cpa"
 
-VALID_API_MODES = ("anthropic_messages", "codex_responses", "chat_completions")
-# CPA provider group -> Hermes api_mode. Each row is the wire the group's CPA
-# executor speaks upstream, so CPA translates as little as possible.
-GROUP_WIRE = {
-    "claude": "anthropic_messages",
-    "codex": "codex_responses",
+ANTHROPIC = "anthropic_messages"
+RESPONSES = "codex_responses"
+CHAT = "chat_completions"
+VALID_API_MODES = (ANTHROPIC, RESPONSES, CHAT)
+DEFAULT_WIRE = CHAT
+
+# CPA provider -> the Hermes api_mode its executor accepts with the least translation.
+PROVIDER_WIRE = {
+    # claude executor posts Anthropic Messages upstream (claude_executor_execute.go).
+    "claude": ANTHROPIC,
+    # KimiExecutor.RequestToFormat returns the Claude source unchanged and posts it to
+    # Kimi's /v1/messages (kimi_executor.go, helps/kimi_responses.go).
+    "kimi": ANTHROPIC,
+    # Kiro plugin declares claude input and builds its upstream payload from Claude
+    # format (kiro-cpa-plugin cmd/kiro-plugin/main.go).
+    "kiro": ANTHROPIC,
+    # codex, xai and meta executors translate to CPA's Codex Responses format and
+    # post /responses (codex_executor_*.go, xai_executor_request.go, meta_executor_execute.go).
+    "codex": RESPONSES,
+    "xai": RESPONSES,
+    "meta": RESPONSES,
+    # Gemini-family executors speak Gemini native or Interactions, which Hermes does
+    # not send to non-Google hosts, so they take the default chat wire.
 }
-DEFAULT_WIRE = "chat_completions"
+
+# owned_by labels of CPA's static catalogs (internal/registry/models/models.json).
+OWNER_PROVIDER = {
+    "anthropic": "claude",
+    "openai": "codex",
+    "xai": "xai",
+    "meta": "meta",
+    "moonshot": "kimi",
+    "antigravity": "antigravity",
+    "google": "gemini",
+}
+
+# CPA provider -> management model-definitions channel (registry/model_definitions.go
+# GetStaticModelDefinitionsByChannel; provider strings from internal/constant).
+DEFINITION_CHANNEL = {
+    "claude": "claude",
+    "gemini": "gemini",
+    "gemini-interactions": "gemini-interactions",
+    "vertex": "vertex",
+    "aistudio": "aistudio",
+    "codex": "codex",
+    "kimi": "kimi",
+    "antigravity": "antigravity",
+    "xai": "xai",
+    "devin": "devin",
+    "meta": "meta",
+}
+
 # Hermes' effort ladder (agent/reasoning_effort.py EFFORT_LADDER).
 EFFORT_LADDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
+# Refresh pacing.
+PUBLIC_TTL = 30.0  # several profiles of one instance share one public refresh
+MANAGEMENT_TTL = 900.0  # management pass at most every 15 minutes per instance
+MGMT_PER_PROVIDER = 3  # accounts sampled per provider
+MGMT_MAX_CALLS = 32  # hard cap on management requests per pass
+MGMT_BUDGET_SECONDS = 20.0  # wall-clock cap per pass
+
+DEFAULT_INSTANCE = "local"
+DEFAULT_ROOT = "http://127.0.0.1:8317"
+DEFAULT_KEY_ENV = "CPA_LOCAL_API_KEY"
+DEFAULT_URL_ENV = "CPA_LOCAL_BASE_URL"
+
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
-_GROUP_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,47}$")
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 _ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 _PRIVATE_NETS = tuple(
@@ -68,62 +131,53 @@ class GatewayError(Exception):
         self.category = category
 
 
+# ── Config ──────────────────────────────────────────────────────────────────
+
+
 @dataclass(frozen=True)
-class ProfileSpec:
-    name: str
-    instance: str
-    group: str
-    root: str
-    base_url: str
-    api_mode: str
-    key_env: str
-    patterns: tuple[str, ...]
+class GroupOverride:
+    models: tuple[str, ...] = ()
+    api_mode: str = ""
     display_name: str = ""
+
+
+@dataclass
+class InstanceSpec:
+    name: str
+    root: str
+    key_env: str
+    mgmt_key_env: str = ""
     url_env: str = ""
+    display_name: str = ""
+    overrides: dict[str, GroupOverride] = field(default_factory=dict)
 
     @property
-    def cache_key(self) -> str:
-        return self.instance
+    def wide_name(self) -> str:
+        return f"{PROFILE_PREFIX}-{self.name}"
+
+    def group_name(self, group: str) -> str:
+        return f"{PROFILE_PREFIX}-{self.name}-{group}"
 
 
-# Zero-config provider. Not named "cliproxyapi": users often already have a
-# custom provider by that name, and a registered profile would shadow it.
-DEFAULT_NAME = "cpa-local"
-DEFAULT_ROOT = "http://127.0.0.1:8317"
-DEFAULT_KEY_ENV = "CPA_LOCAL_API_KEY"
-DEFAULT_URL_ENV = "CPA_LOCAL_BASE_URL"
-
-
-def default_spec() -> ProfileSpec:
-    """One local CPA, every model, chat wire (CPA translates to each upstream).
-
-    Declared instances give each provider group its native wire instead.
-    """
-    return ProfileSpec(
-        name=DEFAULT_NAME,
-        instance="_local",
-        group="all",
+def default_instance() -> InstanceSpec:
+    """Used when no instances are configured: one local CPA on the default port."""
+    return InstanceSpec(
+        name=DEFAULT_INSTANCE,
         root=DEFAULT_ROOT,
-        base_url=DEFAULT_ROOT + "/v1",
-        api_mode=DEFAULT_WIRE,
         key_env=DEFAULT_KEY_ENV,
-        patterns=("*",),
-        display_name="CLIProxyAPI (local)",
         url_env=DEFAULT_URL_ENV,
     )
 
 
-@dataclass
-class Catalog:
-    ids: list[str] = field(default_factory=list)
-    meta: dict[str, dict[str, Any]] = field(default_factory=dict)
+def wire_for(group: str, override: GroupOverride | None = None) -> str:
+    if override and override.api_mode:
+        return override.api_mode
+    return PROVIDER_WIRE.get(group, DEFAULT_WIRE)
 
 
-# ── Config ──────────────────────────────────────────────────────────────────
-
-
-def wire_for_group(group: str) -> str:
-    return GROUP_WIRE.get(group, DEFAULT_WIRE)
+def base_url_for(root: str, api_mode: str) -> str:
+    # The Anthropic SDK appends /v1/messages itself; OpenAI clients need /v1.
+    return root if api_mode == ANTHROPIC else root + "/v1"
 
 
 def root_url(raw: str) -> str:
@@ -134,7 +188,27 @@ def root_url(raw: str) -> str:
     return url
 
 
-_root_url = root_url
+def slug(label: str) -> str:
+    """Provider key from a CPA label: lowercase, [a-z0-9-], at most 48 chars."""
+    return re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-")[:48].strip("-")
+
+
+def provider_for_owner(owned_by: str) -> str:
+    label = owned_by.strip().lower()
+    return OWNER_PROVIDER.get(label) or slug(label)
+
+
+def normalize_provider(raw: str) -> str:
+    """Provider key from a CPA credential's provider field."""
+    value = raw.strip().lower()
+    # Aliases GetStaticModelDefinitionsByChannel accepts for one executor.
+    if value in ("kimi", "kimi-ai", "kimi.ai", "kimi.com"):
+        return "kimi"
+    if value in ("xai", "x-ai", "grok"):
+        return "xai"
+    if value in ("meta", "muse"):
+        return "meta"
+    return slug(value)
 
 
 def _url_shape_ok(url: str) -> bool:
@@ -154,90 +228,92 @@ def _url_shape_ok(url: str) -> bool:
 
 def parse_config(
     config: Any, *, resolver: Resolver | None = None
-) -> tuple[list[ProfileSpec], list[str]]:
-    """Build profile specs from the ``cliproxyapi`` config section.
+) -> tuple[list[InstanceSpec], list[str]]:
+    """Build instance specs from the ``cliproxyapi`` config section.
 
-    Returns ``(specs, errors)``. An instance with any error registers nothing.
-    Error strings name the instance and field only, never URLs or values.
+    Returns ``(instances, errors)``. With no instances configured, returns the
+    default local instance. An instance with any error is skipped. Error strings
+    name the instance and field only, never URLs or values.
     """
     section = config.get("cliproxyapi") if isinstance(config, dict) else None
     instances = section.get("instances") if isinstance(section, dict) else None
-    if not isinstance(instances, dict):
-        return [], []
-    specs: list[ProfileSpec] = []
+    if not isinstance(instances, dict) or not instances:
+        return [default_instance()], []
+    specs: list[InstanceSpec] = []
     errors: list[str] = []
-    taken = {DEFAULT_NAME}
-    for instance, body in instances.items():
-        found, problems = _parse_instance(instance, body, resolver)
-        clashes = sorted({s.name for s in found} & taken)
-        if clashes:
-            # Hyphens are legal in instance and group names, so "a"+"b-c" and
-            # "a-b"+"c" both give cpa-a-b-c. Refuse rather than silently override.
-            problems = [
-                *problems,
-                f"instance '{instance}': provider name already used: {clashes[0]}",
-            ]
-        if problems:
-            errors.extend(problems)
+    for name, body in instances.items():
+        spec, problem = _parse_instance(name, body, resolver)
+        if spec is None:
+            errors.append(problem)
         else:
-            specs.extend(found)
-            taken.update(s.name for s in found)
+            specs.append(spec)
     return specs, errors
 
 
 def _parse_instance(
-    instance: Any, body: Any, resolver: Resolver | None
-) -> tuple[list[ProfileSpec], list[str]]:
-    label = f"instance {instance!r}" if isinstance(instance, str) else "instance"
-    if not isinstance(instance, str) or not _NAME_RE.match(instance):
-        return [], [f"{label}: name must match {_NAME_RE.pattern}"]
+    name: Any, body: Any, resolver: Resolver | None
+) -> tuple[InstanceSpec | None, str]:
+    label = f"instance {name!r}" if isinstance(name, str) else "instance"
+    if not isinstance(name, str) or not _NAME_RE.match(name):
+        return None, f"{label}: name must match {_NAME_RE.pattern}"
     if not isinstance(body, dict):
-        return [], [f"{label}: must be a mapping"]
+        return None, f"{label}: must be a mapping"
     raw_url = body.get("base_url")
-    if not isinstance(raw_url, str) or not _url_shape_ok(_root_url(raw_url)):
-        return [], [f"{label}: base_url must be an http(s) URL without credentials"]
-    root = _root_url(raw_url)
+    if not isinstance(raw_url, str) or not _url_shape_ok(root_url(raw_url)):
+        return None, f"{label}: base_url must be an http(s) URL without credentials"
+    root = root_url(raw_url)
     if not transport_allowed(root, resolver=resolver):
-        return [], [f"{label}: plain http is allowed only for private addresses"]
+        return None, f"{label}: plain http is allowed only for private addresses"
     key_env = body.get("key_env")
     if not isinstance(key_env, str) or not _ENV_RE.match(key_env):
-        return [], [f"{label}: key_env must be an environment variable name"]
-    groups = body.get("groups")
-    if not isinstance(groups, dict) or not groups:
-        return [], [f"{label}: groups must be a non-empty mapping"]
-    specs: list[ProfileSpec] = []
+        return None, f"{label}: key_env must be an environment variable name"
+    mgmt_key_env = body.get("mgmt_key_env", "")
+    if mgmt_key_env and (not isinstance(mgmt_key_env, str) or not _ENV_RE.match(mgmt_key_env)):
+        return None, f"{label}: mgmt_key_env must be an environment variable name"
+    display = body.get("display_name", "")
+    if not isinstance(display, str):
+        return None, f"{label}: display_name must be a string"
+    groups = body.get("groups", {})
+    if groups is None:
+        groups = {}
+    if not isinstance(groups, dict):
+        return None, f"{label}: groups must be a mapping"
+    overrides: dict[str, GroupOverride] = {}
     for group, gbody in groups.items():
         glabel = f"{label} group {group!r}"
-        if not isinstance(group, str) or not _GROUP_RE.match(group):
-            return [], [f"{glabel}: name must match {_GROUP_RE.pattern}"]
+        if not isinstance(group, str) or not _SLUG_RE.match(group):
+            return None, f"{glabel}: name must match {_SLUG_RE.pattern}"
         if not isinstance(gbody, dict):
-            return [], [f"{glabel}: must be a mapping"]
-        patterns = gbody.get("models")
-        if (
-            not isinstance(patterns, list)
-            or not patterns
-            or not all(isinstance(p, str) and p.strip() for p in patterns)
+            return None, f"{glabel}: must be a mapping"
+        patterns = gbody.get("models", [])
+        if patterns is None:
+            patterns = []
+        if not isinstance(patterns, list) or not all(
+            isinstance(p, str) and p.strip() for p in patterns
         ):
-            return [], [f"{glabel}: models must be a non-empty list of id patterns"]
-        api_mode = gbody.get("api_mode") or wire_for_group(group)
-        if api_mode not in VALID_API_MODES:
-            return [], [f"{glabel}: api_mode must be one of {', '.join(VALID_API_MODES)}"]
-        display = gbody.get("display_name")
-        specs.append(
-            ProfileSpec(
-                name=f"{PROFILE_PREFIX}-{instance}-{group}",
-                instance=instance,
-                group=group,
-                root=root,
-                # The Anthropic SDK appends /v1/messages itself; OpenAI clients need /v1.
-                base_url=root if api_mode == "anthropic_messages" else root + "/v1",
-                api_mode=api_mode,
-                key_env=key_env,
-                patterns=tuple(p.strip() for p in patterns),
-                display_name=display if isinstance(display, str) else "",
-            )
+            return None, f"{glabel}: models must be a list of id patterns"
+        api_mode = gbody.get("api_mode", "")
+        if api_mode and api_mode not in VALID_API_MODES:
+            return None, f"{glabel}: api_mode must be one of {', '.join(VALID_API_MODES)}"
+        gdisplay = gbody.get("display_name", "")
+        if not isinstance(gdisplay, str):
+            return None, f"{glabel}: display_name must be a string"
+        overrides[group] = GroupOverride(
+            models=tuple(p.strip() for p in patterns),
+            api_mode=api_mode or "",
+            display_name=gdisplay,
         )
-    return specs, []
+    return (
+        InstanceSpec(
+            name=name,
+            root=root,
+            key_env=key_env,
+            mgmt_key_env=mgmt_key_env or "",
+            display_name=display,
+            overrides=overrides,
+        ),
+        "",
+    )
 
 
 # ── Transport policy ────────────────────────────────────────────────────────
@@ -300,14 +376,21 @@ def _category(status: int) -> str:
     return "http"
 
 
-def get_json(url: str, api_key: str, *, timeout: float, user_agent: str = USER_AGENT) -> Any:
+def get_json(
+    url: str,
+    api_key: str,
+    *,
+    timeout: float,
+    user_agent: str = USER_AGENT,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+) -> Any:
     request = urllib.request.Request(url, method="GET")
     request.add_header("Authorization", f"Bearer {api_key}")
     request.add_header("Accept", "application/json")
     request.add_header("User-Agent", user_agent)
     try:
         with _OPENER.open(request, timeout=timeout) as response:
-            body = response.read(MAX_RESPONSE_BYTES + 1)
+            body = response.read(max_bytes + 1)
     except GatewayError:
         raise
     except urllib.error.HTTPError as exc:
@@ -318,15 +401,12 @@ def get_json(url: str, api_key: str, *, timeout: float, user_agent: str = USER_A
         raise GatewayError(0, "timeout") from None
     except (urllib.error.URLError, OSError):
         raise GatewayError(0, "network") from None
-    if len(body) > MAX_RESPONSE_BYTES:
+    if len(body) > max_bytes:
         raise GatewayError(200, "response_too_large")
     try:
         return json.loads(body)
     except ValueError:
         raise GatewayError(200, "bad_response") from None
-
-
-# ── Public catalog ──────────────────────────────────────────────────────────
 
 
 def _entries(payload: Any, key: str) -> list[dict[str, Any]]:
@@ -338,10 +418,39 @@ def _positive_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
+def _efforts(values: Iterable[Any]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        if value in EFFORT_LADDER and value not in out:
+            out.append(value)
+    return out
+
+
+# ── Catalog ─────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Catalog:
+    """What one CPA instance serves, plus where each model comes from."""
+
+    ids: list[str] = field(default_factory=list)
+    meta: dict[str, dict[str, Any]] = field(default_factory=dict)
+    owners: dict[str, str] = field(default_factory=dict)
+    fetched_at: float = 0.0
+    # Management results: provider -> model ids, and per-id definitions.
+    mgmt_groups: dict[str, list[str]] = field(default_factory=dict)
+    mgmt_defs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    mgmt_checked_at: float = 0.0
+    # Fingerprint of a management key CPA rejected; never retried while unchanged.
+    mgmt_auth_failed: str = ""
+    # Outcome of the last management pass in this process (not persisted).
+    mgmt_status: str = ""
+
+
 def fetch_public_catalog(
     root: str, api_key: str, *, timeout: float = 8.0, resolver: Resolver | None = None
 ) -> Catalog:
-    """Model ids from ``/v1/models`` plus metadata from CPA's other public lists.
+    """Model ids and owners from ``/v1/models`` plus metadata from CPA's other public lists.
 
     Only the id list is required. The Grok Shell list adds context windows and
     reasoning levels; the Gemini list adds output limits and input modalities.
@@ -350,10 +459,13 @@ def fetch_public_catalog(
     if not transport_allowed(root, resolver=resolver):
         raise GatewayError(0, "transport_policy")
     ids: list[str] = []
+    owners: dict[str, str] = {}
     for item in _entries(get_json(root + "/v1/models", api_key, timeout=timeout), "data"):
         model_id = item.get("id")
-        if isinstance(model_id, str) and model_id and model_id not in ids:
+        if isinstance(model_id, str) and model_id and model_id not in owners:
             ids.append(model_id)
+            owner = item.get("owned_by")
+            owners[model_id] = owner if isinstance(owner, str) else ""
     known = set(ids)
     meta: dict[str, dict[str, Any]] = {}
 
@@ -371,11 +483,9 @@ def fetch_public_catalog(
         window = _positive_int(item.get("context_window"))
         if window:
             entry["context_window"] = window
-        efforts = [
-            e.get("value")
-            for e in item.get("reasoning_efforts") or []
-            if isinstance(e, dict) and e.get("value") in EFFORT_LADDER
-        ]
+        efforts = _efforts(
+            e.get("value") for e in item.get("reasoning_efforts") or [] if isinstance(e, dict)
+        )
         if efforts:
             entry["reasoning_efforts"] = efforts
             entry["supports_reasoning"] = True
@@ -404,7 +514,205 @@ def fetch_public_catalog(
                 isinstance(m, str) and m.lower() == "image" for m in modalities
             )
 
-    return Catalog(ids=ids, meta={k: v for k, v in meta.items() if v})
+    return Catalog(ids=ids, meta={k: v for k, v in meta.items() if v}, owners=owners)
+
+
+def definition_meta(item: dict[str, Any]) -> dict[str, Any]:
+    """Metadata from one management ModelInfo (registry/model_registry.go json tags)."""
+    entry: dict[str, Any] = {}
+    window = _positive_int(item.get("context_length")) or _positive_int(item.get("inputTokenLimit"))
+    if window:
+        entry["context_window"] = window
+    output = _positive_int(item.get("max_completion_tokens")) or _positive_int(
+        item.get("outputTokenLimit")
+    )
+    if output:
+        entry["max_output_tokens"] = output
+    modalities = item.get("supportedInputModalities")
+    if isinstance(modalities, list) and modalities:
+        entry["supports_vision"] = any(
+            isinstance(m, str) and m.lower() == "image" for m in modalities
+        )
+    thinking = item.get("thinking")
+    if isinstance(thinking, dict):
+        entry["supports_reasoning"] = True
+        levels = thinking.get("levels")
+        efforts = _efforts(levels) if isinstance(levels, list) else []
+        if efforts:
+            entry["reasoning_efforts"] = efforts
+    return entry
+
+
+# ── Management ──────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _ManagementPaths:
+    credentials: str
+    models: str
+    definitions: str
+
+
+_V8 = _ManagementPaths(
+    "/v8/management/credentials",
+    "/v8/management/credentials/models",
+    "/v8/management/routing/model-definitions/",
+)
+_V0 = _ManagementPaths(
+    "/v0/management/auth-files",
+    "/v0/management/auth-files/models",
+    "/v0/management/model-definitions/",
+)
+
+
+@dataclass
+class ManagementResult:
+    status: str  # "ok", "auth_failed" or "unavailable"
+    groups: dict[str, list[str]] = field(default_factory=dict)
+    definitions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    calls: int = 0
+
+
+def management_fingerprint(key: str, salt: str = "") -> str:
+    """Identifies a management key without storing it: ``<salt>:<hmac>``.
+
+    A random per-record salt keeps a weak key from being brute-forced offline
+    from the cache file.
+    """
+    salt = salt or os.urandom(16).hex()
+    digest = hmac.new(bytes.fromhex(salt), key.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{salt}:{digest}"
+
+
+def fingerprint_matches(key: str, stored: str) -> bool:
+    salt, _, _digest = stored.partition(":")
+    try:
+        bytes.fromhex(salt)
+    except ValueError:
+        return False
+    return bool(salt) and hmac.compare_digest(management_fingerprint(key, salt), stored)
+
+
+def choose_accounts(listing: Any, per_provider: int) -> dict[str, list[str]]:
+    """A few enabled accounts per provider from a credentials listing.
+
+    Reads only provider, name/id, disabled and unavailable. Accounts that are
+    currently available come first.
+    """
+    ready: dict[str, list[str]] = {}
+    later: dict[str, list[str]] = {}
+    for item in _entries(listing, "files"):
+        raw_provider = item.get("provider") or item.get("type")
+        name = item.get("name") or item.get("id")
+        if not isinstance(raw_provider, str) or not isinstance(name, str) or not name:
+            continue
+        if item.get("disabled") is True:
+            continue
+        provider = normalize_provider(raw_provider)
+        if not provider:
+            continue
+        bucket = later if item.get("unavailable") is True else ready
+        bucket.setdefault(provider, []).append(name)
+    chosen: dict[str, list[str]] = {}
+    for provider in sorted(set(ready) | set(later)):
+        names = (ready.get(provider, []) + later.get(provider, []))[:per_provider]
+        if names:
+            chosen[provider] = names
+    return chosen
+
+
+def fetch_management(
+    root: str,
+    mgmt_key: str,
+    *,
+    timeout: float = 8.0,
+    resolver: Resolver | None = None,
+    per_provider: int = MGMT_PER_PROVIDER,
+    max_calls: int = MGMT_MAX_CALLS,
+    budget: float = MGMT_BUDGET_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> ManagementResult:
+    """Provider per model and model definitions from the CPA management API.
+
+    Read-only GETs only: the credentials list, a few accounts' model lists per
+    provider, and one model-definitions list per provider. A 401 ends the pass
+    at once (CPA bans an IP after five failures); every other failure means
+    "unavailable" and the caller falls back to public grouping. Nothing from a
+    response is kept beyond provider names, model ids and model metadata.
+    """
+    if not transport_allowed(root, resolver=resolver):
+        return ManagementResult("unavailable")
+    deadline = clock() + budget
+    calls = 0
+
+    def call(path: str, max_bytes: int = MAX_RESPONSE_BYTES) -> Any:
+        nonlocal calls
+        remaining = deadline - clock()
+        if calls >= max_calls or remaining <= 0:
+            raise GatewayError(0, "budget")
+        calls += 1
+        return get_json(root + path, mgmt_key, timeout=min(timeout, remaining), max_bytes=max_bytes)
+
+    def fatal(exc: GatewayError) -> bool:
+        return exc.status in (401, 403)
+
+    try:
+        try:
+            listing = call(_V8.credentials, MAX_MANAGEMENT_LIST_BYTES)
+            paths = _V8
+        except GatewayError as exc:
+            if exc.status != 404:
+                raise
+            listing = call(_V0.credentials, MAX_MANAGEMENT_LIST_BYTES)
+            paths = _V0
+        chosen = choose_accounts(listing, per_provider)
+        del listing
+        groups: dict[str, list[str]] = {}
+        out_of_budget = False
+        for provider, names in chosen.items():
+            for name in names:
+                try:
+                    payload = call(f"{paths.models}?name={quote(name, safe='')}")
+                except GatewayError as exc:
+                    if fatal(exc):
+                        raise
+                    out_of_budget = exc.category == "budget"
+                    if out_of_budget:
+                        break
+                    continue
+                bucket = groups.setdefault(provider, [])
+                for item in _entries(payload, "models"):
+                    model_id = item.get("id")
+                    if isinstance(model_id, str) and model_id and model_id not in bucket:
+                        bucket.append(model_id)
+            if out_of_budget:
+                break
+        definitions: dict[str, dict[str, Any]] = {}
+        for provider in sorted(groups):
+            channel = DEFINITION_CHANNEL.get(provider)
+            if not channel or out_of_budget:
+                continue
+            try:
+                payload = call(paths.definitions + quote(channel, safe=""))
+            except GatewayError as exc:
+                if fatal(exc):
+                    raise
+                out_of_budget = exc.category == "budget"
+                continue
+            for item in _entries(payload, "models"):
+                model_id = item.get("id")
+                if isinstance(model_id, str) and model_id:
+                    entry = definition_meta(item)
+                    if entry:
+                        definitions[model_id] = entry
+        return ManagementResult("ok", {k: v for k, v in groups.items() if v}, definitions, calls)
+    except GatewayError as exc:
+        if exc.status == 401:
+            return ManagementResult("auth_failed", calls=calls)
+        return ManagementResult("unavailable", calls=calls)
+
+
+# ── Grouping ────────────────────────────────────────────────────────────────
 
 
 def match_models(ids: Iterable[str], patterns: Iterable[str]) -> list[str]:
@@ -412,20 +720,141 @@ def match_models(ids: Iterable[str], patterns: Iterable[str]) -> list[str]:
     return [i for i in ids if any(fnmatch.fnmatchcase(i, p) for p in pats)]
 
 
+def compute_groups(
+    catalog: Catalog, overrides: dict[str, GroupOverride] | None = None
+) -> dict[str, list[str]]:
+    """Provider -> served model ids.
+
+    Management membership first (exact), then ``owned_by`` for ids management
+    did not cover, then operator ``models`` patterns, which replace a group.
+    An id can belong to several providers. Order follows ``catalog.ids``.
+    """
+    position = {model_id: index for index, model_id in enumerate(catalog.ids)}
+    groups: dict[str, set[str]] = {}
+    covered: set[str] = set()
+    for provider, members in catalog.mgmt_groups.items():
+        served = {m for m in members if m in position}
+        if served:
+            groups.setdefault(provider, set()).update(served)
+            covered |= served
+    for model_id in catalog.ids:
+        if model_id in covered:
+            continue
+        provider = provider_for_owner(catalog.owners.get(model_id, ""))
+        if provider:
+            groups.setdefault(provider, set()).add(model_id)
+    result = {p: sorted(ids, key=position.__getitem__) for p, ids in groups.items()}
+    for group, override in (overrides or {}).items():
+        if override.models:
+            result[group] = match_models(catalog.ids, override.models)
+    return result
+
+
+def _definition_for(definitions: dict[str, dict[str, Any]], model_id: str) -> dict | None:
+    if model_id in definitions:
+        return definitions[model_id]
+    if "/" in model_id:  # CPA prefixes ("pro/claude-x") reuse the base model's metadata
+        return definitions.get(model_id.split("/", 1)[1])
+    return None
+
+
+def merge_meta(
+    ids: Iterable[str],
+    public: dict[str, dict[str, Any]],
+    definitions: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Public list metadata, overridden key by key by management definitions."""
+    merged: dict[str, dict[str, Any]] = {}
+    for model_id in ids:
+        entry = dict(public.get(model_id, {}))
+        entry.update(_definition_for(definitions, model_id) or {})
+        if entry:
+            merged[model_id] = entry
+    return merged
+
+
 _CAPABILITY_KEYS = ("context_window", "supports_vision", "supports_reasoning")
 
 
-def capabilities_for(catalog: Catalog, patterns: Iterable[str]) -> dict[str, dict[str, Any]]:
-    """Hermes ``model_capabilities`` for one group: only keys Hermes accepts."""
+def capabilities_for(catalog: Catalog, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Hermes ``model_capabilities`` for the given ids: only keys Hermes accepts."""
     out: dict[str, dict[str, Any]] = {}
-    for model_id in match_models(catalog.ids, patterns):
+    for model_id in ids:
         caps = {k: v for k, v in catalog.meta.get(model_id, {}).items() if k in _CAPABILITY_KEYS}
         if caps:
             out[model_id] = caps
     return out
 
 
+# ── Refresh ─────────────────────────────────────────────────────────────────
+
+
+def refresh_catalog(
+    root: str,
+    api_key: str,
+    mgmt_key: str,
+    previous: Catalog,
+    *,
+    mgmt_configured: bool | None = None,
+    now: float | None = None,
+    timeout: float = 8.0,
+    resolver: Resolver | None = None,
+    management: Callable[..., ManagementResult] = fetch_management,
+) -> Catalog:
+    """Fresh public catalog, plus management grouping when a key is set.
+
+    The management pass runs at most once per ``MANAGEMENT_TTL`` and never again
+    for a key CPA rejected, until the key changes. When management is configured
+    but its key cannot be read right now, previous management results are kept.
+    Raises ``GatewayError`` when the public model list fails.
+    """
+    now = time.time() if now is None else now
+    if mgmt_configured is None:
+        mgmt_configured = bool(mgmt_key)
+    public = fetch_public_catalog(root, api_key, timeout=timeout, resolver=resolver)
+    catalog = Catalog(
+        ids=public.ids,
+        owners=public.owners,
+        fetched_at=now,
+        mgmt_groups=previous.mgmt_groups,
+        mgmt_defs=previous.mgmt_defs,
+        mgmt_checked_at=previous.mgmt_checked_at,
+        mgmt_auth_failed=previous.mgmt_auth_failed,
+    )
+    if not mgmt_configured:
+        catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
+        catalog.mgmt_checked_at, catalog.mgmt_auth_failed = 0.0, ""
+        catalog.mgmt_status = "off"
+    elif not mgmt_key:
+        catalog.mgmt_status = "missing_key"
+    else:
+        if previous.mgmt_auth_failed and fingerprint_matches(mgmt_key, previous.mgmt_auth_failed):
+            catalog.mgmt_status = "auth_failed"
+        elif not previous.mgmt_auth_failed and 0 <= now - previous.mgmt_checked_at < MANAGEMENT_TTL:
+            catalog.mgmt_status = "cached"
+        else:
+            result = management(root, mgmt_key, timeout=timeout, resolver=resolver)
+            catalog.mgmt_checked_at = now
+            catalog.mgmt_status = result.status
+            if result.status == "ok":
+                catalog.mgmt_groups = result.groups
+                catalog.mgmt_defs = {
+                    model_id: entry
+                    for model_id in public.ids
+                    if (entry := _definition_for(result.definitions, model_id))
+                }
+                catalog.mgmt_auth_failed = ""
+            elif result.status == "auth_failed":
+                catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
+                catalog.mgmt_auth_failed = management_fingerprint(mgmt_key)
+            # "unavailable": keep previous results; retry after the TTL.
+    catalog.meta = merge_meta(public.ids, public.meta, catalog.mgmt_defs)
+    return catalog
+
+
 # ── Cache ───────────────────────────────────────────────────────────────────
+
+CACHE_VERSION = 2
 
 
 def cache_path(hermes_home: Path, instance: str) -> Path:
@@ -435,7 +864,20 @@ def cache_path(hermes_home: Path, instance: str) -> Path:
 def save_cache(hermes_home: Path, instance: str, catalog: Catalog) -> None:
     path = cache_path(hermes_home, instance)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps({"version": 1, "ids": catalog.ids, "meta": catalog.meta}, sort_keys=True)
+    data = json.dumps(
+        {
+            "version": CACHE_VERSION,
+            "ids": catalog.ids,
+            "meta": catalog.meta,
+            "owners": catalog.owners,
+            "fetched_at": catalog.fetched_at,
+            "mgmt_groups": catalog.mgmt_groups,
+            "mgmt_defs": catalog.mgmt_defs,
+            "mgmt_checked_at": catalog.mgmt_checked_at,
+            "mgmt_auth_failed": catalog.mgmt_auth_failed,
+        },
+        sort_keys=True,
+    )
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{instance}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -450,14 +892,39 @@ def save_cache(hermes_home: Path, instance: str, catalog: Catalog) -> None:
         raise
 
 
+def _str_dict(value: Any) -> dict[str, Any]:
+    return {k: v for k, v in value.items() if isinstance(k, str)} if isinstance(value, dict) else {}
+
+
+def _number(value: Any) -> float:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
 def load_cache(hermes_home: Path, instance: str) -> Catalog:
     try:
         data = json.loads(cache_path(hermes_home, instance).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return Catalog()
-    if not isinstance(data, dict) or data.get("version") != 1:
+    if not isinstance(data, dict) or data.get("version") not in (1, CACHE_VERSION):
         return Catalog()
     ids = [i for i in data.get("ids") or [] if isinstance(i, str)]
-    raw_meta = data.get("meta")
-    meta = raw_meta if isinstance(raw_meta, dict) else {}
-    return Catalog(ids=ids, meta={k: v for k, v in meta.items() if isinstance(v, dict)})
+    catalog = Catalog(
+        ids=ids,
+        meta={k: v for k, v in _str_dict(data.get("meta")).items() if isinstance(v, dict)},
+    )
+    if data.get("version") == 1:  # 0.1 caches: ids and metadata only
+        return catalog
+    catalog.owners = {k: v for k, v in _str_dict(data.get("owners")).items() if isinstance(v, str)}
+    catalog.fetched_at = _number(data.get("fetched_at"))
+    catalog.mgmt_groups = {
+        k: [i for i in v if isinstance(i, str)]
+        for k, v in _str_dict(data.get("mgmt_groups")).items()
+        if isinstance(v, list)
+    }
+    catalog.mgmt_defs = {
+        k: v for k, v in _str_dict(data.get("mgmt_defs")).items() if isinstance(v, dict)
+    }
+    catalog.mgmt_checked_at = _number(data.get("mgmt_checked_at"))
+    failed = data.get("mgmt_auth_failed")
+    catalog.mgmt_auth_failed = failed if isinstance(failed, str) else ""
+    return catalog

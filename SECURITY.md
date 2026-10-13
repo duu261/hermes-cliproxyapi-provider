@@ -14,10 +14,12 @@ as `gateway.example`.
 
 In scope:
 
-- Leaking a CLIProxyAPI client key (logs, error messages, tracebacks, cache files).
-- Plain-HTTP catalog requests outside the documented private-network list.
-- Catalog requests that follow redirects or read unbounded responses.
-- Any call to the CLIProxyAPI management API.
+- Leaking a CLIProxyAPI client or management key (logs, error messages, tracebacks, cache
+  files).
+- Plain-HTTP requests outside the documented private-network list.
+- Requests that follow redirects or read unbounded responses.
+- Any management request that is not a read-only GET on the documented allowlist, or any
+  retry of a management key CPA rejected.
 
 Out of scope:
 

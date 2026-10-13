@@ -1,14 +1,22 @@
-"""Hermes model-provider plugin: mirror CLIProxyAPI provider groups as Hermes providers.
+"""Hermes model-provider plugin: bridge CLIProxyAPI (CPA) providers into Hermes.
 
-Registers one ``ProviderProfile`` per (CPA instance x provider group) declared in
-the ``cliproxyapi`` section of the Hermes ``config.yaml``. Registration reads only
-config and the local catalog cache; network calls happen in ``fetch_models``.
+For each CPA instance in the ``cliproxyapi`` section of ``config.yaml`` this
+registers one provider per CPA provider (``cpa-<instance>-<provider>``), each on
+the wire that CPA's executor for it accepts with the least translation, plus one
+instance-wide chat provider (``cpa-<instance>``). With no instances configured it
+uses one local CPA (``cpa-local``).
+
+Registration reads only config and the on-disk catalog cache. Network calls
+happen in ``fetch_models``, which refreshes the catalog, writes the cache and
+registers providers that appeared since startup.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -57,68 +65,173 @@ def _read_config(home: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-class CLIProxyAPIProfile(ProviderProfile):
-    """One CPA provider group on one CPA instance.
+def _read_secret(name: str) -> str:
+    """Resolve a key by env var name the way Hermes does, at call time only."""
+    if not name:
+        return ""
+    try:
+        from agent.secret_scope import get_secret
 
-    Private ``_cpa_*`` attributes are set by ``build_profile``. Inference headers
+        return get_secret(name) or ""
+    except ImportError:  # pragma: no cover - older Hermes
+        return os.environ.get(name, "")
+    except Exception as exc:  # noqa: BLE001 - e.g. unscoped read under multiplexing
+        logger.debug("cliproxyapi: secret %s unavailable (%s)", name, type(exc).__name__)
+        return ""
+
+
+class _Instance:
+    """Shared state for every profile of one CPA instance."""
+
+    def __init__(self, spec: cpa.InstanceSpec, home: Path, catalog: cpa.Catalog):
+        self.spec = spec
+        self.home = home
+        self.catalog = catalog
+        self.groups = cpa.compute_groups(catalog, spec.overrides)
+        self.lock = threading.Lock()
+        self.refreshed_at = 0.0  # monotonic; 0 means "not refreshed in this process"
+        self.profiles: dict[str, CLIProxyAPIProfile] = {}
+
+    def refresh(self, api_key: str, root: str, timeout: float) -> bool:
+        """Refresh the catalog unless another profile just did. Returns success."""
+        with self.lock:
+            if self.refreshed_at and time.monotonic() - self.refreshed_at < cpa.PUBLIC_TTL:
+                return True
+            mgmt_key = _read_secret(self.spec.mgmt_key_env)
+            try:
+                catalog = cpa.refresh_catalog(
+                    root,
+                    api_key,
+                    mgmt_key,
+                    self.catalog,
+                    mgmt_configured=bool(self.spec.mgmt_key_env),
+                    timeout=timeout,
+                )
+            except cpa.GatewayError as exc:
+                logger.warning("cliproxyapi %s: model list failed: %s", self.spec.name, exc)
+                return False
+            if catalog.mgmt_status in ("auth_failed", "unavailable", "missing_key"):
+                logger.warning(
+                    "cliproxyapi %s: management %s; using public model owners",
+                    self.spec.name,
+                    catalog.mgmt_status.replace("_", " "),
+                )
+            try:
+                cpa.save_cache(self.home, self.spec.name, catalog)
+            except OSError as exc:
+                logger.debug("cliproxyapi %s: cache write failed: %s", self.spec.name, exc)
+            self.catalog = catalog
+            self.groups = cpa.compute_groups(catalog, self.spec.overrides)
+            self.refreshed_at = time.monotonic()
+            for profile in self.profiles.values():
+                profile._cpa_sync()
+            _register_groups(self)
+            return True
+
+    def members(self, group: str | None) -> list[str]:
+        return list(self.catalog.ids) if group is None else list(self.groups.get(group, []))
+
+
+class CLIProxyAPIProfile(ProviderProfile):
+    """One CPA provider on one CPA instance, or the instance-wide chat provider.
+
+    Private ``_cpa_*`` attributes are set by ``_build_profile``. Inference headers
     are left to Hermes: CPA reacts to client User-Agents, so the plugin sets its
     own User-Agent only on its catalog requests.
     """
 
-    _cpa_spec: cpa.ProfileSpec
-    _cpa_home: Path
-    _cpa_catalog: cpa.Catalog
+    _cpa_instance: _Instance
+    _cpa_group: str | None
+
+    def _cpa_sync(self) -> None:
+        ids = self._cpa_instance.members(self._cpa_group)
+        self.fallback_models = tuple(ids)
+        self.model_capabilities.clear()
+        self.model_capabilities.update(cpa.capabilities_for(self._cpa_instance.catalog, ids))
 
     def fetch_models(
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
     ) -> list[str] | None:
-        spec: cpa.ProfileSpec = self._cpa_spec
         if not api_key:
             return None
+        instance = self._cpa_instance
         # Callers pass the effective endpoint (a user *_BASE_URL override wins).
-        root = cpa.root_url(base_url) if base_url else spec.root
-        try:
-            catalog = cpa.fetch_public_catalog(root, api_key, timeout=timeout)
-        except cpa.GatewayError as exc:
-            logger.warning("cliproxyapi %s: model list failed: %s", spec.name, exc)
+        root = cpa.root_url(base_url) if base_url else instance.spec.root
+        if not instance.refresh(api_key, root, timeout):
             return None
-        try:
-            cpa.save_cache(self._cpa_home, spec.cache_key, catalog)
-        except OSError as exc:
-            logger.debug("cliproxyapi %s: cache write failed: %s", spec.name, exc)
-        self._cpa_catalog = catalog
-        self.model_capabilities.clear()
-        self.model_capabilities.update(cpa.capabilities_for(catalog, spec.patterns))
-        return cpa.match_models(catalog.ids, spec.patterns)
+        return instance.members(self._cpa_group)
 
     def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
-        efforts = self._cpa_catalog.meta.get(model or "", {}).get("reasoning_efforts")
+        efforts = self._cpa_instance.catalog.meta.get(model or "", {}).get("reasoning_efforts")
         return tuple(efforts) if efforts else None
 
     def get_max_tokens(self, model: str | None) -> int | None:
-        value = self._cpa_catalog.meta.get(model or "", {}).get("max_output_tokens")
+        value = self._cpa_instance.catalog.meta.get(model or "", {}).get("max_output_tokens")
         return value if isinstance(value, int) and value > 0 else self.default_max_tokens
 
 
-def build_profile(spec: cpa.ProfileSpec, home: Path, catalog: cpa.Catalog) -> CLIProxyAPIProfile:
-    label = spec.display_name or f"CLIProxyAPI {spec.instance} ({spec.group})"
+_INSTANCES: dict[str, _Instance] = {}
+_TAKEN: dict[str, str] = {}  # registered profile name -> owning instance
+_TAKEN_LOCK = threading.Lock()
+
+
+def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile:
+    spec = instance.spec
+    override = spec.overrides.get(group) if group else None
+    api_mode = cpa.wire_for(group, override) if group else cpa.CHAT
+    base = spec.display_name or f"CLIProxyAPI {spec.name}"
+    if group is None:
+        name, label = spec.wide_name, base
+        description = f"CLIProxyAPI instance '{spec.name}', every model on the chat wire"
+    else:
+        name = spec.group_name(group)
+        label = (override.display_name if override else "") or f"{base} ({group})"
+        description = f"CLIProxyAPI instance '{spec.name}', provider '{group}'"
     env_vars = (spec.key_env, spec.url_env) if spec.url_env else (spec.key_env,)
     profile = CLIProxyAPIProfile(
-        name=spec.name,
-        api_mode=spec.api_mode,
+        name=name,
+        api_mode=api_mode,
         display_name=label,
-        description=f"CLIProxyAPI instance '{spec.instance}', provider group '{spec.group}'",
+        description=description,
         env_vars=env_vars,
-        base_url=spec.base_url,
+        base_url=cpa.base_url_for(spec.root, api_mode),
         models_url=spec.root + "/v1/models",
         auth_type="api_key",
-        fallback_models=tuple(cpa.match_models(catalog.ids, spec.patterns)),
-        model_capabilities=cpa.capabilities_for(catalog, spec.patterns),
     )
-    profile._cpa_spec = spec
-    profile._cpa_home = home
-    profile._cpa_catalog = catalog
+    profile._cpa_instance = instance
+    profile._cpa_group = group
+    profile._cpa_sync()
     return profile
+
+
+def _claim(name: str, owner: str) -> bool:
+    with _TAKEN_LOCK:
+        holder = _TAKEN.get(name)
+        if holder is not None and holder != owner:
+            return False
+        _TAKEN[name] = owner
+        return True
+
+
+def _register(instance: _Instance, group: str | None) -> None:
+    name = instance.spec.group_name(group) if group else instance.spec.wide_name
+    if name in instance.profiles:
+        return
+    if not _claim(name, instance.spec.name):
+        # Hyphens are legal in instance and provider names ("a"+"b-c" vs "a-b"+"c").
+        logger.warning(
+            "cliproxyapi %s: provider name %s is already used; skipped", instance.spec.name, name
+        )
+        return
+    profile = _build_profile(instance, group)
+    instance.profiles[name] = profile
+    register_provider(profile)
+
+
+def _register_groups(instance: _Instance) -> None:
+    for group in sorted(instance.groups):
+        if instance.groups[group] and cpa.slug(group) == group:
+            _register(instance, group)
 
 
 def register_all() -> list[str]:
@@ -126,13 +239,12 @@ def register_all() -> list[str]:
     specs, errors = cpa.parse_config(_read_config(home))
     for error in errors:
         logger.warning("cliproxyapi config: %s", error)
-    catalogs: dict[str, cpa.Catalog] = {}
-    names: list[str] = []
-    for spec in [cpa.default_spec(), *specs]:
-        catalog = catalogs.setdefault(spec.cache_key, cpa.load_cache(home, spec.cache_key))
-        register_provider(build_profile(spec, home, catalog))
-        names.append(spec.name)
-    return names
+    for spec in specs:
+        instance = _Instance(spec, home, cpa.load_cache(home, spec.name))
+        _INSTANCES[spec.name] = instance
+        _register(instance, None)
+        _register_groups(instance)
+    return [name for instance in _INSTANCES.values() for name in instance.profiles]
 
 
 register_all()
