@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Read `config.yaml` with `ruamel.yaml`, the parser Hermes depends on, instead of
+  importing Hermes' private `hermes_yaml` module (plugin catalog rule 9).
+
 ## 0.2.0
 
 Breaking: providers now come from what the CPA instance serves, not from

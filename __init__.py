@@ -42,22 +42,23 @@ def _hermes_home() -> Path:
         return Path(configured).expanduser() if configured else Path.home() / ".hermes"
 
 
-def _read_config(home: Path) -> dict[str, Any]:
-    """Parse ``config.yaml`` directly; importing hermes_cli.config during discovery can cycle.
+def _load_yaml(text: str) -> Any:
+    """Read YAML as Hermes does: ruamel.yaml (PyYAML is not guaranteed), YAML 1.1."""
+    try:
+        from ruamel.yaml import YAML
+    except ImportError:  # pragma: no cover - not a Hermes interpreter
+        import yaml  # type: ignore[import-untyped]
 
-    Hermes ships its YAML reader as ``hermes_yaml`` (ruamel); PyYAML is not guaranteed.
-    """
+        return yaml.safe_load(text)
+    reader = YAML(typ="safe", pure=True)
+    reader.version = (1, 1)
+    return reader.load(text)
+
+
+def _read_config(home: Path) -> dict[str, Any]:
+    """Parse ``config.yaml`` directly; importing hermes_cli.config during discovery can cycle."""
     try:
-        import hermes_yaml as yaml_reader
-    except ImportError:  # pragma: no cover - older Hermes
-        try:
-            import yaml as yaml_reader  # type: ignore[no-redef]
-        except ImportError:
-            logger.warning("cliproxyapi: no YAML reader available; config ignored")
-            return {}
-    try:
-        with open(home / "config.yaml", encoding="utf-8") as handle:
-            data = yaml_reader.safe_load(handle)
+        data = _load_yaml((home / "config.yaml").read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except Exception as exc:  # noqa: BLE001 - any parser error means "no usable config"

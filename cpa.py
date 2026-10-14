@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import quote, urlsplit
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 USER_AGENT = f"hermes-cliproxyapi-provider/{VERSION}"
 # CPA serves its richest public list (context window, reasoning levels) only to
 # Grok Shell clients: internal/client/grokbuild IsGrokShellUserAgent.

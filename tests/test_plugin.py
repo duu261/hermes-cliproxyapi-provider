@@ -304,7 +304,7 @@ class PluginTests(unittest.TestCase):
             self.assertNotIn("User-Agent", profile.default_headers or {})
 
     def test_reads_config_without_pyyaml(self):
-        # The Hermes CLI interpreter ships ruamel via hermes_yaml, not PyYAML.
+        # The Hermes interpreter ships ruamel.yaml, not PyYAML.
         saved = sys.modules.get("yaml")
         sys.modules["yaml"] = None  # type: ignore[assignment]
         try:

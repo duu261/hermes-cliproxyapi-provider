@@ -90,6 +90,10 @@ and reasoning levels. It is read-only and bounded:
   other failure falls back to public grouping.
 - CPA must allow management from the plugin's address (`remote-management`
   in CPA's config) unless both run on the same host.
+- A CPA management key can do far more than these reads (change config, add
+  or remove accounts). The plugin never sends anything but the GETs above, but
+  anyone who can read the env var can. Leave `mgmt_key_env` unset if public
+  grouping is close enough.
 
 ## Overrides
 
