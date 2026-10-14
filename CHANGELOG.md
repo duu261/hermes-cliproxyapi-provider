@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Billing route: optional `route_via` and `route_key_env` per instance (and
+  `route_key_env` per group) send inference through an operator's gateway in
+  front of the same CPA, such as New API. Discovery and metadata stay on CPA;
+  only models the gateway lists for the key are registered. The CPA and gateway
+  keys never cross.
+- Public grouping is the documented default; the management key stays opt-in
+  for Devin and multi-provider ids.
+
 ## 0.2.1
 
 - Read `config.yaml` with `ruamel.yaml`, the parser Hermes depends on, instead of

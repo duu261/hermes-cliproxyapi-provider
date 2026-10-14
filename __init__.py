@@ -89,10 +89,36 @@ class _Instance:
         self.spec = spec
         self.home = home
         self.catalog = catalog
-        self.groups = cpa.compute_groups(catalog, spec.overrides)
+        self.groups = self._groups(catalog)
         self.lock = threading.Lock()
         self.refreshed_at = 0.0  # monotonic; 0 means "not refreshed in this process"
         self.profiles: dict[str, CLIProxyAPIProfile] = {}
+
+    def _groups(self, catalog: cpa.Catalog) -> dict[str, list[str]]:
+        groups = cpa.compute_groups(catalog, self.spec.overrides)
+        return cpa.filter_routed(groups, self.spec, catalog.route_ids)
+
+    def _route_lists(self, timeout: float) -> dict[str, list[str]]:
+        """Fresh gateway lists per route key; the last known list when one fails."""
+        lists: dict[str, list[str]] = {}
+        for env_name in self.spec.route_key_envs():
+            previous = self.catalog.route_ids.get(env_name)
+            key = _read_secret(env_name)
+            try:
+                if not key:
+                    raise cpa.GatewayError(0, "missing_key")
+                lists[env_name] = cpa.fetch_route_ids(self.spec.route_root, key, timeout=timeout)
+            except cpa.GatewayError as exc:
+                logger.warning(
+                    "cliproxyapi %s: gateway model list for %s failed: %s; %s",
+                    self.spec.name,
+                    env_name,
+                    exc,
+                    "keeping the last known list" if previous is not None else "no models routed",
+                )
+                if previous is not None:
+                    lists[env_name] = previous
+        return lists
 
     def refresh(self, api_key: str, root: str, timeout: float) -> bool:
         """Refresh the catalog unless another profile just did. Returns success."""
@@ -118,6 +144,8 @@ class _Instance:
                     self.spec.name,
                     catalog.mgmt_status.replace("_", " "),
                 )
+            if self.spec.routed:
+                catalog.route_ids = self._route_lists(timeout)
             try:
                 cpa.save_cache(self.home, self.spec.name, catalog)
             except OSError as exc:
@@ -138,7 +166,7 @@ class _Instance:
                         type(exc).__name__,
                     )
             self.catalog = catalog
-            self.groups = cpa.compute_groups(catalog, self.spec.overrides)
+            self.groups = self._groups(catalog)
             self.refreshed_at = time.monotonic()
             for profile in self.profiles.values():
                 profile._cpa_sync()
@@ -146,7 +174,12 @@ class _Instance:
             return True
 
     def members(self, group: str | None) -> list[str]:
-        return list(self.catalog.ids) if group is None else list(self.groups.get(group, []))
+        if group is not None:
+            return list(self.groups.get(group, []))
+        if not self.spec.routed:
+            return list(self.catalog.ids)
+        sold = set(self.catalog.route_ids.get(self.spec.route_key_for(None)) or ())
+        return [i for i in self.catalog.ids if i in sold]
 
 
 class CLIProxyAPIProfile(ProviderProfile):
@@ -172,8 +205,22 @@ class CLIProxyAPIProfile(ProviderProfile):
         if not api_key:
             return None
         instance = self._cpa_instance
-        # Callers pass the effective endpoint (a user *_BASE_URL override wins).
-        root = cpa.root_url(base_url) if base_url else instance.spec.root
+        spec = instance.spec
+        if spec.routed:
+            # Hermes hands over the gateway key and URL; discovery stays on CPA with
+            # the CPA key, which is read here and never sent to the gateway.
+            cpa_key = _read_secret(spec.key_env)
+            if not cpa_key:
+                logger.warning(
+                    "cliproxyapi %s: %s is not set; cannot read CPA's model list",
+                    spec.name,
+                    spec.key_env,
+                )
+                return None
+            api_key, root = cpa_key, spec.root
+        else:
+            # Callers pass the effective endpoint (a user *_BASE_URL override wins).
+            root = cpa.root_url(base_url) if base_url else spec.root
         if not instance.refresh(api_key, root, timeout):
             return None
         return instance.members(self._cpa_group)
@@ -205,15 +252,21 @@ def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile
         name = spec.group_name(group)
         label = (override.display_name if override else "") or f"{base} ({group})"
         description = f"CLIProxyAPI instance '{spec.name}', provider '{group}'"
-    env_vars = (spec.key_env, spec.url_env) if spec.url_env else (spec.key_env,)
+    if spec.routed:
+        # Inference and the profile's key go to the billing gateway only.
+        root, env_vars = spec.route_root, (spec.route_key_for(group),)
+        description += ", billed through a gateway"
+    else:
+        root = spec.root
+        env_vars = (spec.key_env, spec.url_env) if spec.url_env else (spec.key_env,)
     profile = CLIProxyAPIProfile(
         name=name,
         api_mode=api_mode,
         display_name=label,
         description=description,
         env_vars=env_vars,
-        base_url=cpa.base_url_for(spec.root, api_mode),
-        models_url=spec.root + "/v1/models",
+        base_url=cpa.base_url_for(root, api_mode),
+        models_url=root + "/v1/models",
         auth_type="api_key",
     )
     profile._cpa_instance = instance

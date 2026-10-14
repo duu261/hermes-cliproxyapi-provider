@@ -111,6 +111,57 @@ class ParseConfigTests(unittest.TestCase):
         self.assertEqual([s.name for s in specs], ["good"])
         self.assertEqual(len(errors), 1)
 
+    def test_billing_route_parsed(self):
+        specs, errors = cpa.parse_config(
+            _instance(
+                route_via="https://gateway.example/v1/",
+                route_key_env="GW_A",
+                groups={"xai": {"route_key_env": "GW_B", "api_mode": "chat_completions"}},
+            )
+        )
+        self.assertEqual(errors, [])
+        spec = specs[0]
+        self.assertTrue(spec.routed)
+        self.assertEqual(spec.route_root, "https://gateway.example")
+        self.assertEqual(spec.route_key_env, "GW_A")
+        self.assertEqual(spec.route_key_for("xai"), "GW_B")
+        self.assertEqual(spec.route_key_for("claude"), "GW_A")
+        self.assertEqual(spec.route_key_for(None), "GW_A")
+        self.assertEqual(spec.route_key_envs(), ["GW_A", "GW_B"])
+
+    def test_unrouted_instance_is_unchanged(self):
+        spec = cpa.parse_config(_instance())[0][0]
+        self.assertFalse(spec.routed)
+        self.assertEqual(spec.route_key_envs(), [])
+
+    def test_billing_route_rejects_unsafe_or_ambiguous_config(self):
+        bad = [
+            {"route_via": "https://gw.example"},  # no route key
+            {"route_key_env": "GW_A"},  # key without a route
+            {"groups": {"xai": {"route_key_env": "GW_B"}}},  # group key without a route
+            {"route_via": "http://8.8.8.8", "route_key_env": "GW_A"},  # public plain http
+            {"route_via": "https://u:pw@gw.example", "route_key_env": "GW_A"},
+            {"route_via": "https://gw.example", "route_key_env": "bad name"},
+            # The CPA or management key must never be the gateway key.
+            {"route_via": "https://gw.example", "route_key_env": "CPA_A_API_KEY"},
+            {
+                "route_via": "https://gw.example",
+                "route_key_env": "GW_A",
+                "mgmt_key_env": "GW_A",
+            },
+            {
+                "route_via": "https://gw.example",
+                "route_key_env": "GW_A",
+                "groups": {"xai": {"route_key_env": "CPA_A_API_KEY"}},
+            },
+        ]
+        for body in bad:
+            specs, errors = cpa.parse_config(_instance(**body))
+            self.assertEqual(specs, [], body)
+            self.assertEqual(len(errors), 1, body)
+            self.assertNotIn("8.8.8.8", errors[0])
+            self.assertNotIn("pw", errors[0])
+
 
 class WireMapTests(unittest.TestCase):
     def test_every_cpa_provider_has_a_sourced_wire(self):
@@ -367,6 +418,48 @@ class _Gateway(BaseHTTPRequestHandler):
 
 
 PUBLIC_ROUTES = {"/v1/models": OPENAI_LIST, "grok": GROK_LIST, "/v1beta/models": GEMINI_LIST}
+
+GW_KEY_A = "gw-key-a"
+GW_KEY_B = "gw-key-b"
+# What a billing gateway sells per key: each key is bound to one billing group.
+GW_LISTS = {
+    GW_KEY_A: ["gpt-5.6", "claude-opus-5-5", "not-on-cpa"],
+    GW_KEY_B: ["grok-4.6"],
+}
+
+
+class _BillingGateway(BaseHTTPRequestHandler):
+    """Fake New API: lists models per gateway key, rejects anything else."""
+
+    seen: list = []
+    status: int = 200
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):  # noqa: N802
+        cls = type(self)
+        auth = self.headers.get("Authorization", "")
+        cls.seen.append({"path": urlsplit(self.path).path, "auth": auth})
+        key = auth.removeprefix("Bearer ")
+        if cls.status != 200:
+            status, body = cls.status, {"error": "secret-body"}
+        elif urlsplit(self.path).path != "/v1/models":
+            status, body = 404, {"error": "secret-body"}
+        elif key not in GW_LISTS:
+            status, body = 401, {"error": "secret-body"}
+        else:
+            status = 200
+            body = {
+                "object": "list",
+                "data": [{"id": i, "owned_by": "custom"} for i in GW_LISTS[key]],
+            }
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
 
 class GatewayTestCase(unittest.TestCase):
@@ -671,6 +764,65 @@ class RefreshTests(GatewayTestCase):
         self.assertEqual(self.mgmt_requests(), [])
 
 
+class RouteListTests(unittest.TestCase):
+    """The billing gateway's model list: client endpoint only, per gateway key."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), _BillingGateway)
+        cls.root = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        _BillingGateway.seen = []
+        _BillingGateway.status = 200
+
+    def test_lists_ids_for_the_gateway_key_only(self):
+        self.assertEqual(
+            cpa.fetch_route_ids(self.root, GW_KEY_A, timeout=5),
+            ["gpt-5.6", "claude-opus-5-5", "not-on-cpa"],
+        )
+        self.assertEqual(cpa.fetch_route_ids(self.root, GW_KEY_B, timeout=5), ["grok-4.6"])
+        self.assertEqual([r["path"] for r in _BillingGateway.seen], ["/v1/models", "/v1/models"])
+
+    def test_errors_carry_status_and_category_only(self):
+        with self.assertRaises(cpa.GatewayError) as ctx:
+            cpa.fetch_route_ids(self.root, "wrong", timeout=5)
+        self.assertEqual((ctx.exception.status, ctx.exception.category), (401, "auth"))
+        self.assertNotIn("secret-body", str(ctx.exception))
+        self.assertNotIn("127.0.0.1", str(ctx.exception))
+
+    def test_refuses_public_plain_http_before_connecting(self):
+        with self.assertRaises(cpa.GatewayError) as ctx:
+            cpa.fetch_route_ids("http://8.8.8.8:1", GW_KEY_A, timeout=5)
+        self.assertEqual(ctx.exception.category, "transport_policy")
+
+    def test_route_filter_keeps_cpa_order_and_drops_unsold(self):
+        groups = {"claude": ["claude-opus-5-5"], "codex": ["gpt-5.6"], "xai": ["grok-4.6"]}
+        sold = {"GW_A": ["gpt-5.6", "claude-opus-5-5", "not-on-cpa"], "GW_B": ["grok-4.6"]}
+        spec = cpa.parse_config(
+            _instance(
+                route_via="https://gw.example",
+                route_key_env="GW_A",
+                groups={"xai": {"route_key_env": "GW_B"}},
+            )
+        )[0][0]
+        self.assertEqual(
+            cpa.filter_routed(groups, spec, sold),
+            {"claude": ["claude-opus-5-5"], "codex": ["gpt-5.6"], "xai": ["grok-4.6"]},
+        )
+        # A group whose key's list is unknown registers nothing new.
+        self.assertEqual(
+            cpa.filter_routed(groups, spec, {"GW_A": ["gpt-5.6"]}),
+            {"claude": [], "codex": ["gpt-5.6"], "xai": []},
+        )
+
+
 class FingerprintTests(unittest.TestCase):
     def test_salted_and_matching(self):
         one = cpa.management_fingerprint("k")
@@ -726,6 +878,15 @@ class CacheTests(unittest.TestCase):
             loaded = cpa.load_cache(home, "old")
             self.assertEqual(loaded.ids, ["a"])
             self.assertEqual(loaded.owners, {})
+
+    def test_route_lists_round_trip_and_are_per_key_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            catalog = cpa.Catalog(ids=["a"], route_ids={"GW_A": ["a"], "GW_B": []})
+            cpa.save_cache(home, "r", catalog)
+            self.assertEqual(cpa.load_cache(home, "r").route_ids, {"GW_A": ["a"], "GW_B": []})
+            text = cpa.cache_path(home, "r").read_text()
+            self.assertNotIn(GW_KEY_A, text)
 
     def test_missing_or_corrupt_cache_is_empty(self):
         with tempfile.TemporaryDirectory() as tmp:

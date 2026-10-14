@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import quote, urlsplit
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 USER_AGENT = f"hermes-cliproxyapi-provider/{VERSION}"
 # CPA serves its richest public list (context window, reasoning levels) only to
 # Grok Shell clients: internal/client/grokbuild IsGrokShellUserAgent.
@@ -140,6 +140,7 @@ class GroupOverride:
     models: tuple[str, ...] = ()
     api_mode: str = ""
     display_name: str = ""
+    route_key_env: str = ""
 
 
 @dataclass
@@ -151,6 +152,9 @@ class InstanceSpec:
     url_env: str = ""
     display_name: str = ""
     overrides: dict[str, GroupOverride] = field(default_factory=dict)
+    # Billing route: inference goes to an operator's gateway in front of this CPA.
+    route_root: str = ""
+    route_key_env: str = ""
 
     @property
     def wide_name(self) -> str:
@@ -158,6 +162,27 @@ class InstanceSpec:
 
     def group_name(self, group: str) -> str:
         return f"{PROFILE_PREFIX}-{self.name}-{group}"
+
+    @property
+    def routed(self) -> bool:
+        return bool(self.route_root)
+
+    def route_key_for(self, group: str | None) -> str:
+        """Gateway key env for one group (its own, else the instance's); "" when unrouted."""
+        override = self.overrides.get(group) if group else None
+        if override and override.route_key_env:
+            return override.route_key_env
+        return self.route_key_env
+
+    def route_key_envs(self) -> list[str]:
+        """Every gateway key env this instance uses, instance key first."""
+        if not self.routed:
+            return []
+        names = [self.route_key_env]
+        for override in self.overrides.values():
+            if override.route_key_env and override.route_key_env not in names:
+                names.append(override.route_key_env)
+        return names
 
 
 def default_instance() -> InstanceSpec:
@@ -299,11 +324,20 @@ def _parse_instance(
         gdisplay = gbody.get("display_name", "")
         if not isinstance(gdisplay, str):
             return None, f"{glabel}: display_name must be a string"
+        groute = gbody.get("route_key_env", "")
+        if groute and (not isinstance(groute, str) or not _ENV_RE.match(groute)):
+            return None, f"{glabel}: route_key_env must be an environment variable name"
         overrides[group] = GroupOverride(
             models=tuple(p.strip() for p in patterns),
             api_mode=api_mode or "",
             display_name=gdisplay,
+            route_key_env=groute or "",
         )
+    route_root, route_key_env, problem = _parse_route(
+        label, body, key_env, mgmt_key_env, overrides, resolver
+    )
+    if problem:
+        return None, problem
     return (
         InstanceSpec(
             name=name,
@@ -312,9 +346,41 @@ def _parse_instance(
             mgmt_key_env=mgmt_key_env or "",
             display_name=display,
             overrides=overrides,
+            route_root=route_root,
+            route_key_env=route_key_env,
         ),
         "",
     )
+
+
+def _parse_route(
+    label: str,
+    body: dict,
+    key_env: str,
+    mgmt_key_env: str,
+    overrides: dict[str, GroupOverride],
+    resolver: Resolver | None,
+) -> tuple[str, str, str]:
+    """``(route_root, route_key_env, error)`` for the optional billing route."""
+    raw = body.get("route_via", "")
+    route_key_env = body.get("route_key_env", "")
+    group_keys = [o.route_key_env for o in overrides.values() if o.route_key_env]
+    if not raw:
+        if route_key_env or group_keys:
+            return "", "", f"{label}: route_key_env needs route_via"
+        return "", "", ""
+    if not isinstance(raw, str) or not _url_shape_ok(root_url(raw)):
+        return "", "", f"{label}: route_via must be an http(s) URL without credentials"
+    route_root = root_url(raw)
+    if not transport_allowed(route_root, resolver=resolver):
+        return "", "", f"{label}: route_via plain http is allowed only for private addresses"
+    if not isinstance(route_key_env, str) or not _ENV_RE.match(route_key_env):
+        return "", "", f"{label}: route_key_env must be an environment variable name"
+    # One key per side: the CPA keys never go to the gateway, the gateway key never to CPA.
+    cpa_keys = {key_env, mgmt_key_env} - {""}
+    if cpa_keys & {route_key_env, *group_keys}:
+        return "", "", f"{label}: route_key_env must differ from key_env and mgmt_key_env"
+    return route_root, route_key_env, ""
 
 
 # ── Transport policy ────────────────────────────────────────────────────────
@@ -446,6 +512,8 @@ class Catalog:
     mgmt_auth_failed: str = ""
     # Outcome of the last management pass in this process (not persisted).
     mgmt_status: str = ""
+    # Billing route: gateway key env name -> ids the gateway lists for that key.
+    route_ids: dict[str, list[str]] = field(default_factory=dict)
 
 
 def fetch_public_catalog(
@@ -739,6 +807,33 @@ def match_models(ids: Iterable[str], patterns: Iterable[str]) -> list[str]:
     return [i for i in ids if any(fnmatch.fnmatchcase(i, p) for p in pats)]
 
 
+def fetch_route_ids(
+    route_root: str, route_key: str, *, timeout: float = 8.0, resolver: Resolver | None = None
+) -> list[str]:
+    """Ids a billing gateway lists for one of its keys. Client ``/v1/models`` only."""
+    if not transport_allowed(route_root, resolver=resolver):
+        raise GatewayError(0, "transport_policy")
+    ids: list[str] = []
+    for item in _entries(get_json(route_root + "/v1/models", route_key, timeout=timeout), "data"):
+        model_id = item.get("id")
+        if isinstance(model_id, str) and model_id and model_id not in ids:
+            ids.append(model_id)
+    return ids
+
+
+def filter_routed(
+    groups: dict[str, list[str]], spec: InstanceSpec, route_ids: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    """Keep, per group, only the ids its gateway key sells; CPA order. No list, no ids."""
+    if not spec.routed:
+        return groups
+    out: dict[str, list[str]] = {}
+    for group, ids in groups.items():
+        sold = set(route_ids.get(spec.route_key_for(group)) or ())
+        out[group] = [i for i in ids if i in sold]
+    return out
+
+
 def compute_groups(
     catalog: Catalog, overrides: dict[str, GroupOverride] | None = None
 ) -> dict[str, list[str]]:
@@ -899,6 +994,7 @@ def save_cache(hermes_home: Path, instance: str, catalog: Catalog) -> None:
             "mgmt_defs": catalog.mgmt_defs,
             "mgmt_checked_at": catalog.mgmt_checked_at,
             "mgmt_auth_failed": catalog.mgmt_auth_failed,
+            "route_ids": catalog.route_ids,
         },
         sort_keys=True,
     )
@@ -951,4 +1047,9 @@ def load_cache(hermes_home: Path, instance: str) -> Catalog:
     catalog.mgmt_checked_at = _number(data.get("mgmt_checked_at"))
     failed = data.get("mgmt_auth_failed")
     catalog.mgmt_auth_failed = failed if isinstance(failed, str) else ""
+    catalog.route_ids = {
+        k: [i for i in v if isinstance(i, str)]
+        for k, v in _str_dict(data.get("route_ids")).items()
+        if isinstance(v, list)
+    }
     return catalog

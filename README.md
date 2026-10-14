@@ -68,15 +68,19 @@ best match.
 
 ## Exact grouping (optional management key)
 
-Without a management key, models are grouped by the `owned_by` label on CPA's
-public `/v1/models`. That label names the model vendor, not the CPA provider,
-so it is close but not exact: Devin serves Claude and GPT models labelled
+Public grouping is the default and is enough for most setups: on three live
+CPA pools it put every model on the same wire as the management pass, and it
+also covers API-key and OpenAI-compatible channels, which the management API
+cannot see. Models are grouped by the `owned_by` label on CPA's public
+`/v1/models`. That label names the model vendor, not the CPA provider, so it
+can be wrong in a few cases: Devin serves Claude and GPT models labelled
 `anthropic` and `openai`, `google` covers several Gemini executors, and an id
 served by two providers shows only one owner.
 
-With `mgmt_key_env` set, the plugin asks CPA's management API which provider
-serves each model and reads CPA's model definitions for output limits, vision
-and reasoning levels. It is read-only and bounded:
+If you run into those cases, set `mgmt_key_env`. The plugin then asks CPA's
+management API which provider serves each model (models it cannot see keep
+their public group) and reads CPA's model definitions for output limits,
+vision and reasoning levels. It is read-only and bounded:
 
 - GET only, to the credentials list, a few sampled accounts' model lists per
   provider, and the model-definitions list per provider. Never quota, usage,
@@ -113,6 +117,42 @@ cliproxyapi:
 
 A group with `models` replaces that provider's membership with the matching
 ids from the live list (shell-style patterns, case-sensitive).
+
+## Billing route (gateway in front of your CPA)
+
+If you run a billing gateway such as New API in front of the same CPA, the
+plugin can send inference through it while still learning everything from
+CPA:
+
+```yaml
+cliproxyapi:
+  instances:
+    main:
+      base_url: http://127.0.0.1:8317     # discovery: model list, providers, metadata
+      key_env: CPA_MAIN_API_KEY
+      route_via: https://gateway.example  # inference goes here and is billed there
+      route_key_env: GATEWAY_KEY          # the gateway's key
+      groups:
+        xai:
+          route_key_env: GATEWAY_GROK_KEY # optional: a key for another billing group
+          api_mode: chat_completions      # how this gateway channel expects requests
+```
+
+- Profiles point at `route_via` and use the gateway key. The CPA key is used
+  only for CPA's model lists and never sent to the gateway; the gateway key is
+  never sent to CPA. They must be different env vars.
+- Only models the gateway lists for that key (`GET /v1/models`) are kept. If
+  the gateway list fails, the last known list is kept; with none, nothing is
+  routed for that key.
+- Gateways often convert request formats per channel unless body pass-through
+  is on. Profiles keep the CPA wire from the table above; set `api_mode` per
+  group where the gateway channel needs a different one.
+- Context windows and reasoning levels describe CPA's model, not limits the
+  gateway may add.
+- The gateway may fail over to other channels it sells under the same model
+  name. The plugin cannot see or prevent that.
+- The plugin uses only the gateway's client endpoints, never its admin,
+  channel, pricing or billing APIs.
 
 ## Metadata
 
