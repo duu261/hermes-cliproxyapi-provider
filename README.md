@@ -1,5 +1,7 @@
 # hermes-cliproxyapi-provider
 
+English | [Tiếng Việt](README.vi.md) | [简体中文](README.zh-CN.md)
+
 A [Hermes Agent](https://github.com/NousResearch/hermes-agent) model-provider
 plugin for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA).
 
