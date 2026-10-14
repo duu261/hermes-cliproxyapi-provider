@@ -310,6 +310,34 @@ def _register_groups(instance: _Instance) -> None:
             _register(instance, group)
 
 
+def _register_origin(instance: _Instance) -> None:
+    """Hidden profile that keeps a routed instance's CPA key name registered.
+
+    Routed profiles carry only gateway keys, and Hermes strips from agent
+    subprocesses only the key names some provider declares. This profile
+    declares the CPA key so it stays stripped. It points at CPA itself, so the
+    key never goes to the gateway; it is hidden from pickers and doctor.
+    """
+    spec = instance.spec
+    name = spec.origin_name
+    if not _claim(name, spec.name):
+        logger.warning("cliproxyapi %s: provider name %s is already used; skipped", spec.name, name)
+        return
+    profile = ProviderProfile(
+        name=name,
+        api_mode=cpa.CHAT,
+        display_name=f"{spec.display_name or f'CLIProxyAPI {spec.name}'} (CPA, unbilled)",
+        description=f"CLIProxyAPI instance '{spec.name}' without its billing gateway",
+        env_vars=(spec.key_env,),
+        base_url=cpa.base_url_for(spec.root, cpa.CHAT),
+        models_url=spec.root + "/v1/models",
+        auth_type="api_key",
+        hidden=True,
+        supports_health_check=False,
+    )
+    _IMPORT_CONTEXT.copy().run(register_provider, profile)
+
+
 def register_all() -> list[str]:
     home = _hermes_home()
     specs, errors = cpa.parse_config(_read_config(home))
@@ -320,6 +348,8 @@ def register_all() -> list[str]:
         _INSTANCES[spec.name] = instance
         _register(instance, None)
         _register_groups(instance)
+        if spec.routed:
+            _register_origin(instance)
     return [name for instance in _INSTANCES.values() for name in instance.profiles]
 
 

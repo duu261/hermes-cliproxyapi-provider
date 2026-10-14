@@ -153,6 +153,10 @@ cliproxyapi:
   name. The plugin cannot see or prevent that.
 - The plugin uses only the gateway's client endpoints, never its admin,
   channel, pricing or billing APIs.
+- A hidden `cpa-<instance>-origin` provider keeps the CPA key name registered,
+  so Hermes still strips it from agent subprocesses. It points at CPA
+  directly, is left out of pickers, shows in doctor without a probe, and is
+  only used if you select it by name.
 
 ## Metadata
 
