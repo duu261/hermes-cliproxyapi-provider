@@ -164,11 +164,6 @@ class InstanceSpec:
         return f"{PROFILE_PREFIX}-{self.name}-{group}"
 
     @property
-    def origin_name(self) -> str:
-        """Hidden profile name that keeps a routed instance's CPA key registered."""
-        return f"{PROFILE_PREFIX}-{self.name}-origin"
-
-    @property
     def routed(self) -> bool:
         return bool(self.route_root)
 

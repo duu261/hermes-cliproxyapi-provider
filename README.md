@@ -153,10 +153,11 @@ cliproxyapi:
   name. The plugin cannot see or prevent that.
 - The plugin uses only the gateway's client endpoints, never its admin,
   channel, pricing or billing APIs.
-- A hidden `cpa-<instance>-origin` provider keeps the CPA key name registered,
-  so Hermes still strips it from agent subprocesses. It points at CPA
-  directly, is left out of pickers, shows in doctor without a probe, and is
-  only used if you select it by name.
+- Known limit: Hermes strips from agent subprocesses only the key names a
+  registered provider declares. Routed providers declare the gateway key, so
+  the CPA `key_env` (needed for discovery) stays visible to agent shells on a
+  routed instance. Hermes has no plugin hook to declare a secret without making
+  it an inference credential yet.
 
 ## Metadata
 

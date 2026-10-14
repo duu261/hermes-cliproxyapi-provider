@@ -381,9 +381,6 @@ class PluginTests(unittest.TestCase):
         self.assertNotIn("wrong-mgmt-2", joined)
 
 
-ROUTED = {"cpa-t", "cpa-t-origin"}
-
-
 @unittest.skipUnless(HAVE_HERMES, "Hermes not importable")
 class BillingRouteTests(unittest.TestCase):
     """Discovery from CPA, inference and the sold-model list through a billing gateway."""
@@ -456,7 +453,7 @@ class BillingRouteTests(unittest.TestCase):
         self.assertEqual(gw_auth, {f"Bearer {GW_KEY_A}", f"Bearer {GW_KEY_B}"})
         self.assertEqual({r["path"] for r in _BillingGateway.seen}, {"/v1/models"})
         # Sold by key A: gpt-5.6, claude-opus-5-5. Sold by key B: grok-4.6.
-        self.assertEqual(set(profiles), ROUTED | {"cpa-t-claude", "cpa-t-codex", "cpa-t-xai"})
+        self.assertEqual(set(profiles), {"cpa-t", "cpa-t-claude", "cpa-t-codex", "cpa-t-xai"})
         self.assertEqual(ids, ["claude-opus-5-5", "gpt-5.6"])
         claude = profiles["cpa-t-claude"]
         self.assertEqual(claude.api_mode, "anthropic_messages")
@@ -474,7 +471,7 @@ class BillingRouteTests(unittest.TestCase):
         first["cpa-t"].fetch_models(api_key=GW_KEY_A)
         _Gateway.seen, _BillingGateway.seen = [], []
         _, second = self.load()
-        self.assertEqual(set(second), ROUTED | {"cpa-t-claude", "cpa-t-codex", "cpa-t-xai"})
+        self.assertEqual(set(second), {"cpa-t", "cpa-t-claude", "cpa-t-codex", "cpa-t-xai"})
         self.assertEqual(second["cpa-t-xai"].fallback_models, ("grok-4.6",))
         self.assertEqual((_Gateway.seen, _BillingGateway.seen), ([], []))
         text = cpa.cache_path(self.home, "t").read_text()
@@ -500,31 +497,6 @@ class BillingRouteTests(unittest.TestCase):
         with self.assertLogs(level="WARNING"):
             ids = profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
         self.assertEqual(ids, [])
-        self.assertEqual(set(profiles), ROUTED)
-
-    def test_cpa_key_name_stays_registered_without_reaching_the_gateway(self):
-        _, profiles = self.load()
-        origin = profiles["cpa-t-origin"]
-        # Hermes strips registered provider key names from agent subprocesses.
-        self.assertEqual(origin.env_vars, ("T_KEY",))
-        self.assertTrue(origin.base_url.startswith(self.cpa_root))
-        self.assertTrue(origin.models_url.startswith(self.cpa_root))
-        self.assertTrue(origin.hidden)
-        self.assertFalse(origin.supports_health_check)
-        # No gateway-facing profile carries the CPA key name.
-        for name, profile in profiles.items():
-            if name != "cpa-t-origin":
-                self.assertNotIn("T_KEY", profile.env_vars, name)
-                self.assertTrue(profile.base_url.startswith(self.gw_root), name)
-
-    def test_unrouted_instance_has_no_origin_profile(self):
-        config = json.loads((self.home / "config.yaml").read_text())
-        inst = config["cliproxyapi"]["instances"]["t"]
-        for key in ("route_via", "route_key_env"):
-            inst.pop(key)
-        inst["groups"]["xai"].pop("route_key_env")
-        (self.home / "config.yaml").write_text(json.dumps(config))
-        _, profiles = self.load()
         self.assertEqual(set(profiles), {"cpa-t"})
 
     def test_missing_cpa_key_cannot_fall_back_to_the_gateway_key(self):
