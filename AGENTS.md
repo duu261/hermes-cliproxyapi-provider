@@ -12,17 +12,22 @@ for any CPA operator: derive behavior from CPA and Hermes source, never from
 one deployment's config. No hand-written model tables, routing, retries
 across instances or account logic.
 
+An instance may send inference through a billing gateway the operator runs in
+front of the same CPA (New API or similar, see Billing route). CPA stays the
+only source of what is served; the gateway only carries and bills requests.
+
 ## Grouping (which models belong to which provider)
 
-1. Management mode (instance sets `mgmt_key_env`): provider per model from the
-   CPA management API, see Management below.
-2. Public mode (client key only): group the public `GET /v1/models` list by
-   `owned_by`, mapped to CPA provider keys via CPA's static catalogs
+1. Public mode (default, client key only): group the public `GET /v1/models`
+   list by `owned_by`, mapped to CPA provider keys via CPA's static catalogs
    (anthropic->claude, openai->codex, xai->xai, meta->meta, moonshot->kimi,
    antigravity->antigravity, google->gemini). Any other label is used as is
-   (openai-compat names, plugin providers). Document the limits: Devin labels
-   models by vendor, `google` covers several executors, an id served by two
-   providers shows one owner.
+   (openai-compat names, plugin providers such as kiro). Document the limits:
+   Devin labels models by vendor, `google` covers several executors, an id
+   served by two providers shows one owner.
+2. Management mode (opt-in, instance sets `mgmt_key_env`): provider per model
+   from the CPA management API, see Management below. Ids the management pass
+   cannot see (API-key and openai-compat channels) keep their public group.
 3. Operator overrides per instance (`groups:`) win over both.
 An id served by several providers appears in each; CPA, not this plugin,
 picks the account. Document that the wire is then a best match.
@@ -59,10 +64,16 @@ import. With no cache, register only the instance-wide chat provider.
 `fetch_models` refreshes the catalog, writes the cache and registers newly
 seen providers in the running process.
 
-## Management
+## Management (opt-in)
 
-Opt-in per instance via `mgmt_key_env`. Prior art (CPA Usage Keeper, AI-gateway,
-cpa-usage, oh-my-cpa) holds the same key; match their safety.
+Off unless an instance sets `mgmt_key_env`. Public mode is the documented
+default: on three live pools it put every model on the same wire as the
+management pass, and covered API-key channels the management pass cannot
+see. Management mode is for the cases public grouping gets wrong (Devin, one
+id served by several providers) and adds output limits and vision. Document
+that the key is full-admin on CPA and that leaving it unset is recommended.
+Prior art (CPA Usage Keeper, AI-gateway, cpa-usage, oh-my-cpa) holds the same
+key; match their safety.
 - Read-only GET allowlist under /v8/management (v0 fallback on 404 only):
   credentials, credentials/models, config/api-keys,
   config/routing/force-model-prefix, routing/model-definitions/:channel,
@@ -78,6 +89,31 @@ cpa-usage, oh-my-cpa) holds the same key; match their safety.
 - Parse responses into an allowlist of fields and drop the rest immediately;
   never log, cache or return key-bearing fields or bodies.
 - Same transport rules as the client key.
+- If CPA ships a client-key route for model-to-provider data, prefer it.
+
+## Billing route
+
+Optional per instance: `route_via` (gateway base URL) and `route_key_env`
+(the gateway's key, by env var name). A group may set its own
+`route_key_env`: gateway keys are often bound to one billing group, while one
+CPA instance serves providers the gateway sells in different groups.
+
+- Discovery, grouping and metadata always come from CPA (`base_url`,
+  `key_env`). Inference for every profile of that instance goes to
+  `route_via` with the group's route key, else the instance's.
+- Never send the CPA key to the gateway or the gateway key to CPA.
+- Keep only the ids the gateway lists for the route key (`GET /v1/models`);
+  when that list is unavailable, keep the last cached result, else register
+  nothing new for the instance.
+- The gateway may translate between formats in ways the plugin cannot see.
+  Profiles keep the CPA wire map; operators set `api_mode` per group where
+  the gateway needs a different wire. Document this, and that context and
+  reasoning metadata describe CPA's model, not the gateway's limits.
+- Document that the gateway may fail over to non-CPA channels it sells under
+  the same name; the plugin cannot see or prevent that.
+- Use only the gateway's client endpoints (`/v1/models` and inference). Never
+  read its admin, channel, pricing or billing APIs.
+- Same transport rules as CPA.
 
 ## Secrets and transport
 
