@@ -156,8 +156,9 @@ cliproxyapi:
 - Known limit: Hermes strips from agent subprocesses only the key names a
   registered provider declares. Routed providers declare the gateway key, so
   the CPA `key_env` (needed for discovery) stays visible to agent shells on a
-  routed instance. Hermes has no plugin hook to declare a secret without making
-  it an inference credential yet.
+  routed instance. `mgmt_key_env` is never declared on a provider, so it is
+  not stripped on routed or unrouted instances. Hermes has no plugin hook to
+  declare a secret without making it an inference credential yet.
 
 ## Metadata
 

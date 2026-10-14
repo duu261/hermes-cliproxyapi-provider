@@ -7,6 +7,9 @@
   front of the same CPA, such as New API. Discovery and metadata stay on CPA;
   only models the gateway lists for the key are registered. The CPA and gateway
   keys never cross.
+- Known limit: on a routed instance Hermes does not strip the CPA `key_env`
+  from agent subprocesses, because routed providers declare only the gateway
+  key. `mgmt_key_env` has never been stripped (unchanged since 0.2.0).
 - Public grouping is the documented default; the management key stays opt-in
   for Devin and multi-provider ids.
 
