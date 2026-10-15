@@ -13,7 +13,8 @@ such a gateway as one custom endpoint on one wire with hand-pinned metadata.
 This plugin mirrors CPA into Hermes instead. Point it at a CPA instance and it
 registers one Hermes provider per CPA provider, each on the wire that CPA's
 executor for that provider accepts with the least translation, with the model
-list and per-model metadata CPA publishes. It adds nothing CPA does not serve.
+list and the model capabilities CPA publishes (context window, max output,
+image input, reasoning levels). It adds nothing CPA does not serve.
 
 ## Install
 
@@ -164,10 +165,16 @@ cliproxyapi:
 
 ## Metadata
 
-Context window, vision, reasoning support, reasoning-effort levels and output
-limits come only from CPA: management model definitions when available, else
+Context window, max output, image input, reasoning support and reasoning-effort
+levels come only from CPA: management model definitions when available, else
 CPA's public model lists matched by exact id. Values CPA does not publish stay
-unknown. Hermes can add vendor metadata from models.dev:
+unknown. Without a management key, max output is known only for models CPA's
+public lists give an output limit (Gemini-style entries); Claude's is not among
+them.
+
+Hermes `/model` shows max output, PDF and structured output only from
+models.dev; a plugin cannot set them, and CPA's model definitions have no PDF
+or structured-output field. To see them, add vendor metadata from models.dev:
 
 ```yaml
 providers:
