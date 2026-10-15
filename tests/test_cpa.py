@@ -303,6 +303,29 @@ GEMINI_LIST = {
         {"name": "models/claude-opus-5-5"},
     ]
 }
+# Anthropic-format /v1/models (Anthropic-Version header). CPA fills max_tokens
+# with its 64000 default when a model has none, and cloaks non-claude ids as
+# "claude-fable-5-dd-" + the id reversed (internal/client/claude/models).
+ANTHROPIC_LIST = {
+    "data": [
+        {"id": "claude-opus-5-5", "max_input_tokens": 999, "max_tokens": 128000},
+        {
+            "id": "claude-fable-5-dd-" + "gpt-5.6"[::-1],
+            "max_input_tokens": 400000,
+            "max_tokens": 128000,
+        },
+        {"id": "claude-fable-5-dd-" + "gemini-3.8-flash-high"[::-1], "max_tokens": 64000},
+        {
+            "id": "claude-fable-5-dd-" + "glm-5.3"[::-1],
+            "max_input_tokens": 200000,
+            "max_tokens": 64000,
+        },
+        {"id": "claude-fable-5-dd-" + "not-served"[::-1], "max_tokens": 32000},
+        {"id": "claude-not-served", "max_tokens": 32000},
+        {"id": "claude-fable-5-dd-", "max_tokens": 32000},
+    ],
+    "has_more": False,
+}
 CREDENTIALS = {
     "observed_at": "now",
     "files": [
@@ -372,6 +395,7 @@ class _Gateway(BaseHTTPRequestHandler):
                 "query": parts.query,
                 "ua": self.headers.get("User-Agent", ""),
                 "auth": auth,
+                "anthropic_version": self.headers.get("Anthropic-Version", ""),
                 "method": "GET",
             }
         )
@@ -387,6 +411,8 @@ class _Gateway(BaseHTTPRequestHandler):
         key = parts.path
         if key == "/v1/models" and "grok-shell" in self.headers.get("User-Agent", ""):
             key = "grok"
+        elif key == "/v1/models" and self.headers.get("Anthropic-Version"):
+            key = "anthropic"
         body = cls.routes.get(key)
         return self._send(200, body) if body is not None else self._send(404)
 
@@ -417,7 +443,12 @@ class _Gateway(BaseHTTPRequestHandler):
         return self._send(404)
 
 
-PUBLIC_ROUTES = {"/v1/models": OPENAI_LIST, "grok": GROK_LIST, "/v1beta/models": GEMINI_LIST}
+PUBLIC_ROUTES = {
+    "/v1/models": OPENAI_LIST,
+    "grok": GROK_LIST,
+    "/v1beta/models": GEMINI_LIST,
+    "anthropic": ANTHROPIC_LIST,
+}
 
 GW_KEY_A = "gw-key-a"
 GW_KEY_B = "gw-key-b"
@@ -507,11 +538,36 @@ class PublicCatalogTests(GatewayTestCase):
 
     def test_requests_send_identifying_user_agent_and_bearer(self):
         cpa.fetch_public_catalog(self.root, API_KEY, timeout=5)
-        self.assertEqual(len(_Gateway.seen), 3)
+        self.assertEqual(len(_Gateway.seen), 4)
         for req in _Gateway.seen:
             self.assertTrue(req["ua"].startswith("hermes-cliproxyapi-provider/"), req["ua"])
             self.assertEqual(req["auth"], f"Bearer {API_KEY}")
         self.assertTrue(any("grok-shell" in r["ua"] for r in _Gateway.seen))
+        anthropic = [r for r in _Gateway.seen if r["anthropic_version"]]
+        self.assertEqual(len(anthropic), 1)
+        self.assertEqual(anthropic[0]["path"], "/v1/models")
+        self.assertNotIn("grok-shell", anthropic[0]["ua"])
+
+    def test_anthropic_list_adds_only_real_max_output(self):
+        catalog = cpa.fetch_public_catalog(self.root, API_KEY, timeout=5)
+        meta = catalog.meta
+        # A real limit is taken; the context in this list is never used.
+        self.assertEqual(meta["claude-opus-5-5"]["max_output_tokens"], 128000)
+        self.assertEqual(meta["claude-opus-5-5"]["context_window"], 1000000)
+        # Cloaked ids are decoded back to the served id.
+        self.assertEqual(meta["gpt-5.6"]["max_output_tokens"], 128000)
+        self.assertNotIn("context_window", meta["gpt-5.6"])
+        # CPA's 64000 fill-in is unknown: the Gemini list's real limit stays.
+        self.assertEqual(meta["gemini-3.8-flash-high"]["max_output_tokens"], 65536)
+        # A model with no output limit gets 64000 from CPA; never taken, so
+        # Hermes falls back to models.dev (a real 64000 limit is lost the same way).
+        self.assertNotIn("glm-5.3", meta)
+        # Ids CPA does not serve on /v1/models add nothing.
+        self.assertEqual(
+            set(catalog.ids),
+            {"claude-opus-5-5", "gpt-5.6", "gemini-3.8-flash-high", "grok-4.6", "glm-5.3"},
+        )
+        self.assertFalse(any("not-served" in key for key in meta))
 
     def test_auth_failure_raises_safe_error(self):
         with self.assertRaises(cpa.GatewayError) as ctx:

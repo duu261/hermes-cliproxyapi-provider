@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- Max output without a management key: one more public request,
+  `GET /v1/models` with `Anthropic-Version`, reads CPA's output limit for every
+  model. CPA's 64,000 fill-in for models with no limit is ignored, so those
+  fall back to models.dev. Cloaked ids are decoded back to the served id.
+
 ## 0.3.0
 
 - Billing route: optional `route_via` and `route_key_env` per instance (and

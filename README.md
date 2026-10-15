@@ -168,9 +168,10 @@ cliproxyapi:
 Context window, max output, image input, reasoning support and reasoning-effort
 levels come only from CPA: management model definitions when available, else
 CPA's public model lists matched by exact id. Values CPA does not publish stay
-unknown. Without a management key, max output is known only for models CPA's
-public lists give an output limit (Gemini-style entries); Claude's is not among
-them.
+unknown. Without a management key, max output comes from CPA's Anthropic-format
+model list, which covers every model. CPA writes 64,000 there for a model with
+no limit, so the plugin treats exactly 64,000 as unknown and Hermes falls back
+to models.dev; a model whose real limit is 64,000 loses it the same way.
 
 Hermes `/model` shows max output, PDF and structured output only from
 models.dev; a plugin cannot set them, and CPA's model definitions have no PDF
@@ -193,9 +194,10 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
   category only, never bodies, URLs or keys.
 - Catalog requests send `User-Agent: hermes-cliproxyapi-provider/<version>`.
   One extra `/v1/models` request appends `grok-shell-compatible`, because that is
-  the client CPA publishes context windows and reasoning levels to; its ids are
-  matched against the normal list, so it adds metadata, never models. Inference
-  requests carry Hermes' own headers; the plugin sets none.
+  the client CPA publishes context windows and reasoning levels to, and another
+  sends `Anthropic-Version: 2023-06-01`, the format that carries output limits.
+  Their ids are matched against the normal list, so they add metadata, never
+  models. Inference requests carry Hermes' own headers; the plugin sets none.
 - The cache at `$HERMES_HOME/cache/cliproxyapi/` (mode 0600) holds model ids,
   owners, provider membership and metadata. No keys, no account names. A
   rejected management key is remembered as a salted HMAC, not the key.

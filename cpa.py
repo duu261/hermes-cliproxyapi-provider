@@ -26,11 +26,18 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import quote, urlsplit
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 USER_AGENT = f"hermes-cliproxyapi-provider/{VERSION}"
 # CPA serves its richest public list (context window, reasoning levels) only to
 # Grok Shell clients: internal/client/grokbuild IsGrokShellUserAgent.
 GROK_LIST_USER_AGENT = f"{USER_AGENT} grok-shell-compatible"
+# Anthropic-format /v1/models (internal/api/server_routes.go isAnthropicModelsRequest)
+# carries max_tokens for every model. CPA fills DefaultClaudeMaxOutputTokens when a
+# model has none, and cloaks ids that do not start with "claude-" as this prefix
+# plus the id reversed (internal/client/claude/models EnsureClaudeModelIDPrefix).
+ANTHROPIC_LIST_HEADERS = {"Anthropic-Version": "2023-06-01"}
+CPA_DEFAULT_MAX_TOKENS = 64000
+CLOAKED_ID_PREFIX = "claude-fable-5-dd-"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 # The credentials list carries per-account request history; large pools need room.
 MAX_MANAGEMENT_LIST_BYTES = 32 * 1024 * 1024
@@ -450,11 +457,14 @@ def get_json(
     timeout: float,
     user_agent: str = USER_AGENT,
     max_bytes: int = MAX_RESPONSE_BYTES,
+    headers: dict[str, str] | None = None,
 ) -> Any:
     request = urllib.request.Request(url, method="GET")
     request.add_header("Authorization", f"Bearer {api_key}")
     request.add_header("Accept", "application/json")
     request.add_header("User-Agent", user_agent)
+    for name, value in (headers or {}).items():
+        request.add_header(name, value)
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             body = response.read(max_bytes + 1)
@@ -583,7 +593,34 @@ def fetch_public_catalog(
                 isinstance(m, str) and m.lower() == "image" for m in modalities
             )
 
+    try:
+        anthropic = get_json(
+            root + "/v1/models", api_key, timeout=timeout, headers=ANTHROPIC_LIST_HEADERS
+        )
+    except GatewayError:
+        anthropic = None
+    for item in _entries(anthropic, "data"):
+        model_id = _uncloak(item.get("id"), known)
+        output = _positive_int(item.get("max_tokens"))
+        # CPA writes its default for a model with no limit; that is not a real value.
+        if model_id is None or not output or output == CPA_DEFAULT_MAX_TOKENS:
+            continue
+        meta.setdefault(model_id, {})["max_output_tokens"] = output
+
     return Catalog(ids=ids, meta={k: v for k, v in meta.items() if v}, owners=owners)
+
+
+def _uncloak(raw: Any, known: set[str]) -> str | None:
+    """Served id for an Anthropic-format list id, or None when CPA does not serve it."""
+    if not isinstance(raw, str):
+        return None
+    if raw in known:
+        return raw
+    if raw.startswith(CLOAKED_ID_PREFIX):
+        decoded = raw[len(CLOAKED_ID_PREFIX) :][::-1]
+        if decoded in known:
+            return decoded
+    return None
 
 
 def definition_meta(item: dict[str, Any]) -> dict[str, Any]:
