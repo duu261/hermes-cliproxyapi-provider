@@ -82,7 +82,8 @@ Chế độ công khai là mặc định và chỉ cần client key. Chế độ
 | Nhà cung cấp của mỗi mô hình | `owned_by` trên `/v1/models`: nhãn nhà sản xuất | nhà cung cấp của tài khoản đang phục vụ |
 | Devin, `google` (nhiều executor Gemini) | nhóm theo nhãn nhà sản xuất | đúng nhà cung cấp |
 | Id do hai nhà cung cấp phục vụ | một nhóm | mọi nhóm phục vụ nó |
-| Context window, mức reasoning, đầu vào hình ảnh | có | có |
+| Context window, mức reasoning có tên | có | có |
+| Đầu vào hình ảnh | chỉ khi `/v1beta/models` liệt kê loại đầu vào của mô hình; nếu không thì chưa biết | từ định nghĩa mô hình |
 | Reasoning trên mô hình dùng ngân sách token (không có mức tên) | không nhận ra | có |
 | Max output | có, trừ mô hình có giới hạn thật đúng bằng 64.000 | có, tất cả |
 | Kênh API-key và tương thích OpenAI | có | giữ từ chế độ công khai (management API không thấy chúng) |
@@ -197,6 +198,10 @@ Thứ tự ưu tiên, cao nhất trước: `model_overrides` của bạn, plugin
 ## Bảo mật
 
 - Key được tham chiếu theo tên biến môi trường và do Hermes phân giải.
+- Hermes chỉ gỡ khỏi tiến trình con của agent những tên biến môi trường mà một
+  provider đã đăng ký khai báo. Mỗi profile khai báo key inference của nó (`key_env`,
+  hoặc key gateway trên instance có định tuyến), nên `mgmt_key_env`, và trên instance
+  có định tuyến là `key_env` của CPA, vẫn đọc được từ shell của agent.
 - Chỉ cho phép `http://` không mã hóa khi mọi địa chỉ mà host phân giải ra đều là loopback,
   RFC 1918, 100.64/10 hoặc IPv6 ULA. Mọi trường hợp khác cần `https://`.
 - Không theo redirect, giới hạn kích thước response, và lỗi chỉ được báo bằng mã

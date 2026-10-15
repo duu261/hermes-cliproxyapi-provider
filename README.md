@@ -79,7 +79,8 @@ Public mode is the default and needs only a client key. Management mode adds
 | Provider per model | `owned_by` on `/v1/models`: the vendor label | the account provider that serves it |
 | Devin, `google` (several Gemini executors) | grouped by vendor label | exact provider |
 | Id served by two providers | one group | every group that serves it |
-| Context window, reasoning levels, image input | yes | yes |
+| Context window, named reasoning levels | yes | yes |
+| Image input | only when `/v1beta/models` lists the model's input types; else unknown | from model definitions |
 | Reasoning on budget models (no named levels) | not detected | yes |
 | Max output | yes, except models whose real limit is exactly 64,000 | yes, all |
 | API-key and OpenAI-compatible channels | yes | kept from public mode (the management API cannot see them) |
@@ -193,6 +194,10 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
 ## Security
 
 - Keys are referenced by environment variable name and resolved by Hermes.
+- Hermes strips from agent subprocesses only the env names a registered
+  provider declares. Every profile declares its inference key (`key_env`, or
+  the gateway key on a routed instance), so `mgmt_key_env`, and on a routed
+  instance the CPA `key_env`, stay readable by agent shells.
 - Plain `http://` is allowed only when every address the host resolves to is
   loopback, RFC 1918, 100.64/10 or IPv6 ULA. Anything else needs `https://`.
 - No redirects, capped responses, and failures reported as an HTTP status and
