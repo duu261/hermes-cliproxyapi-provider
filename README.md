@@ -40,7 +40,7 @@ cliproxyapi:
     main:
       base_url: https://cpa.example.com   # with or without /v1
       key_env: CPA_MAIN_API_KEY           # env var holding a CPA client key
-      mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Exact grouping"
+      mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Public mode or management mode"
 ```
 
 Then run `hermes model` (or anything that lists models) once. The plugin reads
@@ -69,21 +69,30 @@ Override per provider with `api_mode` (see below). When two providers serve the
 same model id, it appears in both and CPA picks the account; the wire is then a
 best match.
 
-## Exact grouping (optional management key)
+## Public mode or management mode
 
-Public grouping is the default and is enough for most setups: on three live
-CPA pools it put every model on the same wire as the management pass, and it
-also covers API-key and OpenAI-compatible channels, which the management API
-cannot see. Models are grouped by the `owned_by` label on CPA's public
-`/v1/models`. That label names the model vendor, not the CPA provider, so it
-can be wrong in a few cases: Devin serves Claude and GPT models labelled
-`anthropic` and `openai`, `google` covers several Gemini executors, and an id
-served by two providers shows only one owner.
+Public mode is the default and needs only a client key. Management mode adds
+`mgmt_key_env` and reads CPA's own provider map and model definitions.
 
-If you run into those cases, set `mgmt_key_env`. The plugin then asks CPA's
-management API which provider serves each model (models it cannot see keep
-their public group) and reads CPA's model definitions for output limits,
-vision and reasoning levels. It is read-only and bounded:
+| | Public (client key) | Management (`mgmt_key_env`) |
+|---|---|---|
+| Provider per model | `owned_by` on `/v1/models`: the vendor label | the account provider that serves it |
+| Devin, `google` (several Gemini executors) | grouped by vendor label | exact provider |
+| Id served by two providers | one group | every group that serves it |
+| Context window, reasoning levels, image input | yes | yes |
+| Reasoning on budget models (no named levels) | not detected | yes |
+| Max output | yes, except models whose real limit is exactly 64,000 | yes, all |
+| API-key and OpenAI-compatible channels | yes | kept from public mode (the management API cannot see them) |
+| Key held by Hermes | client key | client key plus a full-admin CPA key |
+
+Public mode is enough when each model has one provider and CPA's vendor labels
+match its providers. Management mode is the precise one; its cost is the key.
+A CPA management key can change config and add or remove accounts. The plugin
+only sends the reads below, but Hermes does not strip `mgmt_key_env` from agent
+shells (see Security), so any agent tool that can read your environment can
+read it too.
+
+What management mode sends:
 
 - GET only, to the credentials list, a few sampled accounts' model lists per
   provider, and the model-definitions list per provider. Never quota, usage,
@@ -97,10 +106,6 @@ vision and reasoning levels. It is read-only and bounded:
   other failure falls back to public grouping.
 - CPA must allow management from the plugin's address (`remote-management`
   in CPA's config) unless both run on the same host.
-- A CPA management key can do far more than these reads (change config, add
-  or remove accounts). The plugin never sends anything but the GETs above, but
-  anyone who can read the env var can. Leave `mgmt_key_env` unset if public
-  grouping is close enough.
 
 ## Overrides
 
