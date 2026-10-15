@@ -17,8 +17,8 @@ duy nhất, trên một wire duy nhất, với metadata phải ghim bằng tay.
 Plugin này phản chiếu CPA vào Hermes. Trỏ nó tới một instance CPA, nó sẽ đăng ký
 một provider Hermes cho mỗi nhà cung cấp CPA, mỗi provider dùng wire mà executor
 của CPA cho nhà cung cấp đó chấp nhận với ít chuyển đổi nhất, kèm danh sách mô
-hình và metadata theo từng mô hình mà CPA công bố. Plugin không thêm bất cứ thứ gì
-CPA không phục vụ.
+hình và các khả năng của mô hình mà CPA công bố (context window, max output, đầu
+vào hình ảnh, các mức reasoning). Plugin không thêm bất cứ thứ gì CPA không phục vụ.
 
 ## Cài đặt
 
@@ -43,7 +43,7 @@ cliproxyapi:
     main:
       base_url: https://cpa.example.com   # with or without /v1
       key_env: CPA_MAIN_API_KEY           # env var holding a CPA client key
-      mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Exact grouping"
+      mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Public mode or management mode"
 ```
 
 Sau đó chạy `hermes model` (hoặc bất kỳ lệnh nào liệt kê mô hình) một lần. Plugin
@@ -72,21 +72,30 @@ Ghi đè theo từng nhà cung cấp bằng `api_mode` (xem bên dưới). Khi h
 phục vụ cùng một model id, id đó xuất hiện ở cả hai và CPA chọn tài khoản; khi đó
 wire chỉ là lựa chọn phù hợp nhất.
 
-## Nhóm chính xác (management key, tùy chọn)
+## Chế độ công khai hay chế độ management
 
-Nhóm công khai là mặc định và đủ cho hầu hết thiết lập: trên ba pool CPA thật, nó
-đặt mọi mô hình vào cùng wire với lần quét bằng management, và nó còn bao quát các
-kênh API-key và tương thích OpenAI mà management API không thấy. Mô hình được nhóm
-theo nhãn `owned_by` trên `/v1/models` công khai của CPA. Nhãn này ghi tên nhà sản
-xuất mô hình, không phải nhà cung cấp CPA, nên có thể sai trong vài trường hợp:
-Devin phục vụ mô hình Claude và GPT với nhãn `anthropic` và `openai`, `google` bao
-gồm nhiều executor Gemini, và một id do hai nhà cung cấp phục vụ chỉ hiện một chủ
-sở hữu.
+Chế độ công khai là mặc định và chỉ cần client key. Chế độ management thêm
+`mgmt_key_env` và đọc bản đồ nhà cung cấp cùng định nghĩa mô hình của chính CPA.
 
-Nếu gặp các trường hợp đó, hãy đặt `mgmt_key_env`. Khi đó plugin hỏi management API
-của CPA xem nhà cung cấp nào phục vụ từng mô hình (mô hình nó không thấy giữ nhóm
-công khai) và đọc định nghĩa mô hình của CPA để lấy giới hạn đầu ra, khả năng
-vision và các mức reasoning. Thao tác này chỉ đọc và có giới hạn:
+| | Công khai (client key) | Management (`mgmt_key_env`) |
+|---|---|---|
+| Nhà cung cấp của mỗi mô hình | `owned_by` trên `/v1/models`: nhãn nhà sản xuất | nhà cung cấp của tài khoản đang phục vụ |
+| Devin, `google` (nhiều executor Gemini) | nhóm theo nhãn nhà sản xuất | đúng nhà cung cấp |
+| Id do hai nhà cung cấp phục vụ | một nhóm | mọi nhóm phục vụ nó |
+| Context window, mức reasoning, đầu vào hình ảnh | có | có |
+| Reasoning trên mô hình dùng ngân sách token (không có mức tên) | không nhận ra | có |
+| Max output | có, trừ mô hình có giới hạn thật đúng bằng 64.000 | có, tất cả |
+| Kênh API-key và tương thích OpenAI | có | giữ từ chế độ công khai (management API không thấy chúng) |
+| Key Hermes giữ | client key | client key và một key CPA toàn quyền admin |
+
+Chế độ công khai là đủ khi mỗi mô hình chỉ có một nhà cung cấp và nhãn nhà sản xuất
+của CPA khớp với nhà cung cấp. Chế độ management là chế độ chính xác; cái giá của nó
+là key. Một management key của CPA có thể đổi cấu hình và thêm hoặc xóa tài khoản.
+Plugin chỉ gửi các thao tác đọc bên dưới, nhưng Hermes không gỡ `mgmt_key_env` khỏi
+shell của agent (xem Bảo mật), nên bất kỳ công cụ agent nào đọc được biến môi trường
+của bạn cũng đọc được key này.
+
+Chế độ management gửi những gì:
 
 - Chỉ GET, tới danh sách credential, danh sách mô hình của vài tài khoản lấy mẫu
   cho mỗi nhà cung cấp, và danh sách định nghĩa mô hình cho mỗi nhà cung cấp. Không
@@ -100,10 +109,6 @@ vision và các mức reasoning. Thao tác này chỉ đọc và có giới hạ
   quay về nhóm công khai.
 - CPA phải cho phép management từ địa chỉ của plugin (`remote-management` trong cấu
   hình CPA), trừ khi cả hai chạy trên cùng host.
-- Một management key của CPA làm được nhiều hơn các thao tác đọc này rất nhiều (đổi
-  cấu hình, thêm hoặc xóa tài khoản). Plugin không bao giờ gửi gì ngoài các GET ở
-  trên, nhưng bất kỳ ai đọc được biến môi trường thì có thể. Hãy để trống
-  `mgmt_key_env` nếu nhóm công khai đã đủ gần đúng.
 
 ## Ghi đè
 
@@ -168,10 +173,18 @@ cliproxyapi:
 
 ## Metadata
 
-Context window, vision, hỗ trợ reasoning, các mức reasoning-effort và giới hạn đầu ra
-chỉ lấy từ CPA: định nghĩa mô hình qua management khi có, nếu không thì từ danh sách
-mô hình công khai của CPA, khớp theo đúng id. Giá trị CPA không công bố thì giữ là
-chưa biết. Hermes có thể bổ sung metadata của nhà sản xuất từ models.dev:
+Context window, max output, đầu vào hình ảnh, hỗ trợ reasoning và các mức
+reasoning-effort chỉ lấy từ CPA: định nghĩa mô hình qua management khi có, nếu không
+thì từ danh sách mô hình công khai của CPA, khớp theo đúng id. Giá trị CPA không công
+bố thì giữ là chưa biết. Không có management key, max output lấy từ danh sách mô hình
+định dạng Anthropic của CPA, danh sách này có mọi mô hình. CPA ghi 64.000 ở đó cho mô
+hình không có giới hạn, nên plugin coi đúng 64.000 là chưa biết và Hermes quay về
+models.dev; mô hình có giới hạn thật là 64.000 cũng mất giá trị theo cách đó.
+
+Lệnh `/model` của Hermes chỉ hiện max output, PDF và structured output từ models.dev;
+plugin không đặt được các giá trị này, và định nghĩa mô hình của CPA không có trường
+PDF hay structured output. Để thấy chúng, bổ sung metadata của nhà sản xuất từ
+models.dev:
 
 ```yaml
 providers:
@@ -190,9 +203,10 @@ Thứ tự ưu tiên, cao nhất trước: `model_overrides` của bạn, plugin
   trạng thái HTTP và loại lỗi, không bao giờ kèm body, URL hay key.
 - Request lấy catalog gửi `User-Agent: hermes-cliproxyapi-provider/<version>`. Một
   request `/v1/models` bổ sung nối thêm `grok-shell-compatible`, vì đó là client mà
-  CPA công bố context window và mức reasoning cho; các id của nó được khớp với danh
-  sách thường, nên nó chỉ thêm metadata, không bao giờ thêm mô hình. Request
-  inference mang header riêng của Hermes; plugin không đặt header nào.
+  CPA công bố context window và mức reasoning cho, và một request khác gửi
+  `Anthropic-Version: 2023-06-01`, định dạng có giới hạn đầu ra. Các id của chúng được
+  khớp với danh sách thường, nên chúng chỉ thêm metadata, không bao giờ thêm mô hình.
+  Request inference mang header riêng của Hermes; plugin không đặt header nào.
 - Cache tại `$HERMES_HOME/cache/cliproxyapi/` (mode 0600) chứa model id, chủ sở hữu,
   thành viên nhà cung cấp và metadata. Không có key, không có tên tài khoản. Một
   management key bị từ chối được ghi nhớ dưới dạng HMAC có salt, không phải key.

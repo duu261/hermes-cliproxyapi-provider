@@ -14,7 +14,7 @@ Devin、兼容 OpenAI 的上游，以及 Kiro 等插件提供方），并自行�
 
 本插件则把 CPA 映射到 Hermes 中。将它指向一个 CPA 实例，它会为每个 CPA 提供方注册
 一个 Hermes provider，每个 provider 走该提供方的 CPA executor 能以最少转换接受的那种 wire，
-并带上 CPA 发布的模型列表和逐模型元数据。CPA 不提供的东西，本插件一概不加。
+并带上 CPA 发布的模型列表和模型能力（上下文窗口、最大输出、图像输入、推理级别）。CPA 不提供的东西，本插件一概不加。
 
 ## 安装
 
@@ -39,7 +39,7 @@ cliproxyapi:
     main:
       base_url: https://cpa.example.com   # with or without /v1
       key_env: CPA_MAIN_API_KEY           # env var holding a CPA client key
-      mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Exact grouping"
+      mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Public mode or management mode"
 ```
 
 然后运行一次 `hermes model`（或任何会列出模型的命令）。插件会读取该实例的模型列表，
@@ -66,18 +66,28 @@ cliproxyapi:
 可通过 `api_mode` 按提供方覆盖（见下文）。当两个提供方提供同一个 model id 时，它会
 同时出现在两者中，由 CPA 选择账号；此时的 wire 只是最佳匹配。
 
-## 精确分组（可选的 management key）
+## 公开模式与 management 模式
 
-默认使用公开分组，足以应对大多数部署：在三个真实 CPA 池上，它给每个模型分配的 wire
-与 management 扫描的结果相同，而且还覆盖了 management API 看不到的 API-key 渠道和
-兼容 OpenAI 的渠道。模型按 CPA 公开的 `/v1/models` 上的 `owned_by` 标签分组。该标签
-表示模型厂商，而不是 CPA 提供方，因此少数情况下会出错：Devin 提供的 Claude 和 GPT
-模型分别标为 `anthropic` 和 `openai`，`google` 涵盖多个 Gemini executor，而由两个
-提供方提供的 id 只显示一个所有者。
+公开模式是默认模式，只需要客户端密钥。management 模式额外设置 `mgmt_key_env`，读取
+CPA 自己的提供方映射和模型定义。
 
-如果遇到这些情况，请设置 `mgmt_key_env`。插件随后会向 CPA 的 management API 查询
-每个模型由哪个提供方提供（它看不到的模型保留公开分组），并读取 CPA 的模型定义以获取
-输出上限、视觉能力和推理级别。该过程只读且有上限：
+| | 公开（客户端密钥） | Management（`mgmt_key_env`） |
+|---|---|---|
+| 每个模型的提供方 | `/v1/models` 上的 `owned_by`：厂商标签 | 实际提供该模型的账号提供方 |
+| Devin、`google`（多个 Gemini executor） | 按厂商标签分组 | 精确提供方 |
+| 由两个提供方提供的 id | 一个分组 | 所有提供它的分组 |
+| 上下文窗口、推理级别、图像输入 | 有 | 有 |
+| 按 token 预算推理的模型（无命名级别） | 识别不到 | 有 |
+| 最大输出 | 有，真实上限恰为 64,000 的模型除外 | 有，全部 |
+| API-key 和兼容 OpenAI 的渠道 | 有 | 沿用公开模式（management API 看不到它们） |
+| Hermes 持有的密钥 | 客户端密钥 | 客户端密钥加一个拥有完整管理权限的 CPA 密钥 |
+
+当每个模型只有一个提供方、且 CPA 的厂商标签与提供方一致时，公开模式就够用。
+management 模式是精确模式，代价是密钥。CPA management key 可以修改配置、添加或删除
+账号。插件只发送下列读取请求，但 Hermes 不会从 agent shell 中剥离 `mgmt_key_env`
+（见“安全”），所以任何能读取你环境变量的 agent 工具也都能读到它。
+
+management 模式发送的请求：
 
 - 仅 GET，访问凭据列表、每个提供方若干抽样账号的模型列表，以及每个提供方的模型定义
   列表。绝不访问配额、用量、下载、OAuth，也不做任何写操作。
@@ -88,9 +98,6 @@ cliproxyapi:
   到公开分组。
 - 除非两者运行在同一主机上，否则 CPA 必须允许来自插件地址的 management 访问（CPA
   配置中的 `remote-management`）。
-- CPA management key 的权限远不止这些读取（可修改配置、添加或删除账号）。插件只会
-  发送上述 GET，但任何能读取该环境变量的人都能做更多。如果公开分组已足够接近，请不要
-  设置 `mgmt_key_env`。
 
 ## 覆盖配置
 
@@ -147,9 +154,15 @@ cliproxyapi:
 
 ## 元数据
 
-上下文窗口、视觉、推理支持、推理强度级别和输出上限只来自 CPA：有 management 模型定义
-时使用它，否则使用 CPA 公开模型列表并按精确 id 匹配。CPA 未公布的值保持未知。Hermes
-可以从 models.dev 补充厂商元数据：
+上下文窗口、最大输出、图像输入、推理支持和推理强度级别只来自 CPA：有 management
+模型定义时使用它，否则使用 CPA 公开模型列表并按精确 id 匹配。CPA 未公布的值保持
+未知。没有 management key 时，最大输出取自 CPA 的 Anthropic 格式模型列表，它覆盖所有
+模型。CPA 会为没有上限的模型在其中写入 64,000，因此插件把恰好 64,000 视为未知，由
+Hermes 回退到 models.dev；真实上限恰为 64,000 的模型也会因此丢失该值。
+
+Hermes 的 `/model` 只从 models.dev 显示最大输出、PDF 和结构化输出；插件无法设置
+它们，CPA 的模型定义也没有 PDF 或结构化输出字段。要显示它们，可从 models.dev 补充
+厂商元数据：
 
 ```yaml
 providers:
@@ -168,7 +181,8 @@ providers:
   URL 或密钥。
 - 目录请求发送 `User-Agent: hermes-cliproxyapi-provider/<version>`。另有一个
   `/v1/models` 请求会追加 `grok-shell-compatible`，因为 CPA 向该客户端发布上下文
-  窗口和推理级别；其 id 会与常规列表匹配，所以它只增加元数据，绝不增加模型。推理请求
+  窗口和推理级别；还有一个请求发送 `Anthropic-Version: 2023-06-01`，这种格式带有
+  输出上限。它们的 id 会与常规列表匹配，所以只增加元数据，绝不增加模型。推理请求
   携带 Hermes 自己的 header；插件不设置任何 header。
 - 位于 `$HERMES_HOME/cache/cliproxyapi/` 的缓存（mode 0600）保存 model id、所有者、
   提供方成员关系和元数据。不含密钥，也不含账号名。被拒绝的 management key 以加盐
