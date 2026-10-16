@@ -18,6 +18,17 @@ Devin、兼容 OpenAI 的上游，以及 Kiro 等插件提供方），并自行�
 
 ## 安装
 
+从 [Hermes 插件目录](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)安装（推荐）：
+
+```bash
+hermes plugins install cliproxyapi-provider
+```
+
+这会安装目录维护者审核过的提交。只有在目录中的 pin 更新后，
+`hermes plugins update cliproxyapi-provider` 才会升级到新版本。
+
+开发版（最新 `main`，未经目录审核）：
+
 ```bash
 hermes plugins install duu261/hermes-cliproxyapi-provider
 ```

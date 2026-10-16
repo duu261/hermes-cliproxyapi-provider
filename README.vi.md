@@ -22,6 +22,19 @@ vào hình ảnh, các mức reasoning). Plugin không thêm bất cứ thứ g�
 
 ## Cài đặt
 
+Từ [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)
+(khuyến nghị):
+
+```bash
+hermes plugins install cliproxyapi-provider
+```
+
+Lệnh này cài đúng commit mà maintainer của catalog đã review.
+`hermes plugins update cliproxyapi-provider` chỉ lên bản mới sau khi pin trong
+catalog được nâng.
+
+Bản phát triển (`main` mới nhất, chưa qua review của catalog):
+
 ```bash
 hermes plugins install duu261/hermes-cliproxyapi-provider
 ```

@@ -18,6 +18,19 @@ image input, reasoning levels). It adds nothing CPA does not serve.
 
 ## Install
 
+From the [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)
+(recommended):
+
+```bash
+hermes plugins install cliproxyapi-provider
+```
+
+This installs the commit the catalog maintainers reviewed.
+`hermes plugins update cliproxyapi-provider` moves to a newer release only
+after its catalog pin is bumped.
+
+Development (latest `main`, not reviewed by the catalog):
+
 ```bash
 hermes plugins install duu261/hermes-cliproxyapi-provider
 ```
