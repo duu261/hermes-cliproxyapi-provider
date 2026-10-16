@@ -147,3 +147,10 @@ a live Hermes and restarting a gateway are operator actions; model-provider
 plugins install with `--no-enable` and are never enabled. Conventional
 Commits, imperative subject of 50 characters or fewer. Keep the repo
 publish-safe: no private hostnames, IPs, pool names or home paths.
+
+Listed in the Hermes plugin catalog as `cliproxyapi-provider`
+(`plugin-catalog/cliproxyapi-provider.yaml` in NousResearch/hermes-agent). A
+release reaches catalog users only when a separate pin-bump PR there merges:
+one PR per release, updating `sha` and `version`, and the `description`
+disclosure when network calls or the env-strip limit change. The catalog page
+renders the README from the pinned commit.
