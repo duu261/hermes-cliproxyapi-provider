@@ -81,6 +81,7 @@ OWNER_PROVIDER = {
 
 # CPA provider -> management model-definitions channel (registry/model_definitions.go
 # GetStaticModelDefinitionsByChannel; provider strings from internal/constant).
+# Any other provider is asked by its own name (plugin providers, CPA v8.0.34+).
 DEFINITION_CHANNEL = {
     "claude": "claude",
     "gemini": "gemini",
@@ -812,10 +813,14 @@ def fetch_management(
             if out_of_budget:
                 break
         definitions: dict[str, dict[str, Any]] = {}
-        for provider in sorted(groups):
-            channel = DEFINITION_CHANNEL.get(provider)
-            if not channel or out_of_budget:
-                continue
+        # Static channels first, so plugin-provider lookups never use up the budget they need.
+        for provider in sorted(groups, key=lambda p: (p not in DEFINITION_CHANNEL, p)):
+            if out_of_budget:
+                break
+            # Static channels map by name; since CPA v8.0.34 the same route also
+            # answers for plugin providers (Kiro and others) by provider name.
+            # Older CPA answers 400 "unknown channel": that group stays unenriched.
+            channel = DEFINITION_CHANNEL.get(provider, provider)
             try:
                 payload = call(paths.definitions + quote(channel, safe=""))
             except GatewayError as exc:

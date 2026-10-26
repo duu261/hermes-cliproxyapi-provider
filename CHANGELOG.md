@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Management mode reads model definitions for plugin providers (Kiro and
+  others), not only CPA's built-in providers, so they get context window,
+  max output, image input and reasoning levels. Needs CPA v8.0.34 or later;
+  older CPA answers "unknown channel" and those providers stay as before.
+  Built-in providers are read first, inside the same 32-request cap.
+
 ## 0.3.2
 
 - Billing route: routed providers register at startup from CPA's cached list

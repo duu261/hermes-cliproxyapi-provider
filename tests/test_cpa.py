@@ -338,6 +338,10 @@ CREDENTIALS = {
         {"name": "x-2.json", "provider": "xai"},
         {"name": "x-3.json", "provider": "xai"},
         {"name": "x-4.json", "provider": "xai"},
+        # A CPA plugin provider: no static channel, definitions from the plugin (v8.0.34+).
+        {"name": "kiro-1.json", "provider": "kiro"},
+        # No static channel and no definitions on this CPA: 400 "unknown channel".
+        {"name": "oc-1.json", "provider": "opencode-go"},
     ],
 }
 ACCOUNT_MODELS = {
@@ -348,6 +352,8 @@ ACCOUNT_MODELS = {
     "x-2.json": ["grok-4.6"],
     "x-3.json": ["grok-4.6"],
     "x-4.json": ["grok-4.6"],
+    "kiro-1.json": ["claude-sonnet-5.5"],
+    "oc-1.json": ["glm-5.3"],
 }
 DEFINITIONS = {
     "claude": {
@@ -363,6 +369,17 @@ DEFINITIONS = {
         ],
     },
     "xai": {"channel": "xai", "models": [{"id": "grok-4.6", "context_length": 2000000}]},
+    "kiro": {
+        "channel": "kiro",
+        "models": [
+            {
+                "id": "claude-sonnet-5.5",
+                "context_length": 200000,
+                "max_completion_tokens": 64000,
+                "supportedInputModalities": ["text", "image"],
+            }
+        ],
+    },
 }
 
 
@@ -608,6 +625,34 @@ class ManagementTests(GatewayTestCase):
         self.assertTrue(opus["supports_vision"])
         self.assertEqual(opus["reasoning_efforts"], ["low", "medium", "high", "xhigh", "max"])
         self.assertEqual(result.definitions["grok-4.6"], {"context_window": 2000000})
+
+    def test_plugin_provider_definitions_and_unknown_channel(self):
+        result = cpa.fetch_management(self.root, MGMT_KEY, timeout=5)
+        self.assertEqual(result.status, "ok")
+        # CPA v8.0.34+ serves plugin providers' definitions on the same route.
+        self.assertEqual(result.groups["kiro"], ["claude-sonnet-5.5"])
+        kiro = result.definitions["claude-sonnet-5.5"]
+        self.assertEqual(kiro["context_window"], 200000)
+        self.assertTrue(kiro["supports_vision"])
+        # A provider with no definitions (older CPA, or none published) answers
+        # 400 "unknown channel": its group stays, its metadata stays unknown.
+        self.assertEqual(result.groups["opencode-go"], ["glm-5.3"])
+        self.assertNotIn("glm-5.3", result.definitions)
+        asked = {
+            r["path"].rsplit("/", 1)[1]
+            for r in self.mgmt_requests()
+            if "model-definitions/" in r["path"]
+        }
+        self.assertEqual(asked, {"claude", "devin", "kimi", "kiro", "opencode-go", "xai"})
+
+    def test_static_channels_are_read_before_plugin_providers(self):
+        cpa.fetch_management(self.root, MGMT_KEY, timeout=5)
+        order = [
+            r["path"].rsplit("/", 1)[1]
+            for r in self.mgmt_requests()
+            if "model-definitions/" in r["path"]
+        ]
+        self.assertEqual(order, ["claude", "devin", "kimi", "xai", "kiro", "opencode-go"])
 
     def test_samples_accounts_and_skips_disabled(self):
         cpa.fetch_management(self.root, MGMT_KEY, timeout=5, per_provider=3)

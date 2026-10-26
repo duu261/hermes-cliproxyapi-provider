@@ -96,6 +96,7 @@ Public mode is the default and needs only a client key. Management mode adds
 | Image input | only when `/v1beta/models` lists the model's input types; else unknown | from model definitions |
 | Reasoning on budget models (no named levels) | not detected | yes |
 | Max output | yes, except models whose real limit is exactly 64,000 | yes, all |
+| Plugin providers (Kiro and others) | grouped; metadata only from public lists | model definitions from the plugin (CPA v8.0.34+) |
 | API-key and OpenAI-compatible channels | yes | kept from public mode (the management API cannot see them) |
 | Key held by Hermes | client key | client key plus a full-admin CPA key |
 
@@ -109,7 +110,9 @@ read it too.
 What management mode sends:
 
 - GET only, to the credentials list, a few sampled accounts' model lists per
-  provider, and the model-definitions list per provider. Never quota, usage,
+  provider, and the model-definitions list per provider (built-in providers
+  first, then plugin providers by name; CPA before v8.0.34 has none for
+  plugin providers and the plugin skips them). Never quota, usage,
   downloads, OAuth or any write.
 - At most 32 requests and 20 seconds per pass, at most one pass per 15 minutes
   per instance, never on the request path.

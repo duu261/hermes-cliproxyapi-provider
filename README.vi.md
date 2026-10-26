@@ -99,6 +99,7 @@ Chế độ công khai là mặc định và chỉ cần client key. Chế độ
 | Đầu vào hình ảnh | chỉ khi `/v1beta/models` liệt kê loại đầu vào của mô hình; nếu không thì chưa biết | từ định nghĩa mô hình |
 | Reasoning trên mô hình dùng ngân sách token (không có mức tên) | không nhận ra | có |
 | Max output | có, trừ mô hình có giới hạn thật đúng bằng 64.000 | có, tất cả |
+| Nhà cung cấp dạng plugin (Kiro và các plugin khác) | có nhóm; metadata chỉ từ danh sách công khai | định nghĩa mô hình từ plugin (CPA v8.0.34+) |
 | Kênh API-key và tương thích OpenAI | có | giữ từ chế độ công khai (management API không thấy chúng) |
 | Key Hermes giữ | client key | client key và một key CPA toàn quyền admin |
 
@@ -112,7 +113,9 @@ của bạn cũng đọc được key này.
 Chế độ management gửi những gì:
 
 - Chỉ GET, tới danh sách credential, danh sách mô hình của vài tài khoản lấy mẫu
-  cho mỗi nhà cung cấp, và danh sách định nghĩa mô hình cho mỗi nhà cung cấp. Không
+  cho mỗi nhà cung cấp, và danh sách định nghĩa mô hình cho mỗi nhà cung cấp (nhà
+  cung cấp tích hợp sẵn trước, rồi tới nhà cung cấp dạng plugin theo tên; CPA trước
+  v8.0.34 không có định nghĩa cho nhà cung cấp dạng plugin và plugin sẽ bỏ qua). Không
   bao giờ đụng tới quota, usage, tải xuống, OAuth hay bất kỳ thao tác ghi nào.
 - Tối đa 32 request và 20 giây mỗi lượt, tối đa một lượt mỗi 15 phút cho mỗi
   instance, không bao giờ nằm trên đường đi của request.
