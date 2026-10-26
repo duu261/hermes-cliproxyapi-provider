@@ -37,20 +37,23 @@ jobs:
           repository: NousResearch/hermes-agent
           ref: ${{ matrix.hermes }}
           path: hermes-agent
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
-          # Hermes declares its runtime dependencies for Python >= 3.14 only.
-          python-version: "3.14"
-      - run: python -m pip install -e ./hermes-agent
+          version: "0.12.13"
+      # Install from Hermes' own uv.lock, as Hermes CI does. Plain pip ignores
+      # [tool.uv] override-dependencies, which v0.22.5 needs (Pillow 13 vs
+      # browser-harness pinning pillow 12.3.0). Hermes needs Python >= 3.14.
+      - working-directory: hermes-agent
+        run: uv sync --locked --python 3.14
       - name: Integration tests
         working-directory: plugin
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
-        run: PYTHONPATH="$GITHUB_WORKSPACE/hermes-agent" python -m unittest discover -s tests -v
+        run: PYTHONPATH="$GITHUB_WORKSPACE/hermes-agent" "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/python" -m unittest discover -s tests -v
       - name: Plugin doctor and validate
         working-directory: plugin
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
         run: |
-          hermes plugins doctor . --ci
-          hermes plugins validate .
+          "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins doctor . --ci
+          "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins validate .
