@@ -505,6 +505,18 @@ class BillingRouteTests(unittest.TestCase):
         self.assertEqual(profiles["cpa-t"].fallback_models, ("claude-opus-5-5", "grok-4.6"))
         self.assertEqual((_Gateway.seen, _BillingGateway.seen), ([], []))
 
+    def test_import_with_empty_gateway_lists_registers_no_groups(self):
+        # A known list is strict even when empty: nothing sold, nothing new registered.
+        catalog = cpa.Catalog(
+            ids=["claude-opus-5-5", "grok-4.6"],
+            owners={"claude-opus-5-5": "anthropic", "grok-4.6": "xai"},
+            route_ids={"GW_A": [], "GW_B": []},
+        )
+        cpa.save_cache(self.home, "t", catalog)
+        _, profiles = self.load()
+        self.assertEqual(set(profiles), {"cpa-t"})
+        self.assertEqual(profiles["cpa-t"].fallback_models, ())
+
     def test_unknown_gateway_list_keeps_cpa_ids_until_it_is_read(self):
         _BillingGateway.status = 503
         _, profiles = self.load()

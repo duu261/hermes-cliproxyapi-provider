@@ -165,9 +165,10 @@ cliproxyapi:
   never sent to CPA. They must be different env vars.
 - Only models the gateway lists for that key (`GET /v1/models`) are kept. If
   the gateway list fails, the last known list is kept. Until the first list
-  is read, profiles use CPA's list, so routed providers register at startup
-  from CPA's cache; a call to a model the key does not sell fails at the
-  gateway until the next refresh narrows the list.
+  for a key is read, its profiles use CPA's list, so routed providers register
+  at startup from CPA's cache; a call to a model the key does not sell fails
+  at the gateway until the next refresh narrows the list. A known list, even
+  an empty one, filters strictly.
 - Gateways often convert request formats per channel unless body pass-through
   is on. Profiles keep the CPA wire from the table above; set `api_mode` per
   group where the gateway channel needs a different one.
