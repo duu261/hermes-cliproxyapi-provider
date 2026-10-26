@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
 
 - Billing route: routed providers register at startup from CPA's cached list
   before the gateway's list has ever been read, instead of only after the
