@@ -166,8 +166,10 @@ cliproxyapi:
   sách mô hình của CPA và không bao giờ gửi tới gateway; key gateway không bao giờ
   gửi tới CPA. Hai key phải là hai biến môi trường khác nhau.
 - Chỉ giữ các mô hình mà gateway liệt kê cho key đó (`GET /v1/models`). Nếu lấy danh
-  sách từ gateway thất bại, danh sách đã biết gần nhất được giữ lại; nếu chưa có,
-  không có gì được định tuyến cho key đó.
+  sách từ gateway thất bại, danh sách đã biết gần nhất được giữ lại. Trước khi đọc
+  được danh sách đầu tiên, profile dùng danh sách của CPA, nên các provider định
+  tuyến được đăng ký ngay khi khởi động từ cache CPA; gọi mô hình mà key không bán
+  sẽ lỗi tại gateway cho tới lần làm mới kế tiếp thu hẹp danh sách.
 - Gateway thường chuyển đổi định dạng request theo từng kênh, trừ khi bật chế độ
   chuyển thẳng body. Profile giữ wire CPA theo bảng ở trên; đặt `api_mode` theo nhóm
   khi kênh gateway cần wire khác.

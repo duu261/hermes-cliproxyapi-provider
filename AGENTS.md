@@ -103,8 +103,9 @@ CPA instance serves providers the gateway sells in different groups.
   `route_via` with the group's route key, else the instance's.
 - Never send the CPA key to the gateway or the gateway key to CPA.
 - Keep only the ids the gateway lists for the route key (`GET /v1/models`);
-  when that list is unavailable, keep the last cached result, else register
-  nothing new for the instance.
+  when that list is unavailable, keep the last cached result. Before the
+  first list for a key is read, use CPA's ids, so routed groups register at
+  import from CPA's cache. A known list, even empty, filters strictly.
 - The gateway may translate between formats in ways the plugin cannot see.
   Profiles keep the CPA wire map; operators set `api_mode` per group where
   the gateway needs a different wire. Document this, and that context and

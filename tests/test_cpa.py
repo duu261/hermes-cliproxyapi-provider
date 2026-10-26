@@ -872,10 +872,15 @@ class RouteListTests(unittest.TestCase):
             cpa.filter_routed(groups, spec, sold),
             {"claude": ["claude-opus-5-5"], "codex": ["gpt-5.6"], "xai": ["grok-4.6"]},
         )
-        # A group whose key's list is unknown registers nothing new.
+        # A key whose gateway list was never read keeps CPA's ids until it is;
+        # a known list filters strictly, even when it is empty.
         self.assertEqual(
             cpa.filter_routed(groups, spec, {"GW_A": ["gpt-5.6"]}),
-            {"claude": [], "codex": ["gpt-5.6"], "xai": []},
+            {"claude": [], "codex": ["gpt-5.6"], "xai": ["grok-4.6"]},
+        )
+        self.assertEqual(
+            cpa.filter_routed(groups, spec, {"GW_A": [], "GW_B": []}),
+            {"claude": [], "codex": [], "xai": []},
         )
 
 

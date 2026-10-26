@@ -861,13 +861,21 @@ def fetch_route_ids(
 def filter_routed(
     groups: dict[str, list[str]], spec: InstanceSpec, route_ids: dict[str, list[str]]
 ) -> dict[str, list[str]]:
-    """Keep, per group, only the ids its gateway key sells; CPA order. No list, no ids."""
+    """Keep, per group, only the ids its gateway key sells; CPA order.
+
+    A key whose gateway list was never read keeps CPA's ids, so routed groups
+    register at import from CPA's cache. A known list, even empty, is strict.
+    """
     if not spec.routed:
         return groups
     out: dict[str, list[str]] = {}
     for group, ids in groups.items():
-        sold = set(route_ids.get(spec.route_key_for(group)) or ())
-        out[group] = [i for i in ids if i in sold]
+        sold = route_ids.get(spec.route_key_for(group))
+        if sold is None:
+            out[group] = list(ids)
+        else:
+            keep = set(sold)
+            out[group] = [i for i in ids if i in keep]
     return out
 
 

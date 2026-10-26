@@ -491,13 +491,35 @@ class BillingRouteTests(unittest.TestCase):
         self.assertNotIn(GW_KEY_A, joined)
         self.assertNotIn("127.0.0.1", joined)
 
-    def test_no_gateway_list_ever_registers_no_group_providers(self):
+    def test_import_registers_groups_from_cpa_cache_before_any_gateway_list(self):
+        # The cache was written before route_via was set: CPA's groups, no gateway lists.
+        catalog = cpa.Catalog(
+            ids=["claude-opus-5-5", "grok-4.6"],
+            owners={"claude-opus-5-5": "anthropic", "grok-4.6": "xai"},
+        )
+        cpa.save_cache(self.home, "t", catalog)
+        _, profiles = self.load()
+        self.assertEqual(set(profiles), {"cpa-t", "cpa-t-claude", "cpa-t-xai"})
+        self.assertEqual(profiles["cpa-t-xai"].fallback_models, ("grok-4.6",))
+        self.assertEqual(profiles["cpa-t-xai"].env_vars[0], "GW_B")
+        self.assertEqual(profiles["cpa-t"].fallback_models, ("claude-opus-5-5", "grok-4.6"))
+        self.assertEqual((_Gateway.seen, _BillingGateway.seen), ([], []))
+
+    def test_unknown_gateway_list_keeps_cpa_ids_until_it_is_read(self):
         _BillingGateway.status = 503
         _, profiles = self.load()
-        with self.assertLogs(level="WARNING"):
+        with self.assertLogs(level="WARNING") as logs:
             ids = profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
-        self.assertEqual(ids, [])
-        self.assertEqual(set(profiles), {"cpa-t"})
+        self.assertEqual(len(ids), 5)
+        self.assertIn("cpa-t-gemini", profiles)
+        self.assertIn("CPA's list", "\n".join(logs.output))
+        # The first gateway list narrows every profile to what its key sells.
+        _BillingGateway.status = 200
+        _, again = self.load()
+        ids = again["cpa-t"].fetch_models(api_key=GW_KEY_A)
+        self.assertEqual(ids, ["claude-opus-5-5", "gpt-5.6"])
+        self.assertEqual(again["cpa-t-xai"].fallback_models, ("grok-4.6",))
+        self.assertEqual(again["cpa-t-gemini"].fallback_models, ())
 
     def test_missing_cpa_key_cannot_fall_back_to_the_gateway_key(self):
         os.environ.pop("T_KEY")

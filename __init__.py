@@ -114,7 +114,7 @@ class _Instance:
                     self.spec.name,
                     env_name,
                     exc,
-                    "keeping the last known list" if previous is not None else "no models routed",
+                    "keeping the last known list" if previous is not None else "using CPA's list",
                 )
                 if previous is not None:
                     lists[env_name] = previous
@@ -178,8 +178,11 @@ class _Instance:
             return list(self.groups.get(group, []))
         if not self.spec.routed:
             return list(self.catalog.ids)
-        sold = set(self.catalog.route_ids.get(self.spec.route_key_for(None)) or ())
-        return [i for i in self.catalog.ids if i in sold]
+        sold = self.catalog.route_ids.get(self.spec.route_key_for(None))
+        if sold is None:
+            return list(self.catalog.ids)
+        keep = set(sold)
+        return [i for i in self.catalog.ids if i in keep]
 
 
 class CLIProxyAPIProfile(ProviderProfile):

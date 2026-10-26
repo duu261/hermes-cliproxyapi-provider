@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Billing route: routed providers register at startup from CPA's cached list
+  before the gateway's list has ever been read, instead of only after the
+  first refresh. Once a gateway list is known (even empty) it filters as
+  before. Until then, a model the key does not sell fails at the gateway.
+
 ## 0.3.1
 
 - Max output without a management key: one more public request,
