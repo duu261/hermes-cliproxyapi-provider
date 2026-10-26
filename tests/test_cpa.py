@@ -377,7 +377,9 @@ DEFINITIONS = {
                 "context_length": 200000,
                 "max_completion_tokens": 64000,
                 "supportedInputModalities": ["text", "image"],
-            }
+            },
+            # Same id as the built-in Claude channel, poorer metadata: must not win.
+            {"id": "claude-opus-5-5", "context_length": 200000},
         ],
     },
 }
@@ -653,6 +655,12 @@ class ManagementTests(GatewayTestCase):
             if "model-definitions/" in r["path"]
         ]
         self.assertEqual(order, ["claude", "devin", "kimi", "xai", "kiro", "opencode-go"])
+
+    def test_built_in_definitions_win_over_plugin_for_shared_ids(self):
+        result = cpa.fetch_management(self.root, MGMT_KEY, timeout=5)
+        opus = result.definitions["claude-opus-5-5"]
+        self.assertEqual(opus["context_window"], 1000000)
+        self.assertEqual(opus["reasoning_efforts"], ["low", "medium", "high", "xhigh", "max"])
 
     def test_samples_accounts_and_skips_disabled(self):
         cpa.fetch_management(self.root, MGMT_KEY, timeout=5, per_provider=3)

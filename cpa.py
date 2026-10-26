@@ -830,7 +830,9 @@ def fetch_management(
                 continue
             for item in _entries(payload, "models"):
                 model_id = item.get("id")
-                if isinstance(model_id, str) and model_id:
+                if isinstance(model_id, str) and model_id and model_id not in definitions:
+                    # First answer wins: built-in channels are read first, so a plugin
+                    # provider serving the same id never replaces their metadata.
                     entry = definition_meta(item)
                     if entry:
                         definitions[model_id] = entry
