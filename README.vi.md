@@ -42,6 +42,20 @@ hermes plugins install duu261/hermes-cliproxyapi-provider
 Yêu cầu Hermes 0.21.7 trở lên. Plugin model-provider hoạt động ngay sau khi cài,
 không cần bật. Khởi động lại các Hermes gateway đang chạy để chúng nạp plugin.
 
+Cài cả hai plugin, provider và `/cpa`, trong một bước bằng pack đã ghim
+(cần terminal tương tác; hỏi xác nhận một lần):
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/duu261/hermes-cliproxyapi-provider/main/hermes-pack.yaml
+hermes plugins pack show ./hermes-pack.yaml
+hermes plugins pack install ./hermes-pack.yaml
+```
+
+Pack ghim cả hai plugin vào commit phát hành và bật chúng; pack cũng thêm
+provider vào `plugins.enabled`, điều này không thay đổi gì với model-provider.
+Đã cài rồi (nâng cấp)? Thêm `--force`:
+`hermes plugins pack install --force ./hermes-pack.yaml`.
+
 ## Cấu hình
 
 Không cần cấu hình: đặt `CPA_LOCAL_API_KEY` (một client key của CPA) trong

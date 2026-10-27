@@ -36,6 +36,19 @@ hermes plugins install duu261/hermes-cliproxyapi-provider
 需要 Hermes 0.21.7 或更新版本。model-provider 插件安装后即生效，无需启用。请重启
 正在运行的 Hermes gateway，使其加载插件。
 
+用固定版本的 pack 一步安装两个插件（provider 和 `/cpa`）（需要交互式终端；会询问
+确认一次）：
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/duu261/hermes-cliproxyapi-provider/main/hermes-pack.yaml
+hermes plugins pack show ./hermes-pack.yaml
+hermes plugins pack install ./hermes-pack.yaml
+```
+
+pack 把两个插件都固定到发布提交并启用它们；pack 也会把 provider 加入
+`plugins.enabled`，这对 model-provider 没有任何影响。已经安装过（升级）？加上
+`--force`：`hermes plugins pack install --force ./hermes-pack.yaml`。
+
 ## 配置
 
 零配置：在 `~/.hermes/.env` 中设置 `CPA_LOCAL_API_KEY`（一个 CPA 客户端密钥），

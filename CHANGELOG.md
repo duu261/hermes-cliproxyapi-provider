@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `hermes-pack.yaml`: install the provider and `/cpa` in one step, both
+  pinned to the 0.4.0 release commit (`hermes plugins pack install`).
+
 ## 0.4.0
 
 - Docs: explain why `xai` stays on `codex_responses` (Grok 4.7 needs its

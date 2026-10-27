@@ -68,3 +68,4 @@ jobs:
           "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins validate .
           "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins doctor ./cpa-status --ci
           "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins validate ./cpa-status
+          "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins pack show ./hermes-pack.yaml
