@@ -230,6 +230,86 @@ class QuotaTests(unittest.TestCase):
         }
         self.assertEqual(status.quota_text(entry, NOW), "5h 63% · wk 22% (4m ago)")
 
+    def test_codex_pro_weekly_primary(self):
+        # Codex Pro: the primary window is the 7-day one and the secondary has
+        # no length. Labels come from each window's own minutes, never position.
+        entry = {
+            "provider": "codex",
+            "quota": {
+                "observed_at": iso(-4),
+                "signals": {
+                    "X-Codex-Primary-Used-Percent": "29",
+                    "X-Codex-Primary-Window-Minutes": "10080",
+                    "X-Codex-Secondary-Used-Percent": "0",
+                    "X-Codex-Secondary-Window-Minutes": "0",
+                },
+            },
+        }
+        self.assertEqual(status.quota_text(entry, NOW), "wk 29% (4m ago)")
+
+    def test_codex_unknown_length_uses_minutes(self):
+        entry = {
+            "provider": "codex",
+            "quota": {
+                "signals": {
+                    "X-Codex-Primary-Used-Percent": "12",
+                    "X-Codex-Primary-Window-Minutes": "1440",
+                }
+            },
+        }
+        self.assertEqual(status.quota_text(entry, NOW), "1d 12%")
+
+    def test_codex_without_minutes_keeps_position(self):
+        # Older CPA builds stored no Window-Minutes; keep the old labels then.
+        entry = {
+            "provider": "codex",
+            "quota": {"signals": {"X-Codex-Primary-Used-Percent": "63"}},
+        }
+        self.assertEqual(status.quota_text(entry, NOW), "5h 63%")
+
+    def test_full_window_shows_reset(self):
+        entry = {
+            "provider": "codex",
+            "quota": {
+                "signals": {
+                    "X-Codex-Primary-Used-Percent": "100",
+                    "X-Codex-Primary-Window-Minutes": "300",
+                    "X-Codex-Primary-Reset-At": str(int((NOW + timedelta(hours=2)).timestamp())),
+                    "X-Codex-Secondary-Used-Percent": "96",
+                    "X-Codex-Secondary-Window-Minutes": "10080",
+                }
+            },
+        }
+        self.assertEqual(
+            status.quota_text(entry, NOW),
+            f"5h 100% until {status.clock(NOW + timedelta(hours=2), NOW)} · wk 96%",
+        )
+        self.assertTrue(status.quota_full(entry, NOW))
+
+    def test_claude_full_window_reset(self):
+        reset = int((NOW + timedelta(hours=26)).timestamp())
+        entry = {
+            "provider": "claude",
+            "quota": {
+                "signals": {
+                    "Anthropic-Ratelimit-Unified-5h-Utilization": "0.2",
+                    "Anthropic-Ratelimit-Unified-7d-Utilization": "1.0",
+                    "Anthropic-Ratelimit-Unified-7d-Reset": str(reset),
+                }
+            },
+        }
+        until = status.clock(datetime.fromtimestamp(reset, timezone.utc), NOW)
+        self.assertEqual(status.quota_text(entry, NOW), f"5h 20% · wk 100% until {until}")
+        self.assertTrue(status.quota_full(entry, NOW))
+
+    def test_not_full(self):
+        entry = {
+            "provider": "claude",
+            "quota": {"signals": {"Anthropic-Ratelimit-Unified-5h-Utilization": "0.99"}},
+        }
+        self.assertFalse(status.quota_full(entry, NOW))
+        self.assertFalse(status.quota_full({"provider": "xai"}, NOW))
+
     def test_claude_utilization(self):
         entry = {
             "provider": "claude",

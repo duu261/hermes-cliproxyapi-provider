@@ -138,6 +138,44 @@ class ViewTests(unittest.TestCase):
         self.assertNotIn("eve@example.com", out)
         self.assertNotIn("z" * 24, out)
 
+    def test_full_quota_is_limited_not_ready(self):
+        reset = int((NOW + timedelta(hours=2)).timestamp())
+        full = {
+            "provider": "codex",
+            "name": "codex-zara@example.com.json",
+            "status": "active",
+            "quota": {
+                "signals": {
+                    "X-Codex-Primary-Used-Percent": "100",
+                    "X-Codex-Primary-Window-Minutes": "300",
+                    "X-Codex-Primary-Reset-At": str(reset),
+                }
+            },
+        }
+        stale = {
+            "provider": "codex",
+            "name": "codex-old@example.com.json",
+            "status": "active",
+            "quota": {
+                "signals": {
+                    "X-Codex-Primary-Used-Percent": "100",
+                    "X-Codex-Primary-Window-Minutes": "300",
+                    "X-Codex-Primary-Reset-At": str(reset - 3 * 3600),
+                }
+            },
+        }
+        self.fetch.return_value = (
+            status.Fetched("ok", files=[dict(LISTING[0]), full, stale]),
+            False,
+        )
+        until = status.clock(datetime.fromtimestamp(reset, timezone.utc), NOW)
+        self.assertIn(f"  codex 3: 2 ready · 1 limited (next {until})", self.run_cpa())
+        lines = self.run_cpa("pre codex").splitlines()
+        self.assertTrue(lines[1].startswith("codex-za…@…  limited until "), lines)
+        self.assertIn(f"5h 100% until {until}", lines[1])
+        self.assertTrue(lines[2].startswith("codex-al…@…  ready"), lines)
+        self.assertTrue(lines[3].startswith("codex-ol…@…  ready"), lines)
+
     def test_help_and_too_many_args(self):
         self.assertEqual(self.run_cpa("help"), status.USAGE)
         self.assertEqual(self.run_cpa("a b c"), status.USAGE)

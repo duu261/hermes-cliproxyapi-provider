@@ -22,7 +22,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -89,14 +89,14 @@ def parse_time(value: Any) -> datetime | None:
 
 @dataclass
 class AccountState:
-    kind: str  # ready, cooling, error, disabled, pending, refreshing, unknown
+    kind: str  # ready, limited, cooling, error, disabled, pending, refreshing, unknown
     until: datetime | None = None
     reason: str = ""
     models_cooling: int = 0
 
     @property
     def bucket(self) -> str:
-        if self.kind in ("ready", "cooling", "error", "disabled"):
+        if self.kind in ("ready", "limited", "cooling", "error", "disabled"):
             return self.kind
         return "other"
 
@@ -137,6 +137,10 @@ def classify(entry: dict[str, Any], now: datetime) -> AccountState:
     if status in ("pending", "refreshing"):
         return AccountState(status)
     if status == "active":
+        # CPA has not cooled it, but its last-seen usage window is full.
+        full_until = quota_full(entry, now)
+        if full_until is not None:
+            return AccountState("limited", until=full_until, models_cooling=models)
         return AccountState("ready", models_cooling=models)
     return AccountState("unknown")
 
@@ -150,18 +154,23 @@ def provider_of(entry: dict[str, Any]) -> str:
 class ProviderSummary:
     total: int = 0
     ready: int = 0
+    limited: int = 0
     cooling: int = 0
     error: int = 0
     disabled: int = 0
     other: int = 0
     next_retry: datetime | None = None
+    next_free: datetime | None = None
     success: int = 0
     failed: int = 0
 
     def add(self, state: AccountState, recent: tuple[int, int]) -> None:
         self.total += 1
         setattr(self, state.bucket, getattr(self, state.bucket) + 1)
-        if state.until and (self.next_retry is None or state.until < self.next_retry):
+        if state.kind == "limited":
+            if state.until and (self.next_free is None or state.until < self.next_free):
+                self.next_free = state.until
+        elif state.until and (self.next_retry is None or state.until < self.next_retry):
             self.next_retry = state.until
         self.success += recent[0]
         self.failed += recent[1]
@@ -221,18 +230,26 @@ def recent_hour(entry: dict[str, Any]) -> tuple[int, int]:
 
 # ── Last-seen quota ─────────────────────────────────────────────────────────
 # Header names from CPA v8.0.44: sdk/cliproxy/auth/quota_signals.go
-# (isQuotaSignalHeaderForProvider: claude and codex) and
-# internal/runtime/executor/helps/claude_ratelimit.go (utilization is 0..1).
-_QUOTA_WINDOWS = {
-    "codex": (
-        ("5h", "X-Codex-Primary-Used-Percent", 1.0),
-        ("wk", "X-Codex-Secondary-Used-Percent", 1.0),
-    ),
-    "claude": (
-        ("5h", "Anthropic-Ratelimit-Unified-5h-Utilization", 100.0),
-        ("wk", "Anthropic-Ratelimit-Unified-7d-Utilization", 100.0),
-    ),
-}
+# (isQuotaSignalHeaderForProvider: claude and codex),
+# internal/runtime/executor/helps/codex_quota.go (per window: Used-Percent,
+# Window-Minutes, Reset-At or Reset-After-Seconds) and
+# internal/runtime/executor/helps/claude_ratelimit.go (utilization is 0..1,
+# reset is unix seconds).
+#
+# Codex windows are labelled from their own Window-Minutes, never from their
+# position: on Pro plans the primary window is the 7-day one and the
+# secondary has no length. Position is only a fallback for signals stored
+# without Window-Minutes.
+_CODEX_WINDOWS = (("Primary", "5h"), ("Secondary", "wk"))
+_CLAUDE_WINDOWS = (("5h", "5h"), ("7d", "wk"))
+_MINUTE_LABELS = {300: "5h", 10080: "wk"}
+
+
+@dataclass
+class Window:
+    label: str
+    used: int
+    reset: datetime | None = None
 
 
 def _percent(raw: Any, scale: float) -> int | None:
@@ -245,6 +262,82 @@ def _percent(raw: Any, scale: float) -> int | None:
     return int(value)
 
 
+def _number(raw: Any) -> float | None:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(value) or math.isinf(value) else value
+
+
+def _unix(raw: Any) -> datetime | None:
+    value = _number(raw)
+    if value is None or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _minutes_label(minutes: int) -> str:
+    if minutes in _MINUTE_LABELS:
+        return _MINUTE_LABELS[minutes]
+    if minutes % 1440 == 0:
+        return f"{minutes // 1440}d"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    return f"{minutes}m"
+
+
+def quota_windows(entry: dict[str, Any]) -> list[Window]:
+    """Usage windows CPA last saw for this account (claude and codex only)."""
+    quota = entry.get("quota")
+    if not isinstance(quota, dict):
+        return []
+    signals = quota.get("signals")
+    if not isinstance(signals, dict):
+        return []
+    lower = {k.lower(): v for k, v in signals.items() if isinstance(k, str)}
+    provider = provider_of(entry)
+    out: list[Window] = []
+    if provider == "codex":
+        seen = parse_time(quota.get("observed_at"))
+        for name, fallback in _CODEX_WINDOWS:
+            prefix = f"x-codex-{name.lower()}-"
+            used = _percent(lower.get(prefix + "used-percent"), 1.0)
+            if used is None:
+                continue
+            label = fallback
+            if prefix + "window-minutes" in lower:
+                minutes = _number(lower[prefix + "window-minutes"])
+                if minutes is None or minutes <= 0:
+                    continue
+                label = _minutes_label(int(minutes))
+            reset = _unix(lower.get(prefix + "reset-at"))
+            after = _number(lower.get(prefix + "reset-after-seconds"))
+            if reset is None and after is not None and after >= 0 and seen is not None:
+                reset = seen + timedelta(seconds=after)
+            out.append(Window(label, used, reset))
+    elif provider == "claude":
+        for name, label in _CLAUDE_WINDOWS:
+            prefix = f"anthropic-ratelimit-unified-{name}-"
+            used = _percent(lower.get(prefix + "utilization"), 100.0)
+            if used is not None:
+                out.append(Window(label, used, _unix(lower.get(prefix + "reset"))))
+    return out
+
+
+def quota_full(entry: dict[str, Any], now: datetime) -> datetime | None:
+    """When a used-up window frees again, if one is still used up now."""
+    until = None
+    for window in quota_windows(entry):
+        if window.used >= 100 and window.reset is not None and window.reset > now:
+            if until is None or window.reset > until:
+                until = window.reset
+    return until
+
+
 def age_text(seconds: float) -> str:
     seconds = max(0, int(seconds))
     if seconds < 3600:
@@ -255,23 +348,17 @@ def age_text(seconds: float) -> str:
 
 
 def quota_text(entry: dict[str, Any], now: datetime) -> str:
-    windows = _QUOTA_WINDOWS.get(provider_of(entry))
-    quota = entry.get("quota")
-    if not windows or not isinstance(quota, dict):
-        return ""
-    signals = quota.get("signals")
-    if not isinstance(signals, dict):
-        return ""
-    lower = {k.lower(): v for k, v in signals.items() if isinstance(k, str)}
     parts = []
-    for label, header, scale in windows:
-        value = _percent(lower.get(header.lower()), scale)
-        if value is not None:
-            parts.append(f"{label} {value}%")
+    for window in quota_windows(entry):
+        part = f"{window.label} {window.used}%"
+        if window.used >= 100 and window.reset is not None and window.reset > now:
+            part += f" until {clock(window.reset, now)}"
+        parts.append(part)
     if not parts:
         return ""
     text = " · ".join(parts)
-    seen = parse_time(quota.get("observed_at"))
+    quota = entry.get("quota")
+    seen = parse_time(quota.get("observed_at")) if isinstance(quota, dict) else None
     if seen is not None:
         text += f" ({age_text((now - seen).total_seconds())} ago)"
     return text
@@ -512,7 +599,7 @@ _STATUS_TEXT = {
     "no_key": "no management key (set mgmt_key_env)",
     "key_not_set": "key not set",
 }
-_BUCKET_ORDER = {"error": 0, "cooling": 1, "other": 2, "disabled": 3, "ready": 4}
+_BUCKET_ORDER = {"error": 0, "cooling": 1, "limited": 2, "other": 3, "disabled": 4, "ready": 5}
 
 
 @dataclass
@@ -534,6 +621,9 @@ def _provider_line(name: str, summary: ProviderSummary, now: datetime, detail: b
     parts = []
     if summary.ready:
         parts.append(f"{summary.ready} ready")
+    if summary.limited:
+        nxt = f" (next {clock(summary.next_free, now)})" if summary.next_free else ""
+        parts.append(f"{summary.limited} limited{nxt}")
     if summary.cooling:
         nxt = f" (next {clock(summary.next_retry, now)})" if summary.next_retry else ""
         parts.append(f"{summary.cooling} cooling{nxt}")
@@ -555,6 +645,9 @@ def _state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> st
     if state.kind == "error":
         message = short_message(entry.get("status_message"))
         return "error" + (f": {message}" if message else "")
+    if state.kind == "limited":
+        text = f"limited until {clock(state.until, now)}" if state.until else "limited"
+        return text + (f" · {state.models_cooling} models cooling" if state.models_cooling else "")
     if state.kind == "ready" and state.models_cooling:
         return f"ready · {state.models_cooling} models cooling"
     return state.kind

@@ -4,6 +4,13 @@
 
 - `hermes-pack.yaml`: install the provider and `/cpa` in one step, both
   pinned to the 0.4.0 release commit (`hermes plugins pack install`).
+- `/cpa`: Codex quota windows are labelled from their own length
+  (`Window-Minutes`), not their position. On Pro plans the first window is
+  the weekly one, so `/cpa` showed weekly use as `5h` plus a fake `wk 0%`.
+  Windows with no length are skipped.
+- `/cpa`: an account whose last-seen 5h or weekly window is at 100% shows as
+  `limited until HH:MM` instead of `ready`, and full windows show when they
+  free again. Counted per provider as `N limited (next HH:MM)`.
 
 ## 0.4.0
 
