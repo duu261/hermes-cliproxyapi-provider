@@ -136,6 +136,8 @@ class FetchTests(unittest.TestCase):
         self.env["CPA_A_MGMT"] = BAD
         out = self.run_cpa()
         self.assertIn("key rejected", out)
+        # Exactly one request: a 401 on v8 must never fall back to v0.
+        self.assertEqual([s["path"] for s in _CPA.seen], ["/v8/management/credentials"])
         latch = self.home / "cache" / "cpa-status" / "rejected.json"
         self.assertTrue(latch.exists())
         self.assertEqual(stat.S_IMODE(latch.stat().st_mode), 0o600)

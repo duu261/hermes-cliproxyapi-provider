@@ -167,9 +167,32 @@ class ProviderSummary:
         self.failed += recent[1]
 
 
+# Fields /cpa reads. Everything else in a CPA entry (email, account, id_token,
+# project_id, path, id, auth_index, ...) is dropped on ingest, so it is never
+# kept in the short result cache either.
+_KEPT_FIELDS = frozenset(
+    {
+        "provider",
+        "type",
+        "label",
+        "name",
+        "status",
+        "status_message",
+        "disabled",
+        "unavailable",
+        "next_retry_after",
+        "cooldowns",
+        "recent_requests",
+        "quota",
+    }
+)
+
+
 def files_of(listing: Any) -> list[dict[str, Any]]:
     files = listing.get("files") if isinstance(listing, dict) else None
-    return [f for f in files if isinstance(f, dict)] if isinstance(files, list) else []
+    if not isinstance(files, list):
+        return []
+    return [{k: v for k, v in f.items() if k in _KEPT_FIELDS} for f in files if isinstance(f, dict)]
 
 
 def summarize(files: Iterable[dict[str, Any]], now: datetime) -> dict[str, ProviderSummary]:
@@ -527,7 +550,8 @@ def _provider_line(name: str, summary: ProviderSummary, now: datetime, detail: b
 def _state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> str:
     if state.kind == "cooling":
         text = f"cooling until {clock(state.until, now)}" if state.until else "cooling"
-        return text + (f" ({state.reason})" if state.reason else "")
+        reason = short_message(state.reason)
+        return text + (f" ({reason})" if reason else "")
     if state.kind == "error":
         message = short_message(entry.get("status_message"))
         return "error" + (f": {message}" if message else "")
@@ -650,7 +674,8 @@ def _provider_view(row: _Row, provider: str, now: datetime) -> str:
     lines = _account_lines(result.files, provider, now)
     if not lines:
         names = ", ".join(summarize(result.files, now)) or "none"
-        return f"No provider '{provider}' in {row.spec.name}. Providers: {names}"
+        shown = mask_text(provider)[:32]
+        return f"No provider '{shown}' in {row.spec.name}. Providers: {names}"
     count = len(lines)
     noun = "account" if count == 1 else "accounts"
     return _cap([f"{row.spec.name} / {provider} · {count} {noun}", *lines])

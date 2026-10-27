@@ -118,6 +118,26 @@ class ViewTests(unittest.TestCase):
             self.run_cpa("pre kiro"), "No provider 'kiro' in pre. Providers: codex, xai"
         )
 
+    def test_forbidden_fields_dropped_on_ingest(self):
+        files = status.files_of({"files": [dict(LISTING[0])]})
+        self.assertNotIn("email", files[0])
+        self.assertNotIn("account", files[0])
+        self.assertEqual(files[0]["status"], "active")
+
+    def test_unknown_provider_echo_masked(self):
+        out = self.run_cpa("pre sk-" + "a" * 40)
+        self.assertNotIn("a" * 24, out)
+
+    def test_cooling_reason_masked(self):
+        entry = dict(LISTING[1])
+        entry["cooldowns"] = [
+            {"scope": "credential", "reason": "eve@example.com " + "z" * 40, "retry_at": iso(5)}
+        ]
+        self.fetch.return_value = (status.Fetched("ok", files=[entry]), False)
+        out = self.run_cpa("pre codex")
+        self.assertNotIn("eve@example.com", out)
+        self.assertNotIn("z" * 24, out)
+
     def test_help_and_too_many_args(self):
         self.assertEqual(self.run_cpa("help"), status.USAGE)
         self.assertEqual(self.run_cpa("a b c"), status.USAGE)
@@ -146,7 +166,11 @@ class ViewTests(unittest.TestCase):
 
 class HandleTests(unittest.TestCase):
     def test_handle_never_raises(self):
-        with mock.patch.object(status, "report", side_effect=ValueError("secret detail")):
+        home = Path(tempfile.mkdtemp())
+        with (
+            mock.patch.object(status, "_hermes_home", return_value=home),
+            mock.patch.object(status, "report", side_effect=ValueError("secret detail")),
+        ):
             out = status.handle("")
         self.assertEqual(out, "cpa-status: internal error (ValueError)")
 
