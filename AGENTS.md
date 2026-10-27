@@ -16,6 +16,10 @@ An instance may send inference through a billing gateway the operator runs in
 front of the same CPA (New API or similar, see Billing route). CPA stays the
 only source of what is served; the gateway only carries and bills requests.
 
+The repo also ships `cpa-status/`, a separate `kind: standalone` plugin whose
+only job is the `/cpa` status command (see `/cpa status` below). Model-provider
+plugins cannot register commands, hence two plugins in one repo.
+
 ## Grouping (which models belong to which provider)
 
 1. Public mode (default, client key only): group the public `GET /v1/models`
@@ -121,6 +125,27 @@ CPA instance serves providers the gateway sells in different groups.
 - Use only the gateway's client endpoints (`/v1/models` and inference). Never
   read its admin, channel, pricing or billing APIs.
 - Same transport rules as CPA.
+
+## /cpa status (companion plugin)
+
+`cpa-status/` registers `/cpa`: account health per CPA instance, provider and
+account. It reuses the provider's transport code through a checked copy
+(`cpa-status/cpa.py` must equal root `cpa.py`; CI runs `cmp`).
+
+- User-triggered only. One `GET credentials` per distinct root and key
+  (v0 `auth-files` fallback on 404 only). No timers, no retries, 20 s
+  in-memory cache.
+- Before any GET, skip a key when it matches the companion latch file
+  (`cache/cpa-status/rejected.json`, salted fingerprints only, 0600) or the
+  provider's persisted latch of any configured instance on the same root.
+  On a 401, write the latch first. Never write the provider's caches.
+- Showing last-seen `quota.signals` that the credentials GET already returns
+  is not a quota call. Quota, plugin-quota, api-call, download and write
+  routes stay banned here as everywhere in this repo.
+- Never read or show `email`, `account`, `id_token`, `project_id`, `path`,
+  `id` or `auth_index`. Mask emails and token-like runs in names and
+  `status_message`.
+- Errors show status and category only, as in the provider.
 
 ## Secrets and transport
 
