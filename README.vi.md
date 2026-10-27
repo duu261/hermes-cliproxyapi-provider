@@ -243,13 +243,56 @@ Thứ tự ưu tiên, cao nhất trước: `model_overrides` của bạn, plugin
   thành viên nhà cung cấp và metadata. Không có key, không có tên tài khoản. Một
   management key bị từ chối được ghi nhớ dưới dạng HMAC có salt, không phải key.
 
+## /cpa: trạng thái pool (plugin đi kèm)
+
+Repo có thêm `cpa-status`, plugin thứ hai với một lệnh `/cpa`, cho xem tình
+trạng tài khoản của mọi instance đã cấu hình. Plugin model-provider không đăng
+ký được lệnh, nên plugin này cài và bật riêng:
+
+```bash
+hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
+hermes plugins enable cpa-status
+```
+
+Cần `mgmt_key_env` trên instance muốn xem; instance không có sẽ hiện
+`no management key`. Khởi động lại gateway đang chạy sau khi bật.
+
+```
+/cpa                    mọi instance: số tài khoản theo nhà cung cấp
+/cpa pre                một instance, kèm số request trong 1 giờ qua
+/cpa pre codex          mỗi tài khoản một dòng
+```
+
+- Chỉ đọc: mỗi lần chạy gửi một `GET /v8/management/credentials` cho mỗi
+  instance (v0 `auth-files` chỉ sau 404), và chỉ khi bạn gõ `/cpa`. Không hẹn
+  giờ, không thử lại. Gõ lại trong 20 giây sẽ trả từ bộ nhớ.
+- Quota gần nhất (5h và tuần) là số CPA ghi lại từ traffic thật của tài khoản
+  Claude và Codex. CPA không ghi cho nhà cung cấp khác. `/cpa` không bao giờ
+  bảo CPA kiểm tra quota với upstream.
+- Email trong tên tài khoản và thông báo được che; `email`, `account`,
+  `id_token`, `project_id` và `path` không bao giờ được đọc.
+- Chạy khi chat đang rảnh. Gửi lúc agent đang chạy thì Hermes xử lý như mọi
+  lệnh plugin khác khi bận (xếp hàng hoặc chuyển cho agent).
+- Khóa IP: CPA chặn một IP 30 phút sau năm lần key management sai, kể cả
+  localhost. Sau khi CPA từ chối một key, `/cpa` không gửi lại key đó: lưu
+  trong `$HERMES_HOME/cache/cpa-status/rejected.json` (HMAC có salt, quyền
+  0600) và tôn trọng cả lần từ chối mà plugin provider đã ghi cho mọi instance
+  trên cùng CPA. Provider gửi key bị từ chối tối đa một lần cho mỗi instance,
+  nên nhiều instance trên một CPA, hoặc nhiều profile Hermes trên một máy, vẫn
+  có thể cộng lên năm. Sửa key bị từ chối trước khi chạy `/cpa` từ profile
+  khác.
+
 ## Phát triển
 
 ```bash
 python -m unittest discover -s tests -v          # core tests, no Hermes needed
 PYTHONPATH=/path/to/hermes-agent python -m unittest discover -s tests -v
+python -m unittest discover -s cpa-status/tests -v
+cmp cpa.py cpa-status/cpa.py                     # the companion ships a copy
 hermes plugins doctor . --ci
 hermes plugins validate .
+hermes plugins doctor ./cpa-status --ci
+hermes plugins validate ./cpa-status
 ```
 
 ## Giấy phép

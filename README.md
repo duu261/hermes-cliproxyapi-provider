@@ -196,6 +196,49 @@ cliproxyapi:
   not stripped on routed or unrouted instances. Hermes has no plugin hook to
   declare a secret without making it an inference credential yet.
 
+## Metadata
+
+Context window, max output, image input, reasoning support and reasoning-effort
+levels come only from CPA: management model definitions when available, else
+CPA's public model lists matched by exact id. Values CPA does not publish stay
+unknown. Without a management key, max output comes from CPA's Anthropic-format
+model list, which covers every model. CPA writes 64,000 there for a model with
+no limit, so the plugin treats exactly 64,000 as unknown and Hermes falls back
+to models.dev; a model whose real limit is 64,000 loses it the same way.
+
+Hermes `/model` shows max output, PDF and structured output only from
+models.dev; a plugin cannot set them, and CPA's model definitions have no PDF
+or structured-output field. To see them, add vendor metadata from models.dev:
+
+```yaml
+providers:
+  cpa-main-claude:
+    catalog_provider: anthropic
+```
+
+Precedence, highest first: your `model_overrides`, this plugin, models.dev.
+
+## Security
+
+- Keys are referenced by environment variable name and resolved by Hermes.
+- Hermes strips from agent subprocesses only the env names a registered
+  provider declares. Every profile declares its inference key (`key_env`, or
+  the gateway key on a routed instance), so `mgmt_key_env`, and on a routed
+  instance the CPA `key_env`, stay readable by agent shells.
+- Plain `http://` is allowed only when every address the host resolves to is
+  loopback, RFC 1918, 100.64/10 or IPv6 ULA. Anything else needs `https://`.
+- No redirects, capped responses, and failures reported as an HTTP status and
+  category only, never bodies, URLs or keys.
+- Catalog requests send `User-Agent: hermes-cliproxyapi-provider/<version>`.
+  One extra `/v1/models` request appends `grok-shell-compatible`, because that is
+  the client CPA publishes context windows and reasoning levels to, and another
+  sends `Anthropic-Version: 2023-06-01`, the format that carries output limits.
+  Their ids are matched against the normal list, so they add metadata, never
+  models. Inference requests carry Hermes' own headers; the plugin sets none.
+- The cache at `$HERMES_HOME/cache/cliproxyapi/` (mode 0600) holds model ids,
+  owners, provider membership and metadata. No keys, no account names. A
+  rejected management key is remembered as a salted HMAC, not the key.
+
 ## /cpa: pool status (companion plugin)
 
 The repo also ships `cpa-status`, a second plugin with one slash command,
@@ -245,49 +288,6 @@ codex-bo…@…  cooling until 17:20 (quota)
   instance, so several instances on one CPA, or several Hermes profiles on one
   host, can still add up to five. Fix a rejected key before running `/cpa`
   again from other profiles.
-
-## Metadata
-
-Context window, max output, image input, reasoning support and reasoning-effort
-levels come only from CPA: management model definitions when available, else
-CPA's public model lists matched by exact id. Values CPA does not publish stay
-unknown. Without a management key, max output comes from CPA's Anthropic-format
-model list, which covers every model. CPA writes 64,000 there for a model with
-no limit, so the plugin treats exactly 64,000 as unknown and Hermes falls back
-to models.dev; a model whose real limit is 64,000 loses it the same way.
-
-Hermes `/model` shows max output, PDF and structured output only from
-models.dev; a plugin cannot set them, and CPA's model definitions have no PDF
-or structured-output field. To see them, add vendor metadata from models.dev:
-
-```yaml
-providers:
-  cpa-main-claude:
-    catalog_provider: anthropic
-```
-
-Precedence, highest first: your `model_overrides`, this plugin, models.dev.
-
-## Security
-
-- Keys are referenced by environment variable name and resolved by Hermes.
-- Hermes strips from agent subprocesses only the env names a registered
-  provider declares. Every profile declares its inference key (`key_env`, or
-  the gateway key on a routed instance), so `mgmt_key_env`, and on a routed
-  instance the CPA `key_env`, stay readable by agent shells.
-- Plain `http://` is allowed only when every address the host resolves to is
-  loopback, RFC 1918, 100.64/10 or IPv6 ULA. Anything else needs `https://`.
-- No redirects, capped responses, and failures reported as an HTTP status and
-  category only, never bodies, URLs or keys.
-- Catalog requests send `User-Agent: hermes-cliproxyapi-provider/<version>`.
-  One extra `/v1/models` request appends `grok-shell-compatible`, because that is
-  the client CPA publishes context windows and reasoning levels to, and another
-  sends `Anthropic-Version: 2023-06-01`, the format that carries output limits.
-  Their ids are matched against the normal list, so they add metadata, never
-  models. Inference requests carry Hermes' own headers; the plugin sets none.
-- The cache at `$HERMES_HOME/cache/cliproxyapi/` (mode 0600) holds model ids,
-  owners, provider membership and metadata. No keys, no account names. A
-  rejected management key is remembered as a salted HMAC, not the key.
 
 ## Development
 

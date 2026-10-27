@@ -214,13 +214,53 @@ providers:
   提供方成员关系和元数据。不含密钥，也不含账号名。被拒绝的 management key 以加盐
   HMAC 形式记录，而不是密钥本身。
 
+## /cpa：账号池状态（配套插件）
+
+仓库里还有第二个插件 `cpa-status`，只提供一个命令 `/cpa`，显示所有已配置实例的
+账号健康状况。model-provider 插件不能注册命令，所以它需要单独安装并启用：
+
+```bash
+hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
+hermes plugins enable cpa-status
+```
+
+要查看的实例需要设置 `mgmt_key_env`；没有设置的实例显示 `no management key`。
+启用后请重启正在运行的网关。
+
+```
+/cpa                    所有实例：按提供方统计账号
+/cpa pre                单个实例，附带最近一小时的请求数
+/cpa pre codex          每个账号一行
+```
+
+- 只读：每次运行对每个实例发送一次 `GET /v8/management/credentials`（只有在
+  404 之后才用 v0 `auth-files`），并且只在你输入 `/cpa` 时发送。没有定时任务，
+  不重试。20 秒内重复输入直接用内存结果。
+- 最近一次的额度（5 小时和每周）来自 CPA 在真实流量中为 Claude 和 Codex 账号
+  记录的数据，其他提供方 CPA 不记录。`/cpa` 从不让 CPA 去上游查询额度。
+- 账号名和消息里的邮箱会被遮盖；从不读取 `email`、`account`、`id_token`、
+  `project_id` 和 `path`。
+- 在对话空闲时可用。agent 正在运行时发送，会像其他插件命令一样交给 Hermes 的
+  忙碌处理（排队或转给 agent）。
+- IP 封禁：管理密钥连续错误五次后，CPA 会封禁该客户端 IP 30 分钟，localhost
+  也不例外。某个密钥被 CPA 拒绝后，`/cpa` 不会再发送它：拒绝记录保存在
+  `$HERMES_HOME/cache/cpa-status/rejected.json`（加盐 HMAC，权限 0600），
+  同时也遵守 provider 插件为同一 CPA 上所有实例记录的拒绝。provider 对每个
+  实例最多发送一次被拒绝的密钥，因此同一 CPA 上的多个实例，或同一台机器上的
+  多个 Hermes profile，加起来仍可能达到五次。请先修好被拒绝的密钥，再从其他
+  profile 运行 `/cpa`。
+
 ## 开发
 
 ```bash
 python -m unittest discover -s tests -v          # core tests, no Hermes needed
 PYTHONPATH=/path/to/hermes-agent python -m unittest discover -s tests -v
+python -m unittest discover -s cpa-status/tests -v
+cmp cpa.py cpa-status/cpa.py                     # the companion ships a copy
 hermes plugins doctor . --ci
 hermes plugins validate .
+hermes plugins doctor ./cpa-status --ci
+hermes plugins validate ./cpa-status
 ```
 
 ## 许可证
