@@ -1,0 +1,14 @@
+name: cpa-status
+version: 0.3.3
+manifest_version: 2
+requires_hermes: ">=0.21.7"
+description: "/cpa: account health for every configured CLIProxyAPI pool (read-only management GET)."
+author: duu261
+license: MIT
+homepage: https://github.com/duu261/hermes-cliproxyapi-provider
+tags: [cliproxyapi, status, slash-command]
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
