@@ -85,6 +85,14 @@ Ghi đè theo từng nhà cung cấp bằng `api_mode` (xem bên dưới). Khi h
 phục vụ cùng một model id, id đó xuất hiện ở cả hai và CPA chọn tài khoản; khi đó
 wire chỉ là lựa chọn phù hợp nhất.
 
+Giữ `xai` trên `codex_responses`. Grok 4.7 trả về phần suy luận dưới dạng một
+mục đã mã hóa, và client phải gửi lại mục này ở lượt tiếp theo
+([tài liệu xAI](https://docs.x.ai/developers/model-capabilities/text/reasoning)).
+Hermes làm việc đó trên wire Responses. Chat Completions không có trường nào để
+chứa nó, và CPA (kiểm tra ở v8.0.44) chỉ phát lại suy luận xAI đã lưu cho client
+Claude và Responses. Thiếu nó, Grok 4.7 ngừng suy luận sau vài vòng gọi công cụ,
+thường nói sẽ gọi công cụ rồi kết thúc lượt mà không gọi.
+
 ## Chế độ công khai hay chế độ management
 
 Chế độ công khai là mặc định và chỉ cần client key. Chế độ management thêm
@@ -136,7 +144,7 @@ cliproxyapi:
       base_url: http://127.0.0.1:8317
       key_env: CPA_MAIN_API_KEY
       groups:
-        xai:
+        kimi:
           api_mode: chat_completions      # change one provider's wire
         fast:
           models: ["gpt-*-mini", "claude-haiku-*"]   # your own group
@@ -162,7 +170,7 @@ cliproxyapi:
       groups:
         xai:
           route_key_env: GATEWAY_GROK_KEY # optional: a key for another billing group
-          api_mode: chat_completions      # how this gateway channel expects requests
+          api_mode: codex_responses       # how this gateway channel expects requests
 ```
 
 - Các profile trỏ tới `route_via` và dùng key của gateway. Key CPA chỉ dùng cho danh

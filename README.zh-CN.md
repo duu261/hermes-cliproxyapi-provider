@@ -77,6 +77,13 @@ cliproxyapi:
 可通过 `api_mode` 按提供方覆盖（见下文）。当两个提供方提供同一个 model id 时，它会
 同时出现在两者中，由 CPA 选择账号；此时的 wire 只是最佳匹配。
 
+请让 `xai` 保持 `codex_responses`。Grok 4.7 以加密条目的形式返回推理内容，客户端
+必须在下一轮把它原样发回
+（[xAI 文档](https://docs.x.ai/developers/model-capabilities/text/reasoning)）。
+Hermes 在 Responses wire 上会这样做。Chat Completions 没有承载它的字段，而 CPA
+（在 v8.0.44 核对）只为 Claude 和 Responses 客户端回放缓存的 xAI 推理。缺少这一步时，
+Grok 4.7 在几轮工具调用后就不再推理，常常说要调用工具，随后却直接结束本轮。
+
 ## 公开模式与 management 模式
 
 公开模式是默认模式，只需要客户端密钥。management 模式额外设置 `mgmt_key_env`，读取
@@ -122,7 +129,7 @@ cliproxyapi:
       base_url: http://127.0.0.1:8317
       key_env: CPA_MAIN_API_KEY
       groups:
-        xai:
+        kimi:
           api_mode: chat_completions      # change one provider's wire
         fast:
           models: ["gpt-*-mini", "claude-haiku-*"]   # your own group
@@ -148,7 +155,7 @@ cliproxyapi:
       groups:
         xai:
           route_key_env: GATEWAY_GROK_KEY # optional: a key for another billing group
-          api_mode: chat_completions      # how this gateway channel expects requests
+          api_mode: codex_responses       # how this gateway channel expects requests
 ```
 
 - profile 指向 `route_via` 并使用网关密钥。CPA 密钥只用于获取 CPA 的模型列表，绝不

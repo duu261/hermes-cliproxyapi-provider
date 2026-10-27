@@ -43,7 +43,13 @@ chat_completions, which every CPA executor accepts.
   /v1/messages)
 - kiro (plugin) -> anthropic_messages (declares claude input; builds its
   upstream payload from Claude format)
-- codex, xai, meta -> codex_responses (CPA reshapes to its Codex format)
+- codex, xai, meta -> codex_responses (CPA reshapes to its Codex format).
+  xai must stay on Responses: grok-4.7 needs its encrypted reasoning items
+  replayed each turn, Chat Completions cannot carry them, and CPA v8.0.44
+  replays cached xAI reasoning only for Claude/Responses sources
+  (`xai_reasoning_replay.go` `xaiReasoningReplayEnabledForSource`). On Chat,
+  reasoning drops to zero after a few tool rounds and the model announces a
+  tool call without making it. Do not use xai in chat_completions examples.
 - gemini, vertex, aistudio, gemini-interactions, antigravity, devin ->
   chat_completions (Gemini-native and Interactions are not Hermes wires for
   non-Google hosts; CPA translates)

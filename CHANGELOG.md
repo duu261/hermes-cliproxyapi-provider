@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Docs: explain why `xai` stays on `codex_responses` (Grok 4.7 needs its
+  encrypted reasoning replayed; Chat Completions cannot carry it). Override
+  examples no longer put `xai` on `chat_completions`.
+
 ## 0.3.3
 
 - Management mode reads model definitions for plugin providers (Kiro and

@@ -82,6 +82,14 @@ Override per provider with `api_mode` (see below). When two providers serve the
 same model id, it appears in both and CPA picks the account; the wire is then a
 best match.
 
+Keep `xai` on `codex_responses`. Grok 4.7 returns its reasoning as an
+encrypted item that the client must send back on the next turn
+([xAI docs](https://docs.x.ai/developers/model-capabilities/text/reasoning)).
+Hermes does that on the Responses wire. Chat Completions has no field for it,
+and CPA (checked at v8.0.44) replays cached xAI reasoning only for Claude and
+Responses clients. Without it, Grok 4.7 stops reasoning after a few tool rounds
+and tends to say it will call a tool, then end the turn without calling it.
+
 ## Public mode or management mode
 
 Public mode is the default and needs only a client key. Management mode adds
@@ -133,7 +141,7 @@ cliproxyapi:
       base_url: http://127.0.0.1:8317
       key_env: CPA_MAIN_API_KEY
       groups:
-        xai:
+        kimi:
           api_mode: chat_completions      # change one provider's wire
         fast:
           models: ["gpt-*-mini", "claude-haiku-*"]   # your own group
@@ -160,7 +168,7 @@ cliproxyapi:
       groups:
         xai:
           route_key_env: GATEWAY_GROK_KEY # optional: a key for another billing group
-          api_mode: chat_completions      # how this gateway channel expects requests
+          api_mode: codex_responses       # how this gateway channel expects requests
 ```
 
 - Profiles point at `route_via` and use the gateway key. The CPA key is used
