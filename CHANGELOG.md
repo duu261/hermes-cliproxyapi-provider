@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Docs: explain why `xai` stays on `codex_responses` (Grok 4.7 needs its
   encrypted reasoning replayed; Chat Completions cannot carry it). Override
