@@ -19,6 +19,10 @@ jobs:
       - run: ruff format --check .
       - run: ruff check .
       - run: python -m unittest discover -s tests -v
+      - name: cpa-status tests and shared code check
+        run: |
+          cmp cpa.py cpa-status/cpa.py
+          python -m unittest discover -s cpa-status/tests -v
 
   hermes:
     runs-on: ubuntu-latest
@@ -50,6 +54,11 @@ jobs:
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
         run: PYTHONPATH="$GITHUB_WORKSPACE/hermes-agent" "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/python" -m unittest discover -s tests -v
+      - name: cpa-status tests
+        working-directory: plugin
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-home
+        run: PYTHONPATH="$GITHUB_WORKSPACE/hermes-agent" "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/python" -m unittest discover -s cpa-status/tests -v
       - name: Plugin doctor and validate
         working-directory: plugin
         env:
@@ -57,3 +66,5 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins doctor . --ci
           "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins validate .
+          "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins doctor ./cpa-status --ci
+          "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/hermes" plugins validate ./cpa-status
