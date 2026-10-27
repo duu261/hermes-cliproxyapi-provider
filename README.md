@@ -196,6 +196,56 @@ cliproxyapi:
   not stripped on routed or unrouted instances. Hermes has no plugin hook to
   declare a secret without making it an inference credential yet.
 
+## /cpa: pool status (companion plugin)
+
+The repo also ships `cpa-status`, a second plugin with one slash command,
+`/cpa`, that shows account health for every configured instance. Model-provider
+plugins cannot register commands, so it installs and enables separately:
+
+```bash
+hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
+hermes plugins enable cpa-status
+```
+
+It needs `mgmt_key_env` on the instances it reports on; instances without one
+show `no management key`. Restart running gateways after enabling.
+
+```
+/cpa                    every instance: accounts per provider
+/cpa pre                one instance, plus the last hour of requests
+/cpa pre codex          one line per account
+```
+
+```
+pre
+  codex 4: 3 ready · 1 cooling (next 17:20)
+  xai 2: 2 ready
+pre / codex · 4 accounts
+codex-al…@…  ready · 1h 173/71 · 5h 22% · wk 0% (1m ago)
+codex-bo…@…  cooling until 17:20 (quota)
+```
+
+- Read-only: one `GET /v8/management/credentials` per instance per run (v0
+  `auth-files` only after a 404), and only when you type `/cpa`. No timers, no
+  retries. A repeat within 20 seconds answers from memory.
+- Last-seen quota (5h and weekly) comes from what CPA recorded on real traffic
+  for Claude and Codex accounts. CPA records none for other providers. `/cpa`
+  never asks CPA to check quota upstream.
+- Emails in account names and messages are masked; `email`, `account`,
+  `id_token`, `project_id` and `path` are never read.
+- Works when the chat is idle. Sent while an agent turn is running, it goes to
+  Hermes' busy handling (queued or sent to the agent) like any other plugin
+  command.
+- Lockout: CPA bans a client IP for 30 minutes after five failed management
+  keys, localhost included. `/cpa` sends a key at most once after CPA rejects
+  it: it remembers the rejection in
+  `$HERMES_HOME/cache/cpa-status/rejected.json` (salted HMAC, mode 0600) and
+  also honors the provider plugin's remembered rejections for every instance
+  on the same CPA. The provider sends a rejected key at most once per
+  instance, so several instances on one CPA, or several Hermes profiles on one
+  host, can still add up to five. Fix a rejected key before running `/cpa`
+  again from other profiles.
+
 ## Metadata
 
 Context window, max output, image input, reasoning support and reasoning-effort
@@ -244,8 +294,12 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
 ```bash
 python -m unittest discover -s tests -v          # core tests, no Hermes needed
 PYTHONPATH=/path/to/hermes-agent python -m unittest discover -s tests -v
+python -m unittest discover -s cpa-status/tests -v
+cmp cpa.py cpa-status/cpa.py                     # the companion ships a copy
 hermes plugins doctor . --ci
 hermes plugins validate .
+hermes plugins doctor ./cpa-status --ci
+hermes plugins validate ./cpa-status
 ```
 
 ## License

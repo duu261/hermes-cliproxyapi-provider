@@ -5,6 +5,12 @@
 - Docs: explain why `xai` stays on `codex_responses` (Grok 4.7 needs its
   encrypted reasoning replayed; Chat Completions cannot carry it). Override
   examples no longer put `xai` on `chat_completions`.
+- New companion plugin `cpa-status` (subdirectory `cpa-status/`, `kind:
+  standalone`): `/cpa` shows account health per instance, provider and
+  account from one read-only management GET per instance, only when typed.
+  Last-seen 5h and weekly quota for Claude and Codex accounts, masked names,
+  and a persisted rejected-key latch that also honors the provider's.
+  Install with `#cpa-status` and enable it; the provider is unchanged.
 
 ## 0.3.3
 

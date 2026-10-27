@@ -651,4 +651,6 @@ def _provider_view(row: _Row, provider: str, now: datetime) -> str:
     if not lines:
         names = ", ".join(summarize(result.files, now)) or "none"
         return f"No provider '{provider}' in {row.spec.name}. Providers: {names}"
-    return _cap([f"{row.spec.name} / {provider} · {len(lines)} accounts", *lines])
+    count = len(lines)
+    noun = "account" if count == 1 else "accounts"
+    return _cap([f"{row.spec.name} / {provider} · {count} {noun}", *lines])

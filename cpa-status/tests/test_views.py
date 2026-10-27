@@ -107,7 +107,7 @@ class ViewTests(unittest.TestCase):
             self.assertNotRegex(out, r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", args)
 
     def test_provider_alias(self):
-        self.assertIn("pre / xai · 1 accounts", self.run_cpa("pre grok"))
+        self.assertIn("pre / xai · 1 account\n", self.run_cpa("pre grok"))
 
     def test_unknown_pool_lists_names(self):
         self.assertEqual(self.run_cpa("nope"), "Unknown pool 'nope'. Pools: pre, fast")
