@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - `/cpa quota <pool> [claude|codex]`: live usage per Claude and Codex
   account, read from each vendor the way CPA's own web UI quota page does
