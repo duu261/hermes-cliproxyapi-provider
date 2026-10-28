@@ -1,0 +1,61 @@
+name: Bug report
+description: Something in the provider or /cpa does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste a management key, client key, token, account email, hostname or IP.
+        Redact them as `<key>`, `<email>`, `<host>`. Issues are public.
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Plugin
+      options:
+        - cliproxyapi-provider (models)
+        - cpa-status (/cpa)
+        - both / not sure
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Plugin version, Hermes version (`hermes --version`), CPA version.
+      placeholder: plugin 0.5.0, Hermes v0.22.5, CPA v8.0.45
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - public (client key only)
+        - management (mgmt_key_env set)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The command you ran and the redacted `cliproxyapi:` config section.
+      render: yaml
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: "`/cpa` or `/cpa <pool>` output, or the error line. No raw logs or request dumps."
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I removed keys, tokens, emails, hostnames and IPs from everything above.
+          required: true

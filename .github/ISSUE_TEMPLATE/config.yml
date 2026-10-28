@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or setup help
+    url: https://github.com/duu261/hermes-cliproxyapi-provider/discussions
+    about: Ask in Discussions. Issues are for bugs and concrete proposals.
+  - name: Security problem
+    url: https://github.com/duu261/hermes-cliproxyapi-provider/security/advisories/new
+    about: Report privately. Never open a public issue for a key leak or a lockout bypass.

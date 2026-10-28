@@ -1,0 +1,38 @@
+name: Provider support
+description: Ask for a CPA provider to get a wire mapping or /cpa quota support.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `/cpa quota` reads usage the way CPA's own web UI (Management Center) does, through
+        CPA's `api-call` route. A new provider needs a read-only usage endpoint that the web UI
+        or CPA Usage Keeper already calls. Never paste tokens or account data.
+  - type: input
+    id: provider
+    attributes:
+      label: CPA provider key
+      placeholder: xai, antigravity, kimi, ...
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is missing
+      multiple: true
+      options:
+        - wire mapping (models from this provider fail or use the wrong API)
+        - /cpa quota (live usage)
+        - /cpa account status
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: Where CPA or its web UI handles it
+      description: Links to the CPA, Management Center or Keeper source that reads this provider's usage or serves its models.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Plan names, window lengths, known errors. Redacted.

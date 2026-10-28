@@ -394,6 +394,10 @@ hermes plugins doctor ./cpa-status --ci
 hermes plugins validate ./cpa-status
 ```
 
+Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md) for the safety rules
+every change keeps, and [SECURITY.md](SECURITY.md) to report a problem
+privately.
+
 ## License
 
 MIT

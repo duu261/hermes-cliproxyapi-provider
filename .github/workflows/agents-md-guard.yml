@@ -1,0 +1,55 @@
+name: agents-md-guard
+
+# AGENTS.md is the maintainer's contract for every coding agent working on
+# this repo, including the safety rules that keep CPA from banning a user's
+# IP. Pull requests from anyone else may not change it: this job comments and
+# closes them. It runs from the base branch (pull_request_target) and never
+# checks out or runs pull request code.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  agents-md:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login != github.repository_owner
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pull_number = context.payload.pull_request.number;
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number, per_page: 100,
+            });
+            const isAgents = (path) =>
+              typeof path === "string" &&
+              (path === "AGENTS.md" || path.endsWith("/AGENTS.md"));
+            const touched = files.filter(
+              (f) => isAgents(f.filename) || isAgents(f.previous_filename),
+            );
+            if (touched.length === 0) {
+              core.info("AGENTS.md not touched.");
+              return;
+            }
+            const body = [
+              "This pull request changes `AGENTS.md`, which only the maintainer edits.",
+              "",
+              ...touched.map((f) => `- ${f.filename}`),
+              "",
+              "Please open a new pull request without that change. To propose a",
+              "change to the agent rules, open an issue instead.",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: pull_number, body,
+            });
+            await github.rest.pulls.update({
+              owner, repo, pull_number, state: "closed",
+            });
+            core.setFailed("Pull request changes AGENTS.md");

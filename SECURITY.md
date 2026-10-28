@@ -18,8 +18,11 @@ In scope:
   files).
 - Plain-HTTP requests outside the documented private-network list.
 - Requests that follow redirects or read unbounded responses.
-- Any management request that is not a read-only GET on the documented allowlist, or any
-  retry of a management key CPA rejected.
+- Any management request outside the documented allowlist (read-only GETs, plus the
+  `api-call` route for `/cpa quota` with its two fixed vendor usage URLs), or any retry of
+  a management key CPA rejected, or any other path that lets the plugins cause CPA's
+  management IP ban (see "Never get locked out of CPA" in the README).
+- Account identifiers (`auth_index`, account id, email) shown, logged or written to disk.
 
 Out of scope:
 
