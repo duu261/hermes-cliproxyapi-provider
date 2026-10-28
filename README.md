@@ -338,7 +338,8 @@ codex-bo…@…  cooling until 17:20 (quota)
   for Claude and Codex accounts. CPA records none for other providers. Plain
   `/cpa` never asks CPA to check quota upstream; `/cpa quota` does.
 - Emails in account names and messages are masked; `email`, `account`,
-  `project_id` and `path` are never read.
+  `project_id` and `path` are never shown (`/cpa quota` uses the Antigravity
+  `project_id` only to build its request).
 - Works when the chat is idle. Sent while an agent turn is running, it goes to
   Hermes' busy handling (queued or sent to the agent) like any other plugin
   command.
@@ -366,7 +367,7 @@ quota plugin when CPA lists one. Every request, and when it is sent:
 | Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`, weekly `opus` / `sonnet` |
 | Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk`, monthly spend `mo`, `supergrok` / `supergrok_heavy` |
-| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor | per model group, `5h` and `wk` |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota | per model group, `5h` and `wk` |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` when CPA lists the account as `kimi-ai`) | each limit window, weekly, `mo` |
 | CPA plugin quota (e.g. Kiro) | GET `/v8/management/plugins/<id>/quota` on CPA; the plugin asks its vendor | the plugin's meters and plan |

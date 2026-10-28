@@ -137,7 +137,8 @@ CPA instance serves providers the gateway sells in different groups.
 ## /cpa status (companion plugin)
 
 `cpa-status/` registers `/cpa`: account health per CPA instance, provider and
-account, and `/cpa quota`: live usage per Claude and Codex account. It reuses
+account, and `/cpa quota`: live usage per account for every provider CPA's
+web UI shows quota for, except Meta. It reuses
 the provider's transport code through a checked copy (`cpa-status/cpa.py`
 must equal root `cpa.py`; CI runs `cmp`).
 
@@ -164,7 +165,8 @@ must equal root `cpa.py`; CI runs `cmp`).
     then GET `https://cli-chat-proxy.grok.com/v1/billing`
   - antigravity: POST `v1internal:retrieveUserQuotaSummary` on
     `https://daily-cloudcode-pa.googleapis.com/`, then (only after an inner
-    failure) `https://daily-cloudcode-pa.sandbox.googleapis.com/`, then
+    non-2xx or an empty or unparseable reply; an outer CPA error ends the
+    account) `https://daily-cloudcode-pa.sandbox.googleapis.com/`, then
     `https://cloudcode-pa.googleapis.com/`; data `{"project":"<project_id>"}`
   - devin: POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus`
     with the fixed metadata data template (`apiKey` is `$TOKEN$`)
