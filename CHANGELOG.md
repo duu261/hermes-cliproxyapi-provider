@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `/cpa quota <pool> [claude|codex]`: live usage per Claude and Codex
+  account, read from each vendor the way CPA's own web UI quota page does
+  (CPA `api-call` to `api.anthropic.com/api/oauth/usage` or
+  `chatgpt.com/backend-api/wham/usage` with the account's token). Raw vendor
+  percent per window and a count of accounts with room, out and failed. On
+  command only, at most 20 accounts per run, cached 60 seconds.
+- Both plugins share one management lock per CPA (thread lock plus a lock
+  file under `$HERMES_HOME/cache/cliproxyapi/locks/`) and one remembered list
+  of rejected keys, so the provider's refresh, `/cpa` and every Hermes
+  process on one home never talk to CPA's management API at the same time.
+  The provider skips a pass while `/cpa` is busy and retries on the next
+  refresh. Rejections remembered by 0.4 are still honored.
+- README: new section "Never get locked out of CPA" (how CPA counts failed
+  management logins and what to do about it).
 - `hermes-pack.yaml`: install the provider and `/cpa` in one step, both
   pinned to the 0.4.0 release commit (`hermes plugins pack install`).
 - `/cpa`: Codex quota windows are labelled from their own length

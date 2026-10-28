@@ -138,11 +138,10 @@ What management mode sends:
   downloads, OAuth or any write.
 - At most 32 requests and 20 seconds per pass, at most one pass per 15 minutes
   per instance, never on the request path.
-- CPA blocks an address after five failed management logins. The plugin stops
-  at the first 401 and never retries that key against that CPA, from any
-  instance or across restarts, until the key changes. If the cache cannot be
-  written, it says so in a warning, because the restart latch lives there. Any
-  other failure falls back to public grouping.
+- The plugin stops at the first 401 and never retries that key against that
+  CPA, from any instance, either plugin or across restarts, until the key
+  changes. See [Never get locked out of CPA](#never-get-locked-out-of-cpa).
+  Any other failure falls back to public grouping.
 - CPA must allow management from the plugin's address (`remote-management`
   in CPA's config) unless both run on the same host.
 
@@ -250,8 +249,56 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
   Their ids are matched against the normal list, so they add metadata, never
   models. Inference requests carry Hermes' own headers; the plugin sets none.
 - The cache at `$HERMES_HOME/cache/cliproxyapi/` (mode 0600) holds model ids,
-  owners, provider membership and metadata. No keys, no account names. A
-  rejected management key is remembered as a salted HMAC, not the key.
+  owners, provider membership and metadata. No keys, no account names. Its
+  `locks/` subdirectory holds one empty lock file per CPA and
+  `rejected.json`, the rejected management keys as salted HMACs, not keys.
+
+## Never get locked out of CPA
+
+CPA counts failed management logins per client IP, in memory, per CPA
+process. A missing or wrong management key adds one; the fifth in a row bans
+that IP for 30 minutes, localhost included, which also locks out CPA's web UI
+and any other tool on the same IP. A successful management login resets the
+count, a CPA restart clears it, and an IP with no failures for two hours is
+forgotten. Failures do not expire after 30 minutes. Answers `remote
+management disabled` and `key not set` (403) do not count.
+
+What both plugins do, per `HERMES_HOME` on Linux and macOS:
+
+- One management check per CPA at a time, across the provider, `/cpa` and
+  every Hermes process (CLI and gateway). The provider skips its check when
+  `/cpa` is busy and tries again on the next refresh; `/cpa` waits up to 25
+  seconds, then says `busy`.
+- A key that is already bad costs one try. The rejection is remembered (salted
+  HMAC) across restarts and both plugins, and that key is not sent to that
+  CPA again until it changes.
+- A key revoked in the middle of `/cpa quota` can cost up to 4: the calls
+  already in flight. `/cpa quota` first sends one call alone, so a key that
+  is already bad never reaches the parallel calls.
+- On Windows only the in-process lock applies; two Hermes processes there are
+  coordinated by the remembered rejections alone.
+
+What you do:
+
+1. Set the key through `mgmt_key_env` only, and log in to CPA's web UI once
+   with it before Hermes starts. A good login also resets the count.
+2. Rotate in one step: change CPA's key, update the env var, restart the
+   gateway. The old key stays remembered as rejected, so Hermes goes quiet
+   instead of retrying it.
+3. Run Hermes on the same host as CPA, or set CPA's `server.trusted-proxies`
+   (older configs: top-level `trusted-proxies`) to your reverse proxy's
+   address. Otherwise every client shares the proxy's IP and one bad key bans
+   all of them.
+4. Other tools on the same IP count too (CPA Usage Keeper, scripts, a browser
+   on the web UI). Fix their keys first.
+5. Each Hermes profile remembers rejections on its own. With five or more
+   profiles holding the same bad key on one host, fix it before starting
+   them.
+6. Use one spelling per CPA in `base_url` (`127.0.0.1` or `localhost`, not
+   both): the plugins coordinate by URL.
+7. Upgrade both plugins together; 0.4 and earlier do not share the lock.
+8. If banned: wait 30 minutes or restart CPA, and fix the key before Hermes
+   tries again (`/cpa` shows `key rejected`).
 
 ## /cpa: pool status (companion plugin)
 
@@ -271,6 +318,8 @@ show `no management key`. Restart running gateways after enabling.
 /cpa                    every instance: accounts per provider
 /cpa pre                one instance, plus the last hour of requests
 /cpa pre codex          one line per account
+/cpa quota pre          live usage of every Claude and Codex account
+/cpa quota pre codex    Codex only
 ```
 
 ```
@@ -286,22 +335,51 @@ codex-bo…@…  cooling until 17:20 (quota)
   `auth-files` only after a 404), and only when you type `/cpa`. No timers, no
   retries. A repeat within 20 seconds answers from memory.
 - Last-seen quota (5h and weekly) comes from what CPA recorded on real traffic
-  for Claude and Codex accounts. CPA records none for other providers. `/cpa`
-  never asks CPA to check quota upstream.
+  for Claude and Codex accounts. CPA records none for other providers. Plain
+  `/cpa` never asks CPA to check quota upstream; `/cpa quota` does.
 - Emails in account names and messages are masked; `email`, `account`,
-  `id_token`, `project_id` and `path` are never read.
+  `project_id` and `path` are never read.
 - Works when the chat is idle. Sent while an agent turn is running, it goes to
   Hermes' busy handling (queued or sent to the agent) like any other plugin
   command.
-- Lockout: CPA bans a client IP for 30 minutes after five failed management
-  keys, localhost included. `/cpa` sends a key at most once after CPA rejects
-  it: it remembers the rejection in
-  `$HERMES_HOME/cache/cpa-status/rejected.json` (salted HMAC, mode 0600) and
-  also honors the provider plugin's remembered rejections for every instance
-  on the same CPA. The provider sends a rejected key at most once per
-  instance, so several instances on one CPA, or several Hermes profiles on one
-  host, can still add up to five. Fix a rejected key before running `/cpa`
-  again from other profiles.
+- Lockout: see [Never get locked out of CPA](#never-get-locked-out-of-cpa).
+
+### /cpa quota: live usage
+
+```
+pre quota · live 21:40
+codex · 4 accounts: 3 have room · 1 out (next free 22:10)
+codex-xy…@…  plus  5h 100% → 22:10 · wk 60% → Nov 02  OUT
+codex-bd…@…  pro  wk 31% → Oct 30
+codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
+codex-cu…@…  pro  wk 40% → Nov 01
+```
+
+`/cpa quota <pool>` asks each vendor how much of each Claude and Codex account
+is used, the way CPA's own web UI quota page does: for each enabled account,
+CPA's `api-call` route sends one GET with that account's token (CPA fills it
+in; Hermes never sees it) to one of two fixed URLs:
+
+- Claude: `https://api.anthropic.com/api/oauth/usage` (5h, weekly, and the
+  weekly Opus and Sonnet windows when the account has them).
+- Codex: `https://chatgpt.com/backend-api/wham/usage` (windows labelled by
+  their own length: `5h`, `wk`, `mo`; the plan as the vendor names it).
+
+The headers, including each vendor's CLI `User-Agent`, are the web UI's. The
+percent is what is used, as the vendor reports it; there are no totals across
+plans. An account is `OUT` when a window is at 100% or the vendor says it is
+blocked.
+
+- Only when you type it. One call per account, at most 20 accounts per run,
+  first call alone, then at most 4 at a time; a repeat within 60 seconds
+  answers from memory. Disabled accounts are skipped.
+- An expired account token shows `token rejected by vendor` and never counts
+  against CPA's lockout. A rejected management key stops the run.
+- CPA's account index and the Codex account id are used only to build each
+  call and are never shown, logged or cached. Vendor replies are read field by
+  field; bodies and headers are never shown.
+- Not covered: other providers (xAI, Antigravity, Kiro and others), Codex
+  code-review and per-model extra limits, reset credits.
 
 ## Development
 

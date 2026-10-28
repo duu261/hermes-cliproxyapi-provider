@@ -141,11 +141,11 @@ Chế độ management gửi những gì:
   bao giờ đụng tới quota, usage, tải xuống, OAuth hay bất kỳ thao tác ghi nào.
 - Tối đa 32 request và 20 giây mỗi lượt, tối đa một lượt mỗi 15 phút cho mỗi
   instance, không bao giờ nằm trên đường đi của request.
-- CPA chặn một địa chỉ sau năm lần đăng nhập management thất bại. Plugin dừng ở lỗi
-  401 đầu tiên và không bao giờ thử lại key đó với CPA đó, từ bất kỳ instance nào và
-  qua cả các lần khởi động lại, cho tới khi key thay đổi. Nếu không ghi được cache,
-  plugin báo bằng cảnh báo, vì chốt chặn qua khởi động lại nằm ở đó. Mọi lỗi khác
-  quay về nhóm công khai.
+- Plugin dừng ở lỗi 401 đầu tiên và không bao giờ thử lại key đó với CPA đó, từ bất
+  kỳ instance nào, từ plugin nào trong hai plugin, và qua cả các lần khởi động lại,
+  cho tới khi key thay đổi. Xem
+  [Không bao giờ bị CPA khóa](#không-bao-giờ-bị-cpa-khóa). Mọi lỗi khác quay về
+  nhóm công khai.
 - CPA phải cho phép management từ địa chỉ của plugin (`remote-management` trong cấu
   hình CPA), trừ khi cả hai chạy trên cùng host.
 
@@ -254,8 +254,53 @@ Thứ tự ưu tiên, cao nhất trước: `model_overrides` của bạn, plugin
   khớp với danh sách thường, nên chúng chỉ thêm metadata, không bao giờ thêm mô hình.
   Request inference mang header riêng của Hermes; plugin không đặt header nào.
 - Cache tại `$HERMES_HOME/cache/cliproxyapi/` (mode 0600) chứa model id, chủ sở hữu,
-  thành viên nhà cung cấp và metadata. Không có key, không có tên tài khoản. Một
-  management key bị từ chối được ghi nhớ dưới dạng HMAC có salt, không phải key.
+  thành viên nhà cung cấp và metadata. Không có key, không có tên tài khoản. Thư mục
+  con `locks/` chứa một file khóa rỗng cho mỗi CPA và `rejected.json`, danh sách
+  management key bị từ chối dưới dạng HMAC có salt, không phải key.
+
+## Không bao giờ bị CPA khóa
+
+CPA đếm số lần đăng nhập management thất bại theo IP client, trong bộ nhớ, riêng
+cho mỗi tiến trình CPA. Mỗi lần thiếu hoặc sai management key cộng một; lần thứ năm
+liên tiếp sẽ chặn IP đó 30 phút, kể cả localhost, nên web UI của CPA và mọi công cụ
+khác trên cùng IP cũng bị chặn theo. Một lần đăng nhập management thành công đưa bộ
+đếm về 0, khởi động lại CPA xóa hết, và một IP không có lần thất bại nào trong hai
+giờ sẽ bị quên. Các lần thất bại không tự hết hạn sau 30 phút. Các phản hồi
+`remote management disabled` và `key not set` (403) không được tính.
+
+Hai plugin làm gì, theo mỗi `HERMES_HOME` trên Linux và macOS:
+
+- Mỗi lúc chỉ một lượt kiểm tra management cho mỗi CPA, giữa provider, `/cpa` và
+  mọi tiến trình Hermes (CLI và gateway). Provider bỏ qua lượt của nó khi `/cpa`
+  đang bận và thử lại ở lần làm mới sau; `/cpa` chờ tối đa 25 giây rồi báo `busy`.
+- Một key đã sai sẵn chỉ tốn một lần thử. Lần từ chối được ghi nhớ (HMAC có salt)
+  qua các lần khởi động lại và cho cả hai plugin, và key đó không được gửi lại tới
+  CPA đó cho tới khi key thay đổi.
+- Một key bị thu hồi giữa chừng khi `/cpa quota` đang chạy có thể tốn tối đa 4
+  lần: các request đang bay. `/cpa quota` gửi một request đầu tiên một mình trước,
+  nên một key đã sai sẵn không bao giờ tới được các request song song.
+- Trên Windows chỉ có khóa trong tiến trình; hai tiến trình Hermes ở đó chỉ phối
+  hợp qua danh sách key bị từ chối đã ghi nhớ.
+
+Bạn làm gì:
+
+1. Chỉ đặt key qua `mgmt_key_env`, và đăng nhập web UI của CPA một lần bằng key đó
+   trước khi khởi động Hermes. Một lần đăng nhập đúng cũng đưa bộ đếm về 0.
+2. Đổi key trong một bước: đổi key của CPA, cập nhật biến môi trường, khởi động lại
+   gateway. Key cũ vẫn được ghi nhớ là bị từ chối, nên Hermes im lặng thay vì thử
+   lại nó.
+3. Chạy Hermes trên cùng host với CPA, hoặc đặt `server.trusted-proxies` của CPA
+   (cấu hình cũ: `trusted-proxies` ở cấp cao nhất) thành địa chỉ reverse proxy của
+   bạn. Nếu không, mọi client dùng chung IP của proxy và một key sai sẽ chặn tất cả.
+4. Công cụ khác trên cùng IP cũng được tính (CPA Usage Keeper, script, trình duyệt
+   mở web UI). Sửa key của chúng trước.
+5. Mỗi profile Hermes ghi nhớ lần từ chối riêng. Nếu từ năm profile trở lên trên một
+   máy cùng giữ một key sai, hãy sửa key trước khi khởi động chúng.
+6. Dùng một cách viết cho mỗi CPA trong `base_url` (`127.0.0.1` hoặc `localhost`,
+   không dùng cả hai): hai plugin phối hợp theo URL.
+7. Nâng cấp cả hai plugin cùng lúc; bản 0.4 trở về trước không dùng chung khóa.
+8. Nếu đã bị chặn: chờ 30 phút hoặc khởi động lại CPA, và sửa key trước khi Hermes
+   thử lại (`/cpa` hiện `key rejected`).
 
 ## /cpa: trạng thái pool (plugin đi kèm)
 
@@ -275,26 +320,57 @@ Cần `mgmt_key_env` trên instance muốn xem; instance không có sẽ hiện
 /cpa                    mọi instance: số tài khoản theo nhà cung cấp
 /cpa pre                một instance, kèm số request trong 1 giờ qua
 /cpa pre codex          mỗi tài khoản một dòng
+/cpa quota pre          lượng dùng trực tiếp của mọi tài khoản Claude và Codex
+/cpa quota pre codex    chỉ Codex
 ```
 
 - Chỉ đọc: mỗi lần chạy gửi một `GET /v8/management/credentials` cho mỗi
   instance (v0 `auth-files` chỉ sau 404), và chỉ khi bạn gõ `/cpa`. Không hẹn
   giờ, không thử lại. Gõ lại trong 20 giây sẽ trả từ bộ nhớ.
 - Quota gần nhất (5h và tuần) là số CPA ghi lại từ traffic thật của tài khoản
-  Claude và Codex. CPA không ghi cho nhà cung cấp khác. `/cpa` không bao giờ
-  bảo CPA kiểm tra quota với upstream.
+  Claude và Codex. CPA không ghi cho nhà cung cấp khác. `/cpa` thường không bao
+  giờ bảo CPA kiểm tra quota với upstream; `/cpa quota` thì có.
 - Email trong tên tài khoản và thông báo được che; `email`, `account`,
-  `id_token`, `project_id` và `path` không bao giờ được đọc.
+  `project_id` và `path` không bao giờ được đọc.
 - Chạy khi chat đang rảnh. Gửi lúc agent đang chạy thì Hermes xử lý như mọi
   lệnh plugin khác khi bận (xếp hàng hoặc chuyển cho agent).
-- Khóa IP: CPA chặn một IP 30 phút sau năm lần key management sai, kể cả
-  localhost. Sau khi CPA từ chối một key, `/cpa` không gửi lại key đó: lưu
-  trong `$HERMES_HOME/cache/cpa-status/rejected.json` (HMAC có salt, quyền
-  0600) và tôn trọng cả lần từ chối mà plugin provider đã ghi cho mọi instance
-  trên cùng CPA. Provider gửi key bị từ chối tối đa một lần cho mỗi instance,
-  nên nhiều instance trên một CPA, hoặc nhiều profile Hermes trên một máy, vẫn
-  có thể cộng lên năm. Sửa key bị từ chối trước khi chạy `/cpa` từ profile
-  khác.
+- Khóa IP: xem [Không bao giờ bị CPA khóa](#không-bao-giờ-bị-cpa-khóa).
+
+### /cpa quota: lượng dùng trực tiếp
+
+```
+pre quota · live 21:40
+codex · 4 accounts: 3 have room · 1 out (next free 22:10)
+codex-xy…@…  plus  5h 100% → 22:10 · wk 60% → Nov 02  OUT
+codex-bd…@…  pro  wk 31% → Oct 30
+codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
+codex-cu…@…  pro  wk 40% → Nov 01
+```
+
+`/cpa quota <pool>` hỏi từng vendor xem mỗi tài khoản Claude và Codex đã dùng bao
+nhiêu, giống trang quota trên web UI của chính CPA: với mỗi tài khoản đang bật,
+route `api-call` của CPA gửi một GET kèm token của tài khoản đó (CPA tự điền;
+Hermes không bao giờ thấy token) tới một trong hai URL cố định:
+
+- Claude: `https://api.anthropic.com/api/oauth/usage` (5h, tuần, và cửa sổ tuần
+  riêng cho Opus và Sonnet khi tài khoản có).
+- Codex: `https://chatgpt.com/backend-api/wham/usage` (cửa sổ được đặt nhãn theo
+  độ dài của chính nó: `5h`, `wk`, `mo`; gói theo đúng tên vendor đặt).
+
+Các header, kể cả `User-Agent` CLI của từng vendor, lấy từ web UI. Phần trăm là
+phần đã dùng, đúng như vendor báo; không cộng gộp giữa các gói. Một tài khoản là
+`OUT` khi có cửa sổ ở 100% hoặc vendor báo nó đang bị chặn.
+
+- Chỉ khi bạn gõ lệnh. Mỗi tài khoản một request, tối đa 20 tài khoản mỗi lần
+  chạy, request đầu gửi một mình, sau đó tối đa 4 request cùng lúc; gõ lại trong
+  60 giây sẽ trả từ bộ nhớ. Bỏ qua tài khoản đã tắt.
+- Token tài khoản hết hạn hiện `token rejected by vendor` và không bao giờ bị tính
+  vào giới hạn khóa của CPA. Management key bị từ chối sẽ dừng lượt chạy.
+- Chỉ số tài khoản của CPA và account id của Codex chỉ dùng để dựng từng request,
+  không bao giờ được hiển thị, ghi log hay lưu cache. Phản hồi của vendor được đọc
+  theo từng trường; body và header không bao giờ được hiển thị.
+- Chưa hỗ trợ: nhà cung cấp khác (xAI, Antigravity, Kiro và các nhà khác), giới
+  hạn code-review và giới hạn riêng theo mô hình của Codex, reset credits.
 
 ## Phát triển
 

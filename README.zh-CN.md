@@ -126,10 +126,9 @@ management 模式发送的请求：
   列表（先内置提供方，再按名称查询插件提供方；v8.0.34 之前的 CPA 没有插件提供方的
   定义，插件会跳过）。绝不访问配额、用量、下载、OAuth，也不做任何写操作。
 - 每轮最多 32 个请求、20 秒；每个实例每 15 分钟最多一轮；绝不在请求路径上执行。
-- CPA 会在五次 management 登录失败后封禁该地址。插件在第一次 401 时即停止，并且在
-  密钥变更之前，无论从哪个实例、跨多少次重启，都不会再用该密钥尝试该 CPA。如果缓存
-  无法写入，插件会给出警告，因为跨重启的锁存状态就保存在那里。其他任何失败都会回退
-  到公开分组。
+- 插件在第一次 401 时即停止，并且在密钥变更之前，无论从哪个实例、哪一个插件、跨多少次
+  重启，都不会再用该密钥尝试该 CPA。见 [避免被 CPA 封禁](#避免被-cpa-封禁)。其他任何
+  失败都会回退到公开分组。
 - 除非两者运行在同一主机上，否则 CPA 必须允许来自插件地址的 management 访问（CPA
   配置中的 `remote-management`）。
 
@@ -224,8 +223,48 @@ providers:
   输出上限。它们的 id 会与常规列表匹配，所以只增加元数据，绝不增加模型。推理请求
   携带 Hermes 自己的 header；插件不设置任何 header。
 - 位于 `$HERMES_HOME/cache/cliproxyapi/` 的缓存（mode 0600）保存 model id、所有者、
-  提供方成员关系和元数据。不含密钥，也不含账号名。被拒绝的 management key 以加盐
-  HMAC 形式记录，而不是密钥本身。
+  提供方成员关系和元数据。不含密钥，也不含账号名。其中的 `locks/` 子目录为每个 CPA
+  保存一个空的锁文件，以及 `rejected.json`：被拒绝的 management key 以加盐 HMAC
+  形式记录，而不是密钥本身。
+
+## 避免被 CPA 封禁
+
+CPA 按客户端 IP 统计 management 登录失败次数，保存在内存中，每个 CPA 进程各自计数。
+每次缺少或错误的 management key 计一次；连续第五次会封禁该 IP 30 分钟，localhost
+也不例外，CPA 的 web UI 以及同一 IP 上的其他工具也会一起被封。一次成功的
+management 登录会把计数清零，重启 CPA 会清空所有计数，两小时内没有失败的 IP 会被
+遗忘。失败次数不会在 30 分钟后自动过期。`remote management disabled` 和
+`key not set`（403）这两种响应不计数。
+
+两个插件的做法（每个 `HERMES_HOME`，Linux 和 macOS）：
+
+- 每个 CPA 同一时间只进行一次 management 检查，provider、`/cpa` 以及所有 Hermes
+  进程（CLI 和网关）之间共享。`/cpa` 忙时 provider 跳过本次检查，下次刷新再试；
+  `/cpa` 最多等待 25 秒，然后显示 `busy`。
+- 已经失效的密钥只消耗一次尝试。拒绝记录（加盐 HMAC）跨重启保留，两个插件共享，
+  在密钥变更之前不会再把它发给该 CPA。
+- 在 `/cpa quota` 运行中途被吊销的密钥最多消耗 4 次：即已经发出的请求。
+  `/cpa quota` 会先单独发送第一个请求，因此已经失效的密钥永远到不了并发请求。
+- 在 Windows 上只有进程内锁；那里的两个 Hermes 进程只靠记住的拒绝记录协调。
+
+你需要做的：
+
+1. 只通过 `mgmt_key_env` 设置密钥，并在启动 Hermes 之前用它登录一次 CPA 的
+   web UI。一次正确的登录也会把计数清零。
+2. 一步完成轮换：修改 CPA 的密钥，更新环境变量，重启网关。旧密钥仍被记为已拒绝，
+   所以 Hermes 会保持安静，而不是重试它。
+3. 让 Hermes 与 CPA 运行在同一主机上，或者把 CPA 的 `server.trusted-proxies`
+   （旧配置：顶层 `trusted-proxies`）设为你的反向代理地址。否则所有客户端共用代理
+   的 IP，一个错误密钥就会封禁所有人。
+4. 同一 IP 上的其他工具也会计数（CPA Usage Keeper、脚本、打开 web UI 的浏览器）。
+   先修好它们的密钥。
+5. 每个 Hermes profile 各自记录拒绝。如果同一台机器上有五个或更多 profile 持有同一个
+   错误密钥，请先修好再启动它们。
+6. 每个 CPA 在 `base_url` 中只用一种写法（`127.0.0.1` 或 `localhost`，不要两者都用）：
+   两个插件按 URL 协调。
+7. 两个插件一起升级；0.4 及更早版本不共享锁。
+8. 如果已被封禁：等待 30 分钟或重启 CPA，并在 Hermes 再次尝试之前修好密钥
+   （`/cpa` 会显示 `key rejected`）。
 
 ## /cpa：账号池状态（配套插件）
 
@@ -244,24 +283,54 @@ hermes plugins enable cpa-status
 /cpa                    所有实例：按提供方统计账号
 /cpa pre                单个实例，附带最近一小时的请求数
 /cpa pre codex          每个账号一行
+/cpa quota pre          所有 Claude 和 Codex 账号的实时用量
+/cpa quota pre codex    只看 Codex
 ```
 
 - 只读：每次运行对每个实例发送一次 `GET /v8/management/credentials`（只有在
   404 之后才用 v0 `auth-files`），并且只在你输入 `/cpa` 时发送。没有定时任务，
   不重试。20 秒内重复输入直接用内存结果。
 - 最近一次的额度（5 小时和每周）来自 CPA 在真实流量中为 Claude 和 Codex 账号
-  记录的数据，其他提供方 CPA 不记录。`/cpa` 从不让 CPA 去上游查询额度。
-- 账号名和消息里的邮箱会被遮盖；从不读取 `email`、`account`、`id_token`、
-  `project_id` 和 `path`。
+  记录的数据，其他提供方 CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询额度；
+  `/cpa quota` 会。
+- 账号名和消息里的邮箱会被遮盖；从不读取 `email`、`account`、`project_id` 和
+  `path`。
 - 在对话空闲时可用。agent 正在运行时发送，会像其他插件命令一样交给 Hermes 的
   忙碌处理（排队或转给 agent）。
-- IP 封禁：管理密钥连续错误五次后，CPA 会封禁该客户端 IP 30 分钟，localhost
-  也不例外。某个密钥被 CPA 拒绝后，`/cpa` 不会再发送它：拒绝记录保存在
-  `$HERMES_HOME/cache/cpa-status/rejected.json`（加盐 HMAC，权限 0600），
-  同时也遵守 provider 插件为同一 CPA 上所有实例记录的拒绝。provider 对每个
-  实例最多发送一次被拒绝的密钥，因此同一 CPA 上的多个实例，或同一台机器上的
-  多个 Hermes profile，加起来仍可能达到五次。请先修好被拒绝的密钥，再从其他
-  profile 运行 `/cpa`。
+- IP 封禁：见 [避免被 CPA 封禁](#避免被-cpa-封禁)。
+
+### /cpa quota：实时用量
+
+```
+pre quota · live 21:40
+codex · 4 accounts: 3 have room · 1 out (next free 22:10)
+codex-xy…@…  plus  5h 100% → 22:10 · wk 60% → Nov 02  OUT
+codex-bd…@…  pro  wk 31% → Oct 30
+codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
+codex-cu…@…  pro  wk 40% → Nov 01
+```
+
+`/cpa quota <pool>` 向各厂商查询每个 Claude 和 Codex 账号已用了多少，做法与 CPA
+自带 web UI 的额度页面相同：对每个启用的账号，CPA 的 `api-call` 路由带着该账号的
+token（由 CPA 填入；Hermes 永远看不到）向两个固定 URL 之一发送一次 GET：
+
+- Claude：`https://api.anthropic.com/api/oauth/usage`（5 小时、每周，以及账号有的
+  Opus 和 Sonnet 每周窗口）。
+- Codex：`https://chatgpt.com/backend-api/wham/usage`（窗口按自身长度标注：`5h`、
+  `wk`、`mo`；套餐名称按厂商原样显示）。
+
+请求头（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已用量，按厂商报告
+原样显示；不跨套餐汇总。某个窗口达到 100% 或厂商表示账号被限制时，该账号显示
+`OUT`。
+
+- 只在你输入时运行。每个账号一次请求，每次最多 20 个账号，第一个请求单独发送，
+  之后最多 4 个并发；60 秒内重复输入直接用内存结果。跳过已禁用的账号。
+- 账号 token 过期时显示 `token rejected by vendor`，永远不计入 CPA 的封禁次数。
+  management key 被拒绝时整个运行停止。
+- CPA 的账号索引和 Codex 的 account id 只用于构造每个请求，从不显示、记录日志或
+  缓存。厂商响应按字段读取；从不显示响应体和响应头。
+- 暂不支持：其他提供方（xAI、Antigravity、Kiro 等），Codex 的 code-review 和按
+  模型的额外限额，reset credits。
 
 ## 开发
 

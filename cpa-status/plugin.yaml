@@ -2,7 +2,7 @@ name: cpa-status
 version: 0.4.0
 manifest_version: 2
 requires_hermes: ">=0.21.7"
-description: "/cpa: account health for every configured CLIProxyAPI pool (read-only management GET)."
+description: "/cpa: account health for every configured CLIProxyAPI pool, and live Claude/Codex usage via CPA's api-call on request."
 author: duu261
 license: MIT
 homepage: https://github.com/duu261/hermes-cliproxyapi-provider
