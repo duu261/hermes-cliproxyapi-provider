@@ -21,10 +21,16 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import quote, urlsplit
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
 
 VERSION = "0.4.0"
 USER_AGENT = f"hermes-cliproxyapi-provider/{VERSION}"
@@ -703,7 +709,8 @@ def fingerprint_matches(key: str, stored: str) -> bool:
 
 # Keys CPA rejected in this process, per gateway root. Another instance (or
 # another refresh racing the cache write) never sends the same rejected key to
-# the same CPA again. In memory only; the cache carries the latch across restarts.
+# the same CPA again. The shared latch file carries it across processes,
+# plugins and restarts.
 _REJECTED: dict[str, list[str]] = {}
 _REJECTED_LOCK = threading.Lock()
 
@@ -716,6 +723,152 @@ def _rejected_here(root: str, key: str) -> bool:
 def _remember_rejected(root: str, key: str) -> None:
     with _REJECTED_LOCK:
         _REJECTED.setdefault(root, []).append(management_fingerprint(key))
+
+
+# ── Shared management guard ─────────────────────────────────────────────────
+# CPA bans a client IP for 30 minutes after five failed management keys in a
+# row, localhost included, whichever tool sent them. Both plugins (the
+# provider and cpa-status, each with its own copy of this module) and every
+# Hermes process on one HERMES_HOME coordinate through two files under
+# cache/cliproxyapi/locks/: one empty lock file per CPA root (flock) and one
+# latch of rejected keys (salted fingerprints only).
+
+LATCH_PER_ROOT = 8
+_LEGACY_LATCH = ("cache", "cpa-status", "rejected.json")  # cpa-status 0.4, read only
+_GUARD_LOCKS: dict[str, threading.Lock] = {}
+_GUARD_LOCKS_LOCK = threading.Lock()
+
+
+def _locks_dir(home: Path) -> Path:
+    # A subdir: instance caches are cache/cliproxyapi/<name>.json and any
+    # name, "rejected" included, may be configured.
+    return Path(home) / "cache" / "cliproxyapi" / "locks"
+
+
+def latch_path(home: Path) -> Path:
+    return _locks_dir(home) / "rejected.json"
+
+
+def _read_latch_file(path: Path) -> dict[str, list[str]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        root: [fp for fp in fps if isinstance(fp, str)]
+        for root, fps in data.items()
+        if isinstance(root, str) and isinstance(fps, list)
+    }
+
+
+def key_rejected(home: Path | None, root: str, key: str, instances: Iterable[str] = ()) -> bool:
+    """Whether CPA already rejected this management key on this root.
+
+    Reads memory, the shared latch, the 0.4 companion latch and the provider's
+    per-instance latch of every named instance on the same root.
+    """
+    if _rejected_here(root, key):
+        return True
+    if home is None:
+        return False
+    for path in (latch_path(home), Path(home).joinpath(*_LEGACY_LATCH)):
+        if any(fingerprint_matches(key, fp) for fp in _read_latch_file(path).get(root, ())):
+            return True
+    for name in instances:
+        stored = load_cache(home, name).mgmt_auth_failed
+        if stored and fingerprint_matches(key, stored):
+            return True
+    return False
+
+
+def mark_rejected(home: Path | None, root: str, key: str) -> None:
+    """Remember a rejected key: the shared file first, then memory. Never raises."""
+    if home is not None:
+        try:
+            path = latch_path(home)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = _read_latch_file(path)
+            kept = [fp for fp in data.get(root, []) if not fingerprint_matches(key, fp)]
+            data[root] = (kept + [management_fingerprint(key)])[-LATCH_PER_ROOT:]
+            _write_private(path, json.dumps(data, sort_keys=True), ".rejected.")
+        except OSError:
+            pass  # memory still holds it for this process
+    _remember_rejected(root, key)
+
+
+def _write_private(path: Path, text: str, prefix: str) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _thread_lock(root: str) -> threading.Lock:
+    with _GUARD_LOCKS_LOCK:
+        return _GUARD_LOCKS.setdefault(root, threading.Lock())
+
+
+def _open_lock_file(home: Path, root: str) -> int | None:
+    if fcntl is None:
+        return None
+    directory = _locks_dir(home)
+    directory.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16] + ".lock"
+    return os.open(directory / name, os.O_RDWR | os.O_CREAT, 0o600)
+
+
+def _try_flock(fd: int | None) -> bool:
+    if fd is None or fcntl is None:
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+@contextmanager
+def mgmt_guard(home: Path | None, root: str, wait: float = 0):
+    """Hold the management lock for one CPA root; yields whether it was acquired.
+
+    ``wait=0`` tries once; otherwise polls up to ``wait`` seconds. The thread
+    lock comes first (flock is per open file description on Linux and per
+    process on BSD/macOS), then ``fcntl.flock`` on the root's lock file so
+    other processes and the other plugin's copy of this module wait too.
+    Without ``fcntl`` (Windows) or without a home, only the thread lock is used.
+    """
+    deadline = time.monotonic() + max(0.0, wait)
+    lock = _thread_lock(root)
+    acquired = lock.acquire(timeout=wait) if wait > 0 else lock.acquire(blocking=False)
+    if not acquired:
+        yield False
+        return
+    fd = None
+    try:
+        try:
+            fd = _open_lock_file(home, root) if home is not None else None
+        except OSError:
+            fd = None  # unwritable cache dir: thread lock only
+        while not _try_flock(fd):
+            if time.monotonic() >= deadline:
+                yield False
+                return
+            time.sleep(0.05)
+        yield True
+    finally:
+        if fd is not None:
+            os.close(fd)  # also releases the flock
+        lock.release()
 
 
 def choose_accounts(listing: Any, per_provider: int) -> dict[str, list[str]]:
@@ -966,13 +1119,20 @@ def refresh_catalog(
     timeout: float = 8.0,
     resolver: Resolver | None = None,
     management: Callable[..., ManagementResult] = fetch_management,
+    home: Path | None = None,
+    instances_on_root: Iterable[str] = (),
 ) -> Catalog:
     """Fresh public catalog, plus management grouping when a key is set.
 
     The management pass runs at most once per ``MANAGEMENT_TTL`` and never again
-    for a key CPA rejected, until the key changes. When management is configured
-    but its key cannot be read right now, previous management results are kept.
-    Raises ``GatewayError`` when the public model list fails.
+    for a key CPA rejected, until the key changes. It runs under the shared
+    ``mgmt_guard`` without waiting: when ``/cpa`` holds it, the pass is skipped
+    and retried on the next refresh. When management is configured but its key
+    cannot be read right now, previous management results are kept.
+    ``home`` enables the shared latch and lock files (else memory only);
+    ``instances_on_root`` names every instance on this root, whose
+    per-instance latches also count. Raises ``GatewayError`` when the public
+    model list fails.
     """
     now = time.time() if now is None else now
     if mgmt_configured is None:
@@ -987,38 +1147,52 @@ def refresh_catalog(
         mgmt_checked_at=previous.mgmt_checked_at,
         mgmt_auth_failed=previous.mgmt_auth_failed,
     )
+
+    def rejected() -> bool:
+        return bool(
+            previous.mgmt_auth_failed and fingerprint_matches(mgmt_key, previous.mgmt_auth_failed)
+        ) or key_rejected(home, root, mgmt_key, instances_on_root)
+
+    def latch_off() -> None:
+        catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
+        catalog.mgmt_auth_failed = previous.mgmt_auth_failed or management_fingerprint(mgmt_key)
+        catalog.mgmt_status = "auth_failed"
+
     if not mgmt_configured:
         catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
         catalog.mgmt_checked_at, catalog.mgmt_auth_failed = 0.0, ""
         catalog.mgmt_status = "off"
     elif not mgmt_key:
         catalog.mgmt_status = "missing_key"
+    elif rejected():
+        latch_off()
+    elif not previous.mgmt_auth_failed and 0 <= now - previous.mgmt_checked_at < MANAGEMENT_TTL:
+        catalog.mgmt_status = "cached"
     else:
-        if (
-            previous.mgmt_auth_failed and fingerprint_matches(mgmt_key, previous.mgmt_auth_failed)
-        ) or _rejected_here(root, mgmt_key):
-            catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
-            catalog.mgmt_auth_failed = previous.mgmt_auth_failed or management_fingerprint(mgmt_key)
-            catalog.mgmt_status = "auth_failed"
-        elif not previous.mgmt_auth_failed and 0 <= now - previous.mgmt_checked_at < MANAGEMENT_TTL:
-            catalog.mgmt_status = "cached"
-        else:
-            result = management(root, mgmt_key, timeout=timeout, resolver=resolver)
-            catalog.mgmt_checked_at = now
-            catalog.mgmt_status = result.status
-            if result.status == "ok":
-                catalog.mgmt_groups = result.groups
-                catalog.mgmt_defs = {
-                    model_id: entry
-                    for model_id in public.ids
-                    if (entry := _definition_for(result.definitions, model_id))
-                }
-                catalog.mgmt_auth_failed = ""
-            elif result.status == "auth_failed":
-                _remember_rejected(root, mgmt_key)
-                catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
-                catalog.mgmt_auth_failed = management_fingerprint(mgmt_key)
-            # "unavailable": keep previous results; retry after the TTL.
+        with mgmt_guard(home, root, 0) as held:
+            if not held:
+                # /cpa is talking to this CPA. Keep previous results and leave
+                # mgmt_checked_at alone so the next refresh tries again.
+                catalog.mgmt_status = "cached"
+            elif rejected():  # another holder latched it while we waited
+                latch_off()
+            else:
+                result = management(root, mgmt_key, timeout=timeout, resolver=resolver)
+                catalog.mgmt_checked_at = now
+                catalog.mgmt_status = result.status
+                if result.status == "ok":
+                    catalog.mgmt_groups = result.groups
+                    catalog.mgmt_defs = {
+                        model_id: entry
+                        for model_id in public.ids
+                        if (entry := _definition_for(result.definitions, model_id))
+                    }
+                    catalog.mgmt_auth_failed = ""
+                elif result.status == "auth_failed":
+                    mark_rejected(home, root, mgmt_key)  # before the guard is released
+                    catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
+                    catalog.mgmt_auth_failed = management_fingerprint(mgmt_key)
+                # "unavailable": keep previous results; retry after the TTL.
     catalog.meta = merge_meta(public.ids, public.meta, catalog.mgmt_defs)
     return catalog
 
@@ -1050,18 +1224,7 @@ def save_cache(hermes_home: Path, instance: str, catalog: Catalog) -> None:
         },
         sort_keys=True,
     )
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{instance}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(data)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    _write_private(path, data, f".{instance}.")
 
 
 def _str_dict(value: Any) -> dict[str, Any]:

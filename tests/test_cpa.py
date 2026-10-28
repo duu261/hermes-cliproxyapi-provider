@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -439,11 +440,11 @@ class _Gateway(BaseHTTPRequestHandler):
         cls = type(self)
         if cls.mgmt_status != 200:
             return self._send(cls.mgmt_status)
-        if auth != f"Bearer {MGMT_KEY}":
-            return self._send(401)
         version = "v8" if parts.path.startswith("/v8/") else "v0"
         if (version == "v8") != cls.v8:
-            return self._send(404)
+            return self._send(404)  # an unregistered route: 404 before auth, as in CPA
+        if auth != f"Bearer {MGMT_KEY}":
+            return self._send(401)
         tail = parts.path.split("/management/", 1)[1]
         if tail in ("credentials", "auth-files"):
             return self._send(200, CREDENTIALS)
@@ -871,6 +872,136 @@ class RefreshTests(GatewayTestCase):
         self.assertEqual(later.mgmt_status, "missing_key")
         self.assertEqual(later.mgmt_groups, good.mgmt_groups)
         self.assertEqual(self.mgmt_requests(), [])
+
+    # ── Shared guard and latch (with a home) ──
+
+    def test_shared_latch_blocks_management(self):
+        home = Path(tempfile.mkdtemp())
+        cpa.mark_rejected(home, self.root, MGMT_KEY)
+        cpa._REJECTED.clear()
+        catalog = cpa.refresh_catalog(
+            self.root, API_KEY, MGMT_KEY, cpa.Catalog(), timeout=5, now=1000, home=home
+        )
+        self.assertEqual(catalog.mgmt_status, "auth_failed")
+        self.assertEqual(self.mgmt_requests(), [])
+
+    def test_companion_latch_of_0_4_blocks_management(self):
+        home = Path(tempfile.mkdtemp())
+        old = home / "cache" / "cpa-status" / "rejected.json"
+        old.parent.mkdir(parents=True)
+        old.write_text(json.dumps({self.root: [cpa.management_fingerprint(MGMT_KEY)]}))
+        catalog = cpa.refresh_catalog(
+            self.root, API_KEY, MGMT_KEY, cpa.Catalog(), timeout=5, now=1000, home=home
+        )
+        self.assertEqual(catalog.mgmt_status, "auth_failed")
+        self.assertEqual(self.mgmt_requests(), [])
+
+    def test_sibling_instance_latch_blocks_management(self):
+        home = Path(tempfile.mkdtemp())
+        cpa.save_cache(
+            home, "b", cpa.Catalog(mgmt_auth_failed=cpa.management_fingerprint(MGMT_KEY))
+        )
+        catalog = cpa.refresh_catalog(
+            self.root,
+            API_KEY,
+            MGMT_KEY,
+            cpa.Catalog(),
+            timeout=5,
+            now=1000,
+            home=home,
+            instances_on_root=("a", "b"),
+        )
+        self.assertEqual(catalog.mgmt_status, "auth_failed")
+        self.assertEqual(self.mgmt_requests(), [])
+
+    def test_busy_guard_skips_pass_keeps_results_and_retries_next_refresh(self):
+        home = Path(tempfile.mkdtemp())
+        good = cpa.refresh_catalog(
+            self.root, API_KEY, MGMT_KEY, cpa.Catalog(), timeout=5, now=1000, home=home
+        )
+        due = 1000 + cpa.MANAGEMENT_TTL + 1
+        release, held = threading.Event(), threading.Event()
+
+        def hold():
+            with cpa.mgmt_guard(home, self.root, 0):
+                held.set()
+                release.wait(5)
+
+        worker = threading.Thread(target=hold)
+        worker.start()
+        held.wait(5)
+        _Gateway.seen = []
+        try:
+            skipped = cpa.refresh_catalog(
+                self.root, API_KEY, MGMT_KEY, good, timeout=5, now=due, home=home
+            )
+        finally:
+            release.set()
+            worker.join(5)
+        self.assertEqual(skipped.mgmt_status, "cached")
+        self.assertEqual(skipped.mgmt_groups, good.mgmt_groups)
+        self.assertEqual(skipped.mgmt_checked_at, good.mgmt_checked_at)
+        self.assertEqual(self.mgmt_requests(), [])
+        self.assertTrue(any(r["path"] == "/v1/models" for r in _Gateway.seen))
+        retried = cpa.refresh_catalog(
+            self.root, API_KEY, MGMT_KEY, skipped, timeout=5, now=due, home=home
+        )
+        self.assertEqual(retried.mgmt_status, "ok")
+        self.assertEqual(retried.mgmt_checked_at, due)
+        self.assertTrue(self.mgmt_requests())
+
+    def _latched_when_released(self, home, management):
+        """Run a refresh; a second thread takes the guard the moment it is free
+        and reports whether the latch was already there."""
+        seen: dict[str, bool] = {}
+        entered = threading.Event()
+
+        def wrapped(*args, **kwargs):
+            entered.set()
+            return management(*args, **kwargs)
+
+        def watcher():
+            entered.wait(5)
+            with cpa.mgmt_guard(home, self.root, 5) as ok:
+                cpa._REJECTED.clear()
+                seen["latched"] = ok and cpa.key_rejected(home, self.root, "wrong")
+
+        thread = threading.Thread(target=watcher)
+        thread.start()
+        catalog = cpa.refresh_catalog(
+            self.root,
+            API_KEY,
+            "wrong",
+            cpa.Catalog(),
+            timeout=5,
+            now=1000,
+            home=home,
+            management=wrapped,
+        )
+        thread.join(5)
+        self.assertEqual(catalog.mgmt_status, "auth_failed")
+        return seen.get("latched")
+
+    def test_401_latched_before_guard_released(self):
+        home = Path(tempfile.mkdtemp())
+
+        def slow(*args, **kwargs):
+            time.sleep(0.2)  # the watcher is now blocked on the guard
+            return cpa.fetch_management(*args, **kwargs)
+
+        self.assertTrue(self._latched_when_released(home, slow))
+
+    def test_401_on_v0_after_v8_404_latched_before_release(self):
+        home = Path(tempfile.mkdtemp())
+        _Gateway.v8 = False
+
+        def slow(*args, **kwargs):
+            time.sleep(0.2)
+            return cpa.fetch_management(*args, **kwargs)
+
+        self.assertTrue(self._latched_when_released(home, slow))
+        paths = [r["path"] for r in self.mgmt_requests()]
+        self.assertEqual(paths, ["/v8/management/credentials", "/v0/management/auth-files"])
 
 
 class RouteListTests(unittest.TestCase):

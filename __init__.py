@@ -134,6 +134,8 @@ class _Instance:
                     self.catalog,
                     mgmt_configured=bool(self.spec.mgmt_key_env),
                     timeout=timeout,
+                    home=self.home,
+                    instances_on_root=_names_on_root(self.spec.root),
                 )
             except cpa.GatewayError as exc:
                 logger.warning("cliproxyapi %s: model list failed: %s", self.spec.name, exc)
@@ -241,6 +243,11 @@ _INSTANCES: dict[str, _Instance] = {}
 _TAKEN: dict[str, str] = {}  # registered profile name -> owning instance
 _TAKEN_LOCK = threading.Lock()
 _IMPORT_CONTEXT = contextvars.copy_context()
+
+
+def _names_on_root(root: str) -> tuple[str, ...]:
+    """Every configured instance on one CPA root: their latches count for each other."""
+    return tuple(name for name, inst in list(_INSTANCES.items()) if inst.spec.root == root)
 
 
 def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile:
