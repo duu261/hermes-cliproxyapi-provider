@@ -856,9 +856,10 @@ def mgmt_guard(home: Path | None, root: str, wait: float = 0):
 
     ``wait=0`` tries once; otherwise polls up to ``wait`` seconds. The thread
     lock comes first, then ``fcntl.flock`` on the root's lock file so other
-    processes wait too. On Linux flock is per open file description, so the
-    other plugin's copy of this module in the same process waits as well; on
-    BSD/macOS flock is per process and the two copies only share the latch.
+    processes wait too. flock locks belong to the open file description on
+    Linux and on BSD/macOS (unlike POSIX ``fcntl`` locks, which are per
+    process), so the other plugin's copy of this module, with its own open of
+    the lock file, waits as well in the same process.
     Without ``fcntl`` (Windows) or without a home, only the thread lock is used.
     """
     deadline = time.monotonic() + max(0.0, wait)
