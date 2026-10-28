@@ -19,5 +19,5 @@ def register(ctx) -> None:
     ctx.register_command(
         "cpa",
         status.handle,
-        description="CLIProxyAPI pool status: /cpa [pool] [provider]",
+        description="CLIProxyAPI pool status: /cpa [pool] [provider] · /cpa quota <pool>",
     )

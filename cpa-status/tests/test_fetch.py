@@ -12,6 +12,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -138,17 +139,77 @@ class FetchTests(unittest.TestCase):
         self.assertIn("key rejected", out)
         # Exactly one request: a 401 on v8 must never fall back to v0.
         self.assertEqual([s["path"] for s in _CPA.seen], ["/v8/management/credentials"])
-        latch = self.home / "cache" / "cpa-status" / "rejected.json"
+        latch = cpa.latch_path(self.home)
+        self.assertEqual(latch, self.home / "cache" / "cliproxyapi" / "locks" / "rejected.json")
         self.assertTrue(latch.exists())
         self.assertEqual(stat.S_IMODE(latch.stat().st_mode), 0o600)
         self.assertNotIn(BAD, latch.read_text())
+        self.assertFalse((self.home / "cache" / "cpa-status").exists())  # 0.4 file never written
         _CPA.seen = []
         self.assertIn("key rejected", self.run_cpa())
         self.assertEqual(_CPA.seen, [])
 
+    def test_latch_of_0_4_still_blocks(self):
+        old = self.home / "cache" / "cpa-status" / "rejected.json"
+        old.parent.mkdir(parents=True)
+        old.write_text(json.dumps({self.root: [cpa.management_fingerprint(KEY)]}))
+        self.assertIn("key rejected", self.run_cpa())
+        self.assertEqual(_CPA.seen, [])
+
+    def test_provider_latch_in_shared_file_blocks(self):
+        cpa.mark_rejected(self.home, self.root, KEY)
+        status.reset_state()  # memory gone: the file must do it
+        self.assertIn("key rejected", self.run_cpa())
+        self.assertEqual(_CPA.seen, [])
+
+    def test_busy_when_provider_holds_the_guard(self):
+        release, held = threading.Event(), threading.Event()
+
+        def hold():
+            with cpa.mgmt_guard(self.home, self.root, 0):
+                held.set()
+                release.wait(5)
+
+        worker = threading.Thread(target=hold)
+        worker.start()
+        held.wait(5)
+        try:
+            with mock.patch.object(status, "GUARD_WAIT", 0.2):
+                out = self.run_cpa()
+        finally:
+            release.set()
+            worker.join(5)
+        self.assertIn("busy", out)
+        self.assertEqual(_CPA.seen, [])
+        self.assertIn("codex 2", self.run_cpa())  # busy is never cached
+
+    def test_waits_for_a_short_provider_pass(self):
+        release, held = threading.Event(), threading.Event()
+
+        def hold():
+            with cpa.mgmt_guard(self.home, self.root, 0):
+                held.set()
+                release.wait(5)
+
+        worker = threading.Thread(target=hold)
+        worker.start()
+        held.wait(5)
+        threading.Timer(0.2, release.set).start()
+        out = self.run_cpa()
+        worker.join(5)
+        self.assertIn("codex 2", out)
+
+    def test_cache_hit_does_not_take_the_guard(self):
+        self.run_cpa()
+        with cpa.mgmt_guard(self.home, self.root, 0) as ok:
+            self.assertTrue(ok)
+            out = self.run_cpa()
+        self.assertIn("cached", out)
+
     def test_latch_survives_a_fresh_process(self):
         self.env["CPA_A_MGMT"] = BAD
         self.run_cpa()
+        status.reset_state()  # also clears cpa's in-memory latch
         importlib.reload(status)
         _CPA.seen = []
         self.assertIn("key rejected", self.run_cpa())
@@ -191,7 +252,7 @@ class FetchTests(unittest.TestCase):
         self.assertIn("codex 2", out)
 
     def test_corrupt_latch_file_is_empty(self):
-        latch = self.home / "cache" / "cpa-status" / "rejected.json"
+        latch = cpa.latch_path(self.home)
         latch.parent.mkdir(parents=True)
         latch.write_text("{not json")
         self.assertIn("codex 2", self.run_cpa())
@@ -200,7 +261,7 @@ class FetchTests(unittest.TestCase):
         _CPA.force = 403
         out = self.run_cpa()
         self.assertIn("blocked or remote management off", out)
-        self.assertFalse((self.home / "cache" / "cpa-status" / "rejected.json").exists())
+        self.assertFalse(cpa.latch_path(self.home).exists())
         self.assertNotIn("secret-body", out)
 
     def test_server_error_is_category_only(self):
@@ -253,22 +314,6 @@ class FetchTests(unittest.TestCase):
         out = self.run_cpa("", config)
         self.assertIn("instance 'a'", out)
         self.assertNotIn("pw", out)
-
-
-class LatchFileTests(unittest.TestCase):
-    def test_keeps_at_most_eight_per_root(self):
-        home = Path(tempfile.mkdtemp())
-        for n in range(12):
-            status.remember_rejected(home, "http://r", f"key-{n}")
-        data = json.loads((home / "cache" / "cpa-status" / "rejected.json").read_text())
-        self.assertEqual(len(data["http://r"]), 8)
-        self.assertTrue(status.rejected_on_disk(home, "http://r", "key-11"))
-        self.assertFalse(status.rejected_on_disk(home, "http://r", "key-0"))
-
-    def test_unwritable_home_does_not_raise(self):
-        home = Path(tempfile.mkdtemp())
-        (home / "cache").write_text("a file, not a dir")
-        status.remember_rejected(home, "http://r", "k")
 
 
 if __name__ == "__main__":

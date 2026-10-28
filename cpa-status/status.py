@@ -12,12 +12,10 @@ Rules (see AGENTS.md, "/cpa status"):
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
 import re
-import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -198,10 +196,46 @@ _KEPT_FIELDS = frozenset(
 
 
 def files_of(listing: Any) -> list[dict[str, Any]]:
+    """Listing entries reduced to ``_KEPT_FIELDS``.
+
+    For claude and codex entries, ``_target`` (CPA ``auth_index``) and
+    ``_acct`` (the Codex ``id_token.chatgpt_account_id`` claim) are derived
+    here for ``/cpa quota``. They stay in memory only, are never rendered, and
+    the raw ``id_token`` object is dropped with everything else.
+    """
     files = listing.get("files") if isinstance(listing, dict) else None
     if not isinstance(files, list):
         return []
-    return [{k: v for k, v in f.items() if k in _KEPT_FIELDS} for f in files if isinstance(f, dict)]
+    out = []
+    for raw in files:
+        if not isinstance(raw, dict):
+            continue
+        entry = {k: v for k, v in raw.items() if k in _KEPT_FIELDS}
+        if provider_of(entry) in ("claude", "codex"):
+            target, account = call_target(raw)
+            if target:
+                entry["_target"] = target
+            if account and provider_of(entry) == "codex":
+                entry["_acct"] = account
+        out.append(entry)
+    return out
+
+
+_TARGET_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def call_target(entry: dict[str, Any]) -> tuple[str, str]:
+    """``(auth_index, chatgpt_account_id)`` from a raw CPA listing entry, shape-checked."""
+    raw = entry.get("auth_index")
+    target = raw if isinstance(raw, str) and _TARGET_RE.match(raw) else ""
+    account = ""
+    claims = entry.get("id_token")
+    if isinstance(claims, dict):
+        value = claims.get("chatgpt_account_id")
+        if isinstance(value, str) and _ACCOUNT_RE.match(value):
+            account = value
+    return target, account
 
 
 def summarize(files: Iterable[dict[str, Any]], now: datetime) -> dict[str, ProviderSummary]:
@@ -422,97 +456,47 @@ def _read_secret(name: str) -> str:
         return os.environ.get(name, "")
 
 
-# ── Rejected-key latch ──────────────────────────────────────────────────────
-# CPA bans a client IP for 30 minutes after five failed management keys,
-# localhost included. The provider plugin keeps its own latch per instance
-# cache; this module is a separate import, so it keeps a persisted latch too
-# and also honors the provider's for every instance on the same root.
+# ── Rejected-key latch and guard ────────────────────────────────────────────
+# CPA bans a client IP for 30 minutes after five failed management keys in a
+# row, localhost included. The latch and the per-root guard live in the
+# shared cpa.py so the provider plugin, this plugin and every process on one
+# HERMES_HOME coordinate (see cpa.mgmt_guard).
 
-LATCH_PER_ROOT = 8
+GUARD_WAIT = 25.0  # seconds /cpa waits for another management pass on the same CPA
 _PROCESS_SALT = os.urandom(16).hex()
 _STATE_LOCK = threading.Lock()
-_MEMORY_REJECTED: dict[str, set[str]] = {}
 _RESULTS: dict[tuple[str, str], Fetched] = {}
-_JOB_LOCKS: dict[tuple[str, str], threading.Lock] = {}
 
 
 def reset_state() -> None:
-    """Forget in-memory results and rejections. The disk latch is never touched."""
+    """Forget in-memory results and rejections. The latch files are never touched."""
     with _STATE_LOCK:
-        _MEMORY_REJECTED.clear()
         _RESULTS.clear()
-        _JOB_LOCKS.clear()
+    with cpa._REJECTED_LOCK:
+        cpa._REJECTED.clear()
+    _quota().reset_state()
+
+
+def _quota():
+    """The ``/cpa quota`` module (imported late: it imports this one)."""
+    try:
+        from . import quota
+    except ImportError:  # pragma: no cover - direct import in tests
+        import quota  # type: ignore[no-redef]
+    return quota
 
 
 def _memory_id(key: str) -> str:
     return cpa.management_fingerprint(key, _PROCESS_SALT)
 
 
-def _latch_path(home: Path) -> Path:
-    return Path(home) / "cache" / "cpa-status" / "rejected.json"
-
-
-def _read_latch(home: Path) -> dict[str, list[str]]:
-    try:
-        data = json.loads(_latch_path(home).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {
-        root: [fp for fp in fps if isinstance(fp, str)]
-        for root, fps in data.items()
-        if isinstance(root, str) and isinstance(fps, list)
-    }
-
-
-def rejected_on_disk(home: Path, root: str, key: str) -> bool:
-    return any(cpa.fingerprint_matches(key, fp) for fp in _read_latch(home).get(root, []))
-
-
-def remember_rejected(home: Path, root: str, key: str) -> None:
-    """Persist first (salted fingerprint only), then remember in memory."""
-    with _STATE_LOCK:
-        try:
-            data = _read_latch(home)
-            kept = [fp for fp in data.get(root, []) if not cpa.fingerprint_matches(key, fp)]
-            data[root] = (kept + [cpa.management_fingerprint(key)])[-LATCH_PER_ROOT:]
-            path = _latch_path(home)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".rejected.", suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle_:
-                    handle_.write(json.dumps(data, sort_keys=True))
-                os.chmod(tmp, 0o600)
-                os.replace(tmp, path)
-            except BaseException:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
-        except OSError as exc:
-            logger.warning("cpa-status: could not persist a rejected key (%s)", type(exc).__name__)
-        _MEMORY_REJECTED.setdefault(root, set()).add(_memory_id(key))
-
-
-def _provider_rejected(home: Path, specs: Iterable[cpa.InstanceSpec], root: str, key: str) -> bool:
-    """The provider latches per instance cache and caches carry no root, so walk
-    every configured instance on this root."""
-    for spec in specs:
-        if spec.root != root:
-            continue
-        stored = cpa.load_cache(home, spec.name).mgmt_auth_failed
-        if stored and cpa.fingerprint_matches(key, stored):
-            return True
-    return False
+def _names_on_root(specs: Iterable[cpa.InstanceSpec], root: str) -> tuple[str, ...]:
+    """The provider latches per instance cache and caches carry no root."""
+    return tuple(spec.name for spec in specs if spec.root == root)
 
 
 def known_rejected(home: Path, specs: list[cpa.InstanceSpec], root: str, key: str) -> bool:
-    with _STATE_LOCK:
-        if _memory_id(key) in _MEMORY_REJECTED.get(root, set()):
-            return True
-    return rejected_on_disk(home, root, key) or _provider_rejected(home, specs, root, key)
+    return cpa.key_rejected(home, root, key, _names_on_root(specs, root))
 
 
 # ── Fetch ───────────────────────────────────────────────────────────────────
@@ -524,7 +508,7 @@ MAX_WORKERS = 4
 
 @dataclass
 class Fetched:
-    status: str  # ok, rejected, blocked, unavailable
+    status: str  # ok, rejected, blocked, busy, unavailable
     files: list[dict[str, Any]] = field(default_factory=list)
     detail: str = ""
     at: float = 0.0
@@ -549,21 +533,42 @@ def _get_listing(root: str, key: str) -> Any:
     return cpa.get_json(root + cpa._V0.credentials, key, **options)
 
 
-def _fetch(home: Path, specs: list[cpa.InstanceSpec], root: str, key: str) -> tuple[Fetched, bool]:
-    """Result for one root and key, and whether it came from the short cache."""
-    job = (root, _memory_id(key))
+def _cached_listing(job: tuple[str, str]) -> Fetched | None:
     with _STATE_LOCK:
-        lock = _JOB_LOCKS.setdefault(job, threading.Lock())
-    with lock:  # one request at a time per root and key, even across sessions
-        with _STATE_LOCK:
-            cached = _RESULTS.get(job)
-        if cached and 0 <= time.monotonic() - cached.at < CACHE_SECONDS:
-            return cached, True
-        result = _fetch_once(home, specs, root, key)
-        result.at = time.monotonic()
-        with _STATE_LOCK:
-            _RESULTS[job] = result
-        return result, False
+        cached = _RESULTS.get(job)
+    if cached and 0 <= time.monotonic() - cached.at < CACHE_SECONDS:
+        return cached
+    return None
+
+
+def _fetch(home: Path, specs: list[cpa.InstanceSpec], root: str, key: str) -> tuple[Fetched, bool]:
+    """Result for one root and key, and whether it came from the short cache.
+
+    A cache hit never takes the guard; otherwise the GET runs under the shared
+    per-root guard, so it never overlaps a provider pass or a quota run.
+    """
+    cached = _cached_listing((root, _memory_id(key)))
+    if cached:
+        return cached, True
+    with cpa.mgmt_guard(home, root, GUARD_WAIT) as held:
+        if not held:
+            return Fetched("busy"), False
+        return _fetch_locked(home, specs, root, key)
+
+
+def _fetch_locked(
+    home: Path, specs: list[cpa.InstanceSpec], root: str, key: str
+) -> tuple[Fetched, bool]:
+    """``_fetch`` for a caller that already holds the guard (never takes it)."""
+    job = (root, _memory_id(key))
+    cached = _cached_listing(job)
+    if cached:
+        return cached, True
+    result = _fetch_once(home, specs, root, key)
+    result.at = time.monotonic()
+    with _STATE_LOCK:
+        _RESULTS[job] = result
+    return result, False
 
 
 def _fetch_once(home: Path, specs: list[cpa.InstanceSpec], root: str, key: str) -> Fetched:
@@ -575,7 +580,7 @@ def _fetch_once(home: Path, specs: list[cpa.InstanceSpec], root: str, key: str) 
         listing = _get_listing(root, key)
     except cpa.GatewayError as exc:
         if exc.status == 401:
-            remember_rejected(home, root, key)
+            cpa.mark_rejected(home, root, key)  # inside the guard, before release
             return Fetched("rejected")
         if exc.status == 403:
             return Fetched("blocked")
@@ -591,11 +596,14 @@ USAGE = (
     "/cpa - account health for every CLIProxyAPI pool\n"
     "/cpa <pool> - one pool, with the last hour of requests\n"
     "/cpa <pool> <provider> - one line per account\n"
-    "Needs mgmt_key_env on the pool. Read-only; one request per pool."
+    "/cpa quota <pool> [claude|codex] - live usage from each vendor\n"
+    "Needs mgmt_key_env on the pool. Read-only; one request per pool\n"
+    "(quota: one more per account)."
 )
 _STATUS_TEXT = {
     "rejected": "key rejected (fix the key; it will not be sent again)",
     "blocked": "blocked or remote management off",
+    "busy": "busy (another check of this CPA is running), try again",
     "no_key": "no management key (set mgmt_key_env)",
     "key_not_set": "key not set",
 }
@@ -691,6 +699,9 @@ def report(
     now: datetime | None = None,
 ) -> str:
     args = (raw_args or "").split()
+    if args[:1] == ["quota"]:
+        # Reserved word: a pool literally named "quota" is "/cpa quota quota".
+        return _quota().report(args[1:], config=config, home=home, secret=secret, now=now)
     if args[:1] in (["help"], ["-h"], ["--help"]) or len(args) > 2:
         return USAGE
     now = now or datetime.now(timezone.utc)
