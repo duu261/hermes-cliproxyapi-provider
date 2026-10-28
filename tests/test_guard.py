@@ -103,6 +103,29 @@ class LatchTests(unittest.TestCase):
         cpa.mark_rejected(None, R, "bad")
         self.assertTrue(cpa.key_rejected(None, R, "bad"))
 
+    def test_concurrent_rejections_on_different_roots_all_kept(self):
+        # Both plugin copies write the one file at once; no root may be lost.
+        copy = _copy_module()
+        roots = [f"http://127.0.0.1:{9000 + i}" for i in range(8)]
+        for _ in range(20):
+            cpa.latch_path(self.home).unlink(missing_ok=True)
+            barrier = threading.Barrier(len(roots))
+
+            def write(module, root, barrier=barrier):
+                barrier.wait()
+                module.mark_rejected(self.home, root, "bad")
+
+            threads = [
+                threading.Thread(target=write, args=(cpa if i % 2 else copy, root))
+                for i, root in enumerate(roots)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            data = json.loads(cpa.latch_path(self.home).read_text(encoding="utf-8"))
+            self.assertEqual(sorted(data), sorted(roots))
+
 
 class GuardTests(unittest.TestCase):
     def setUp(self):

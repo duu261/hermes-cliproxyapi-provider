@@ -737,6 +737,7 @@ LATCH_PER_ROOT = 8
 _LEGACY_LATCH = ("cache", "cpa-status", "rejected.json")  # cpa-status 0.4, read only
 _GUARD_LOCKS: dict[str, threading.Lock] = {}
 _GUARD_LOCKS_LOCK = threading.Lock()
+_LATCH_LOCK = threading.Lock()
 
 
 def _locks_dir(home: Path) -> Path:
@@ -784,15 +785,27 @@ def key_rejected(home: Path | None, root: str, key: str, instances: Iterable[str
 
 
 def mark_rejected(home: Path | None, root: str, key: str) -> None:
-    """Remember a rejected key: the shared file first, then memory. Never raises."""
+    """Remember a rejected key: the shared file first, then memory. Never raises.
+
+    The file holds every root, so its read-modify-write runs under its own
+    lock (thread lock, then a blocking flock on ``rejected.lock``); two
+    rejections on different roots at once must not drop either.
+    """
     if home is not None:
         try:
             path = latch_path(home)
             path.parent.mkdir(parents=True, exist_ok=True)
-            data = _read_latch_file(path)
-            kept = [fp for fp in data.get(root, []) if not fingerprint_matches(key, fp)]
-            data[root] = (kept + [management_fingerprint(key)])[-LATCH_PER_ROOT:]
-            _write_private(path, json.dumps(data, sort_keys=True), ".rejected.")
+            with _LATCH_LOCK:
+                fd = os.open(path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(fd, fcntl.LOCK_EX)
+                    data = _read_latch_file(path)
+                    kept = [fp for fp in data.get(root, []) if not fingerprint_matches(key, fp)]
+                    data[root] = (kept + [management_fingerprint(key)])[-LATCH_PER_ROOT:]
+                    _write_private(path, json.dumps(data, sort_keys=True), ".rejected.")
+                finally:
+                    os.close(fd)  # also releases the flock
         except OSError:
             pass  # memory still holds it for this process
     _remember_rejected(root, key)
@@ -842,9 +855,9 @@ def mgmt_guard(home: Path | None, root: str, wait: float = 0):
     """Hold the management lock for one CPA root; yields whether it was acquired.
 
     ``wait=0`` tries once; otherwise polls up to ``wait`` seconds. The thread
-    lock comes first (flock is per open file description on Linux and per
-    process on BSD/macOS), then ``fcntl.flock`` on the root's lock file so
-    other processes and the other plugin's copy of this module wait too.
+    lock comes first, then ``fcntl.flock`` on the root's lock file so other
+    processes and the other plugin's copy of this module (its own open file
+    description) wait too.
     Without ``fcntl`` (Windows) or without a home, only the thread lock is used.
     """
     deadline = time.monotonic() + max(0.0, wait)
