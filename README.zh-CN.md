@@ -281,7 +281,7 @@ hermes plugins enable cpa-status
 /cpa                    所有 instance：按 provider 统计 account
 /cpa pre                单个 instance，附带最近一小时的 request 数
 /cpa pre codex          每个 account 一行
-/cpa quota pre          所有 Claude 和 Codex account 的 live usage（实时用量）
+/cpa quota pre          所有有 quota 的 account 的 live usage（实时用量）
 /cpa quota pre codex    Codex only
 ```
 
@@ -317,27 +317,41 @@ codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
 codex-cu…@…  pro  wk 40% → Nov 01
 ```
 
-`/cpa quota <pool>` 向各厂商查询每个 Claude 和 Codex account 已用了多少，做法与 CPA
-自带 web UI 的 quota 页面相同：对每个启用的 account，CPA 的 `api-call` 路由带着该 account 的
-token（由 CPA 填入；Hermes 永远看不到）向两个固定 URL 之一发送一次 GET：
+`/cpa quota <pool>` 向各厂商查询每个 account 已用了多少，做法与 CPA 自带 web UI 的
+quota 页面相同。对内置的厂商，CPA 的 `api-call` 路由带着该 account 的 token（由 CPA
+填入；Hermes 永远看不到）发送 web UI 的同一个请求。其他 provider 的 account，在 CPA
+列出其 quota plugin 时，从该 plugin 读取。所有请求及其发送时机：
 
-- Claude：`https://api.anthropic.com/api/oauth/usage`（`5h`、`wk`，以及 account 有的
-  Opus 和 Sonnet 的 `wk` window）。
-- Codex：`https://chatgpt.com/backend-api/wham/usage`（window 按自身长度标注：`5h`、
-  `wk`、`mo`；plan 名称按厂商原样显示）。
+| Provider | 每个 account 的请求 | 显示内容 |
+|---|---|---|
+| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`, 每周 `opus` / `sonnet` |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, 然后 GET `https://cli-chat-proxy.grok.com/v1/billing` | 每周 credits `wk`、每月花费 `mo`、`supergrok` / `supergrok_heavy` |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` ，带该 account 的 `project_id`；只有前一个 host 在厂商侧失败或没有返回 quota 时，才依次请求 `daily-cloudcode-pa.sandbox` 和 `cloudcode-pa` | 按 model 分组，`5h` 和 `wk` |
+| Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
+| Kimi | GET `https://api.kimi.com/coding/v1/usages` （CPA 把 account 列为 `kimi-ai` 时用 `api.kimi.ai`） | 每个限额 window、每周、`mo` |
+| CPA plugin quota（如 Kiro） | GET `/v8/management/plugins/<id>/quota` （在 CPA 上；由 plugin 去问它的厂商） | plugin 的 meter 和 plan |
 
-header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已用量，按厂商报告
-原样显示；不跨 plan 汇总。某个 window 达到 100% 或厂商标记该 account 为 blocked 时，该 account 显示
-`OUT`。
+这些请求都不花钱，也不消耗 quota：都是 web UI 本身也会做的用量读取。刻意不做：xAI
+付费的 1 token chat 检查（web UI 给使用 API key 的付费 xAI account 的 fallback，这类
+account 会显示 billing 错误）、身份和 plan 查询、下载 account 文件，以及任何 reset。
 
-- 只在你输入时运行。每个 account 一次请求，每次最多 20 个 account，第一个请求单独发送，
-  之后最多 4 个并发；60 秒内重复输入直接用内存结果。跳过已禁用的 account。
+header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已用量（报告剩余量的
+厂商会被换算）；不跨 plan 汇总。某个 window 达到 100% 或厂商标记该 account 为 blocked
+时，该 account 显示 `OUT`。
+
+- 只在你输入时运行。每次最多 20 个 account，每个 account 最多 3 个请求。第一个请求
+  单独发送，之后最多 4 个并发；60 秒内重复输入直接用内存结果。跳过已禁用的 account。
+- `/cpa quota <pool> <provider>` 接受 `claude`、`codex`、`xai`、`antigravity`、
+  `devin`、`kimi`、`plugin`，或某个 plugin 的 provider（如 `kiro`）。
 - account token 过期时显示 `token rejected by vendor`，永远不计入 CPA 的封禁次数。
   management key 被拒绝时整个运行停止。
-- CPA 的 account 索引和 Codex 的 account id 只用于构造每个请求，从不显示、记录日志或
-  cache。厂商回复按字段读取；从不显示 body 和 header。
-- 不涵盖：其他 provider（xAI、Antigravity、Kiro 等），Codex 的 code-review 和按
-  model 的额外限额，reset credits。
+- CPA 的 account 索引、Codex 的 account id、Antigravity 的 project id 和 CPA 的
+  plugin id 只用于构造请求，从不显示、记录日志或 cache。厂商回复按字段读取；从不显示
+  body 和 header。
+- 不涵盖：Meta（web UI 要读它的原始 credential 文件）、CPA 只列为 `kimi` 的 Kimi
+  `.ai` account（会发到 `.com` URL 并显示 `token rejected by vendor`）、Codex 的
+  code-review 和按 model 的额外限额、plugin 的 summary 数字。
 
 ## 开发
 
