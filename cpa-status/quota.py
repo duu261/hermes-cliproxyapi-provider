@@ -758,15 +758,16 @@ class _Runner:
 
     def api(self, body: dict[str, Any]) -> Inner:
         self._gate()
+        path = self.path  # this request's own path: workers share self.path
         try:
             try:
-                inner = api_call(self.root, self.key, self.path, body)
+                inner = api_call(self.root, self.key, path, body)
             except cpa.GatewayError as exc:
-                if exc.status != 404 or self.path == V0_API_CALL:
+                if exc.status != 404 or path == V0_API_CALL:
                     raise
-                self.path = V0_API_CALL  # only after a v8 404, never after a 401
+                path = self.path = V0_API_CALL  # only after a v8 404, never after a 401
                 self._gate()
-                inner = api_call(self.root, self.key, self.path, body)
+                inner = api_call(self.root, self.key, path, body)
         except cpa.GatewayError as exc:
             self._outer(exc)
             if exc.status == 404:

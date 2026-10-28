@@ -411,6 +411,27 @@ class RequestShapeTests(QuotaTestCase):
         self.assertTrue(all(p == "/v0/management/api-call" for p in paths[2:]))
         self.assertIn("claude · 1 account", out)
 
+    def test_concurrent_v8_404s_do_not_abort_the_run(self):
+        # The probe has proven the key; then two workers both get a v8 404
+        # before either switches. The second must retry v0, not stop the run.
+        _CPA.files = [account("codex", n) for n in range(2, 8)]
+        _CPA.inner = {f"{n:016x}": (200, CODEX_PRO) for n in range(2, 8)}
+        _CPA.delay = 0.05
+        runner_paths = []
+        real = quota.api_call
+
+        def spy(root, key, path, body):
+            runner_paths.append(path)
+            if path == quota.V8_API_CALL and len(runner_paths) > 1:
+                time.sleep(0.05)  # let a second worker read the v8 path too
+                raise cpa.GatewayError(404, "not_found")
+            return real(root, key, quota.V0_API_CALL if path == quota.V8_API_CALL else path, body)
+
+        with mock.patch.object(quota, "api_call", spy):
+            out = self.run_quota()
+        self.assertIn("codex · 6 accounts: 6 have room", out)
+        self.assertGreaterEqual(runner_paths.count(quota.V8_API_CALL), 2)
+
     def test_v8_401_never_tries_v0(self):
         _CPA.outer = 401
         out = self.run_quota()
