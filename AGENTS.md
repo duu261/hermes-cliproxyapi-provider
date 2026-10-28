@@ -96,6 +96,14 @@ key; match their safety.
   that instance until its key changes. Treat "remote management disabled",
   "key not set" and any other failure as unavailable and fall back to public
   mode without retrying.
+- Every management pass takes `cpa.mgmt_guard` for its root without waiting
+  (busy: skip the pass, keep previous results, leave `mgmt_checked_at` so the
+  next refresh retries) and checks `cpa.key_rejected` first. A 401 calls
+  `cpa.mark_rejected` before the guard is released. The guard (thread lock,
+  then `fcntl.flock` on `cache/cliproxyapi/locks/<hash>.lock`) and the shared
+  latch `cache/cliproxyapi/locks/rejected.json` are shared with `/cpa`: CPA
+  bans a client IP after five failed management keys in a row, whichever
+  plugin or process sent them.
 - Parse responses into an allowlist of fields and drop the rest immediately;
   never log, cache or return key-bearing fields or bodies.
 - Same transport rules as the client key.
@@ -129,22 +137,44 @@ CPA instance serves providers the gateway sells in different groups.
 ## /cpa status (companion plugin)
 
 `cpa-status/` registers `/cpa`: account health per CPA instance, provider and
-account. It reuses the provider's transport code through a checked copy
-(`cpa-status/cpa.py` must equal root `cpa.py`; CI runs `cmp`).
+account, and `/cpa quota`: live usage per Claude and Codex account. It reuses
+the provider's transport code through a checked copy (`cpa-status/cpa.py`
+must equal root `cpa.py`; CI runs `cmp`).
 
 - User-triggered only. One `GET credentials` per distinct root and key
   (v0 `auth-files` fallback on 404 only). No timers, no retries, 20 s
   in-memory cache.
-- Before any GET, skip a key when it matches the companion latch file
-  (`cache/cpa-status/rejected.json`, salted fingerprints only, 0600) or the
-  provider's persisted latch of any configured instance on the same root.
-  On a 401, write the latch first. Never write the provider's caches.
+- Before any request, take `cpa.mgmt_guard` for the root (wait at most 25 s,
+  else answer busy) and skip a key `cpa.key_rejected` reports. On a 401,
+  `cpa.mark_rejected` first, inside the guard. The shared latch
+  `cache/cliproxyapi/locks/rejected.json` and lock files in the same `locks/`
+  dir are the only files under the provider's cache dir the companion
+  writes; never the per-instance caches. The 0.4 latch
+  `cache/cpa-status/rejected.json` is still read, never written.
 - Showing last-seen `quota.signals` that the credentials GET already returns
-  is not a quota call. Quota, plugin-quota, api-call, download and write
-  routes stay banned here as everywhere in this repo.
-- Never read or show `email`, `account`, `id_token`, `project_id`, `path`,
-  `id` or `auth_index`. Mask emails and token-like runs in names and
-  `status_message`.
+  is not a quota call.
+- `/cpa quota` may call `api-call` (v8 `requests/api-call`; v0 `api-call`
+  only after a v8 404) for one purpose: a GET to a URL in `QUOTA_REQUESTS`, a
+  closed list of exactly `https://api.anthropic.com/api/oauth/usage` and
+  `https://chatgpt.com/backend-api/wham/usage`. No query strings, no third
+  entry, no override from config or input. The request JSON contains only
+  `auth_index`, `method`, `url`, `header`; never `proxy_url`, `data` or a
+  `Host` header. Header values fixed in code; `$TOKEN$` only in
+  `Authorization`. Adding a vendor needs its own plan and review.
+- Never reset, consume, claim, profile, subscription, refresh, download or
+  any write route. Plugin-quota routes stay banned.
+- Lockout: hold the guard once for the whole quota run (never nested), probe
+  with the first `api-call` alone, check the latch before every call, latch
+  and stop on an outer 401, never retry v0 after a 401, never latch on a
+  vendor (inner) 401. At most 4 in flight.
+- `auth_index` and the Codex `id_token.chatgpt_account_id` claim may be read
+  for claude/codex entries and held in memory only to build that call; never
+  shown, logged or written to disk. Never read or show `email`, `account`,
+  `project_id`, `path` or `id`, nor any other `id_token` claim. Mask emails
+  and token-like runs in names and `status_message`.
+- Vendor replies: allowlisted fields only; never print a raw body or headers.
+- One call per account per run, at most 20 per run, results cached 60 s,
+  only on command. The provider plugin keeps "Never api-call".
 - Errors show status and category only, as in the provider.
 
 ## Secrets and transport
