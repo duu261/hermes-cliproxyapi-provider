@@ -11,8 +11,10 @@ after five bad keys, and they handle keys and account tokens. Every change keeps
 these rules; a pull request that breaks one is not merged:
 
 - Management calls are read-only GETs on the documented list, plus the
-  `api-call` route that `/cpa quota` uses for its fixed vendor usage URLs. No
-  writes, no new endpoints without an issue first.
+  `api-call` route and the plugin quota GET that `/cpa quota` uses for its
+  fixed requests (AGENTS.md lists every one). Nothing that costs money, uses
+  up quota, downloads account files or resets. No writes, no new endpoints
+  or vendors without an issue first.
 - Nothing calls the management API on a timer, at startup or from a model
   catalog refresh beyond what the provider already does. `/cpa` and
   `/cpa quota` run only when typed.
