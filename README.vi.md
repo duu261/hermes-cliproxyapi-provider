@@ -277,7 +277,7 @@ Hai plugin làm gì, theo mỗi `HERMES_HOME` trên Linux và macOS:
   qua các lần khởi động lại và cho cả hai plugin, và key đó không được gửi lại tới
   CPA đó cho tới khi key thay đổi.
 - Một key bị thu hồi giữa chừng khi `/cpa quota` đang chạy có thể tốn tối đa 4
-  lần: các request đang bay. `/cpa quota` gửi một request đầu tiên một mình trước,
+  lần: các request đã gửi đi. `/cpa quota` gửi một request đầu tiên một mình trước,
   nên một key đã sai sẵn không bao giờ tới được các request song song.
 - Trên Windows chỉ có khóa trong tiến trình; hai tiến trình Hermes ở đó chỉ phối
   hợp qua danh sách key bị từ chối đã ghi nhớ.
@@ -328,8 +328,8 @@ Cần `mgmt_key_env` trên instance muốn xem; instance không có sẽ hiện
   instance (v0 `auth-files` chỉ sau 404), và chỉ khi bạn gõ `/cpa`. Không hẹn
   giờ, không thử lại. Gõ lại trong 20 giây sẽ trả từ bộ nhớ.
 - Quota gần nhất (5h và tuần) là số CPA ghi lại từ traffic thật của tài khoản
-  Claude và Codex. CPA không ghi cho nhà cung cấp khác. `/cpa` thường không bao
-  giờ bảo CPA kiểm tra quota với upstream; `/cpa quota` thì có.
+  Claude và Codex. CPA không ghi cho nhà cung cấp khác. `/cpa` (không có `quota`)
+  không bao giờ bảo CPA kiểm tra quota với upstream; `/cpa quota` thì có.
 - Email trong tên tài khoản và thông báo được che; `email`, `account`,
   `project_id` và `path` không bao giờ được đọc.
 - Chạy khi chat đang rảnh. Gửi lúc agent đang chạy thì Hermes xử lý như mọi
