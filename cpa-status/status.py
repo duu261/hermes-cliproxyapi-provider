@@ -6,7 +6,8 @@ Rules (see AGENTS.md, "/cpa status"):
 - Never send a key CPA already rejected: a fingerprint-only latch file plus the
   provider plugin's persisted latch of every instance on the same root.
 - Never read ``email``, ``account``, ``id_token``, ``project_id``, ``path``,
-  ``id`` or ``auth_index``. Names and messages are masked.
+  ``id`` or ``auth_index`` for display. ``/cpa quota`` keeps a few call fields
+  in memory only (see ``files_of``). Names and messages are masked.
 - Quota shown is CPA's last-seen observation from the same GET (claude, codex).
 """
 
@@ -193,15 +194,21 @@ _KEPT_FIELDS = frozenset(
         "quota",
     }
 )
+# Providers ``/cpa quota`` reads through CPA's api-call (see quota.py). Others
+# are read only when CPA lists a quota plugin for them.
+QUOTA_BUILTINS = ("claude", "codex", "xai", "antigravity", "devin", "kimi")
+_KIMI_AI = ("kimi-ai", "kimi.ai")
 
 
 def files_of(listing: Any) -> list[dict[str, Any]]:
-    """Listing entries reduced to ``_KEPT_FIELDS``.
+    """Listing entries reduced to ``_KEPT_FIELDS``, plus in-memory call fields.
 
-    For claude and codex entries, ``_target`` (CPA ``auth_index``) and
-    ``_acct`` (the Codex ``id_token.chatgpt_account_id`` claim) are derived
-    here for ``/cpa quota``. They stay in memory only, are never rendered, and
-    the raw ``id_token`` object is dropped with everything else.
+    For entries ``/cpa quota`` can read: ``_target`` (CPA ``auth_index``),
+    ``_acct`` (Codex ``id_token.chatgpt_account_id``), ``_project``
+    (Antigravity ``project_id``), ``_plugin`` (CPA ``quota_plugin_id``, for
+    non-built-in providers) and ``_kimi_ai`` (from the raw provider fields,
+    before ``kimi-ai`` is normalized to ``kimi``). They stay in memory only and
+    are never rendered; everything else is dropped.
     """
     files = listing.get("files") if isinstance(listing, dict) else None
     if not isinstance(files, list):
@@ -211,18 +218,46 @@ def files_of(listing: Any) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         entry = {k: v for k, v in raw.items() if k in _KEPT_FIELDS}
-        if provider_of(entry) in ("claude", "codex"):
+        provider = provider_of(entry)
+        plugin = _shaped(raw.get("quota_plugin_id"), _PLUGIN_RE)
+        builtin = provider in QUOTA_BUILTINS
+        if builtin or (plugin and provider != "meta" and _true(raw.get("supports_quota"))):
             target, account = call_target(raw)
             if target:
                 entry["_target"] = target
-            if account and provider_of(entry) == "codex":
+            if account and provider == "codex":
                 entry["_acct"] = account
+            if provider == "antigravity" and _shaped(raw.get("project_id"), _TARGET_RE):
+                entry["_project"] = raw["project_id"]
+            if provider == "kimi":
+                entry["_kimi_ai"] = _is_kimi_ai(raw)
+            if not builtin:
+                entry["_plugin"] = plugin
         out.append(entry)
     return out
 
 
 _TARGET_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_PLUGIN_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _shaped(value: Any, pattern: re.Pattern[str]) -> str:
+    return value if isinstance(value, str) and pattern.match(value) else ""
+
+
+def _true(value: Any) -> bool:
+    return value is True or (isinstance(value, str) and value.strip().lower() in ("true", "1"))
+
+
+def _is_kimi_ai(raw: dict[str, Any]) -> bool:
+    """Kimi's .ai service, from listing fields only (MC also reads the file)."""
+    for name in ("provider", "type"):
+        value = raw.get(name)
+        if isinstance(value, str) and value.strip().lower() in _KIMI_AI:
+            return True
+    label = raw.get("name")
+    return isinstance(label, str) and any(hint in label.lower() for hint in _KIMI_AI)
 
 
 def call_target(entry: dict[str, Any]) -> tuple[str, str]:

@@ -1,24 +1,28 @@
-"""``/cpa quota``: live usage per Claude and Codex account, read from the vendor.
+"""``/cpa quota``: live usage per account, read from the vendor through CPA.
 
-Does what CLIProxyAPI's own Management Center does on its quota page: for each
-account, CPA's ``api-call`` route sends one fixed GET to the vendor's usage
-endpoint with that account's token (CPA substitutes ``$TOKEN$``). Rules (see
-AGENTS.md, "/cpa status"):
+Does what CLIProxyAPI's own Management Center (MC) does on its quota page.
+For the built-in vendors, CPA's ``api-call`` route sends the fixed requests in
+``QUOTA_REQUESTS`` with that account's token (CPA fills the token placeholder;
+this plugin never sees a vendor token). Accounts of other providers whose CPA
+quota plugin serves quota (e.g. Kiro) are read with CPA's plugin quota GET.
+Rules (see AGENTS.md, "/cpa status"):
 
-- Only on command. Two vendor URLs, fixed in ``QUOTA_REQUESTS``; nothing from
-  the user or config reaches a request. The POST body holds exactly
-  ``auth_index``, ``method``, ``url`` and ``header``.
-- The whole run holds the shared management guard for its CPA once. The first
-  ``api-call`` goes alone; an outer 401 latches the key and stops the run.
-  At most ``MAX_IN_FLIGHT`` calls after that, the latch checked before each.
-- ``auth_index`` and the Codex account id stay in memory to build the call;
-  they are never shown, logged or cached. Vendor replies are read through
-  allowlists; bodies and headers are never shown.
+- Only on command. Requests are fixed in code; nothing from the user or config
+  reaches one. No paid, identity, download or reset calls.
+- The whole run holds the shared management guard for its CPA once. Accounts
+  are tried one at a time, one request at a time, until a reply proves CPA
+  accepted the key; an outer 401 latches the key and stops the run. After that
+  at most ``MAX_IN_FLIGHT`` requests at a time, the latch checked before each.
+- ``auth_index``, the Codex account id, the Antigravity project id and the CPA
+  plugin id stay in memory to build requests; they are never shown, logged or
+  cached. Vendor replies are read through allowlists; bodies and headers are
+  never shown.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 import time
@@ -28,7 +32,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple, NoReturn
+from urllib.parse import quote
 
 try:  # loaded by Hermes as a package
     from . import cpa, status
@@ -37,47 +42,145 @@ except ImportError:  # pragma: no cover - direct import in tests
 
     import cpa  # type: ignore[no-redef]
 
-# ── Requests (closed list, copied from the Management Center) ───────────────
-# router-for-me/Cli-Proxy-API-Management-Center src/utils/quota/constants.ts
-# (CLAUDE_REQUEST_HEADERS, CODEX_REQUEST_HEADERS); Claude adds Accept in
-# src/features/quota/providers/claude/data.ts.
+# ── Requests (closed table, copied from the Management Center) ──────────────
+# router-for-me/Cli-Proxy-API-Management-Center@64b4f5aed1
+# src/utils/quota/constants.ts, src/features/quota/providers/*/data.ts and
+# devin/requests.ts. CPA v8.0.46 fills TOKEN in header values and in data.
+
+TOKEN = "$" + "TOKEN" + "$"
+BEARER = "Bearer " + TOKEN
+
+
+class Probe(NamedTuple):
+    method: str
+    url: str
+    header: dict[str, str]
+    data: str = ""
+
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
-QUOTA_REQUESTS: dict[str, tuple[str, dict[str, str]]] = {
+XAI_WEEKLY_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+XAI_MONTHLY_URL = "https://cli-chat-proxy.grok.com/v1/billing"
+ANTIGRAVITY_URLS = (
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+)
+DEVIN_URL = "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"
+KIMI_COM_URL = "https://api.kimi.com/coding/v1/usages"
+KIMI_AI_URL = "https://api.kimi.ai/coding/v1/usages"
+
+_XAI_VERSION = "1.0.46"
+_XAI_HEADER = {
+    "Authorization": BEARER,
+    "x-xai-token-auth": "xai-grok-cli",
+    "x-grok-client-version": _XAI_VERSION,
+    "accept": "*/*",
+    "user-agent": f"grok-pager/{_XAI_VERSION} grok-shell/{_XAI_VERSION} (macos; aarch64)",
+}
+_ANTIGRAVITY_HEADER = {
+    "Authorization": BEARER,
+    "Content-Type": "application/json",
+    "User-Agent": "antigravity/hub/2.23.0 darwin/arm64",
+}
+DEVIN_DATA = json.dumps(
+    {
+        "metadata": {
+            "ideName": "chisel",
+            "ideVersion": "3000.10.21",
+            "apiKey": TOKEN,
+            "locale": "en",
+            "os": "darwin",
+            "extensionVersion": "3000.10.21",
+            "clientName": "chisel",
+        }
+    },
+    separators=(",", ":"),
+)
+_PROJECT = "<project>"  # becomes {"project":"<project_id>"} for the account
+
+QUOTA_REQUESTS: dict[str, tuple[Probe, ...]] = {
     "claude": (
-        CLAUDE_USAGE_URL,
-        {
-            "Authorization": "Bearer $TOKEN$",
-            "Content-Type": "application/json",
-            "User-Agent": "claude-cli/2.1.280 (external, cli)",
-            "anthropic-beta": "oauth-2025-04-20",
-            "Accept": "application/json",
-        },
+        Probe(
+            "GET",
+            CLAUDE_USAGE_URL,
+            {
+                "Authorization": BEARER,
+                "Content-Type": "application/json",
+                "User-Agent": "claude-cli/2.1.280 (external, cli)",
+                "anthropic-beta": "oauth-2025-04-20",
+                "Accept": "application/json",
+            },
+        ),
     ),
     "codex": (
-        CODEX_USAGE_URL,
-        {
-            "Authorization": "Bearer $TOKEN$",
-            "Content-Type": "application/json",
-            "User-Agent": (
-                "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"
-            ),
-        },
+        Probe(
+            "GET",
+            CODEX_USAGE_URL,
+            {
+                "Authorization": BEARER,
+                "Content-Type": "application/json",
+                "User-Agent": (
+                    "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"
+                ),
+            },
+        ),
     ),
+    "xai": (
+        Probe("GET", XAI_WEEKLY_URL, _XAI_HEADER),
+        Probe("GET", XAI_MONTHLY_URL, _XAI_HEADER),
+    ),
+    "antigravity": tuple(
+        Probe("POST", url, _ANTIGRAVITY_HEADER, _PROJECT) for url in ANTIGRAVITY_URLS
+    ),
+    "devin": (
+        Probe(
+            "POST",
+            DEVIN_URL,
+            {"Content-Type": "application/json", "Connect-Protocol-Version": "1"},
+            DEVIN_DATA,
+        ),
+    ),
+    "kimi": (Probe("GET", KIMI_COM_URL, {"Authorization": BEARER}),),
 }
-QUOTA_PROVIDERS = tuple(QUOTA_REQUESTS)
+BUILTINS = status.QUOTA_BUILTINS
+COVERED = "claude, codex, xai, antigravity, devin, kimi, or plugin (e.g. kiro)"
 
 V8_API_CALL = "/v8/management/requests/api-call"
 V0_API_CALL = "/v0/management/api-call"
 MAX_ACCOUNTS = 20
-MAX_IN_FLIGHT = 4
+MAX_IN_FLIGHT = 4  # management requests, not accounts
 CALL_TIMEOUT = 15.0
 CACHE_SECONDS = 60.0
 MAX_OUTER_BYTES = 1024 * 1024
 MAX_INNER_BYTES = 256 * 1024
 
 _PLAN_RE = re.compile(r"^[a-z0-9_]{1,20}$")
+_SELECTOR_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+
+
+def request_bodies(provider: str, entry: dict[str, Any], target: str) -> list[dict[str, Any]]:
+    """The exact JSON CPA receives for one account, in send order."""
+    bodies = []
+    for probe in QUOTA_REQUESTS[provider]:
+        url, header = probe.url, dict(probe.header)
+        if provider == "codex" and entry.get("_acct"):
+            header["Chatgpt-Account-Id"] = entry["_acct"]
+        if provider == "kimi" and entry.get("_kimi_ai") is True:
+            url = KIMI_AI_URL
+        body: dict[str, Any] = {
+            "auth_index": target,
+            "method": probe.method,
+            "url": url,
+            "header": header,
+        }
+        if probe.data == _PROJECT:
+            body["data"] = json.dumps({"project": entry["_project"]}, separators=(",", ":"))
+        elif probe.data:
+            body["data"] = probe.data
+        bodies.append(body)
+    return bodies
 
 
 # ── Parsing vendor replies ──────────────────────────────────────────────────
@@ -86,7 +189,7 @@ _PLAN_RE = re.compile(r"^[a-z0-9_]{1,20}$")
 @dataclass
 class Window:
     label: str
-    used: float  # percent used, 0..100, as the vendor reports it
+    used: float  # percent used, 0..100
     resets_at: datetime | None = None
 
 
@@ -108,6 +211,39 @@ def _used(raw: Any) -> float | None:
     if value is None or value < 0:
         return None
     return min(value, 100.0)
+
+
+def _first(data: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if data.get(key) is not None:
+            return data[key]
+    return None
+
+
+def _instant(raw: Any) -> datetime | None:
+    """ISO time, or unix seconds (milliseconds when that large)."""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not re.fullmatch(r"\d+(\.\d+)?", text):
+            return status.parse_time(text)
+        raw = text
+    value = _num(raw)
+    if value is None or value <= 0:
+        return None
+    return status._unix(value / 1000 if value > 1e11 else value)
+
+
+def _plan(raw: Any) -> str:
+    if not isinstance(raw, str):
+        return ""
+    value = re.sub(r"[^a-z0-9]+", "_", raw.strip().lower()).strip("_")
+    return value if _PLAN_RE.match(value) else ""
+
+
+def _label(raw: Any, limit: int) -> str:
+    if not isinstance(raw, str):
+        return ""
+    return status.mask_text(" ".join(raw.split()))[:limit]
 
 
 _CLAUDE_WINDOWS = (
@@ -194,11 +330,249 @@ def parse_codex(payload: Any, now: datetime) -> Usage:
     return usage
 
 
+_XAI_PLANS = {15000: "supergrok", 150000: "supergrok_heavy"}  # monthly limit, cents
+
+
+def _xai_config(payload: Any) -> dict[str, Any] | None:
+    config = payload.get("config") if isinstance(payload, dict) else None
+    return config if isinstance(config, dict) else None
+
+
+def _cents(raw: Any) -> float | None:
+    return _num(raw.get("val") if isinstance(raw, dict) else raw)
+
+
+def parse_xai(weekly: Any, monthly: Any) -> Usage:
+    """xAI weekly credits (``creditUsagePercent`` is used %) and monthly spend."""
+    usage = Usage()
+    config = _xai_config(weekly)
+    if config is not None:
+        period = _first(config, "currentPeriod", "current_period")
+        period = period if isinstance(period, dict) else {}
+        kind = period.get("type") if isinstance(period.get("type"), str) else ""
+        used = _used(_first(config, "creditUsagePercent", "credit_usage_percent"))
+        if used is not None:
+            end = period.get("end") or _first(config, "billingPeriodEnd", "billing_period_end")
+            label = "mo" if "monthly" in kind.lower() else "wk"
+            usage.windows.append(Window(label, used, _instant(end)))
+    configs = [c for c in (_xai_config(weekly), _xai_config(monthly)) if c is not None]
+    limits = [_cents(_first(c, "monthlyLimit", "monthly_limit")) for c in configs]
+    limit = next((v for v in limits if v is not None), None)
+    spent = next((v for c in configs if (v := _cents(c.get("used"))) is not None), None)
+    end = next(
+        (v for c in configs if (v := _first(c, "billingPeriodEnd", "billing_period_end"))),
+        None,
+    )
+    if limit is not None and limit == int(limit):
+        usage.plan = _XAI_PLANS.get(int(limit), "")
+    if limit and limit > 0 and spent is not None and spent >= 0:
+        if "mo" not in {w.label for w in usage.windows}:
+            usage.windows.append(Window("mo", min(spent, limit) / limit * 100, _instant(end)))
+    return usage
+
+
+_WINDOW_LABELS = {"5h": "5h", "five-hour": "5h", "five_hour": "5h", "weekly": "wk", "week": "wk"}
+_WINDOW_ORDER = {"5h": 0, "wk": 1}
+
+
+def _fraction(raw: Any) -> float | None:
+    """Remaining fraction: a number, or a string such as ``"12.5%"``."""
+    if isinstance(raw, str) and raw.strip().endswith("%"):
+        value = _num(raw.strip()[:-1])
+        return None if value is None else value / 100
+    return _num(raw)
+
+
+def parse_groups(payload: Any) -> list[Window]:
+    """``groups[].buckets[]`` (Antigravity, CPA plugin quota). Fraction = remaining."""
+    groups = payload.get("groups") if isinstance(payload, dict) else None
+    if not isinstance(groups, list):
+        return []
+    windows: list[Window] = []
+    for index, group in enumerate(groups):
+        if not isinstance(group, dict) or not isinstance(group.get("buckets"), list):
+            continue
+        name = _label(_first(group, "displayName", "display_name"), 12) or f"g{index + 1}"
+        found: list[tuple[int, str, Window]] = []
+        for bucket in group["buckets"]:
+            if not isinstance(bucket, dict):
+                continue
+            fraction = _fraction(_first(bucket, "remainingFraction", "remaining_fraction"))
+            if fraction is None:
+                continue
+            fraction = min(max(fraction, 0.0), 1.0)
+            raw_window = bucket.get("window")
+            short = ""
+            if isinstance(raw_window, str):
+                short = _WINDOW_LABELS.get(raw_window.strip().lower(), "")
+            label = short or _label(_first(bucket, "displayName", "display_name") or raw_window, 16)
+            label = label or _label(bucket.get("description"), 16) or "?"
+            resets = _instant(_first(bucket, "resetTime", "reset_time"))
+            window = Window(f"{name} {label}", 100 - fraction * 100, resets)
+            found.append((_WINDOW_ORDER.get(label, 2), label, window))
+        windows += [w for _, _, w in sorted(found, key=lambda item: (item[0], item[1]))]
+    return windows
+
+
+def parse_plugin(payload: Any) -> Usage:
+    usage = Usage(windows=parse_groups(payload))
+    subscription = payload.get("subscription") if isinstance(payload, dict) else None
+    if isinstance(subscription, dict):
+        usage.plan = _plan(
+            _first(subscription, "tierName", "tier_name")
+            or subscription.get("plan")
+            or _first(subscription, "tierId", "tier_id")
+        )
+    return usage
+
+
+def _remaining_percent(raw: Any) -> float | None:
+    if isinstance(raw, str) and not re.fullmatch(r"\d+(\.\d+)?", raw.strip()):
+        return None
+    value = _num(raw)
+    return value if value is not None and 0 <= value <= 100 else None
+
+
+def _unix_seconds(raw: Any) -> datetime | None:
+    if isinstance(raw, bool) or (isinstance(raw, str) and not raw.strip().isdigit()):
+        return None
+    return status._unix(raw)
+
+
+def parse_devin(payload: Any) -> Usage:
+    """Devin ``userStatus.planStatus``: remaining percent per day and week."""
+    usage = Usage()
+    user = payload.get("userStatus") if isinstance(payload, dict) else None
+    plan_status = user.get("planStatus") if isinstance(user, dict) else None
+    if not isinstance(plan_status, dict):
+        return usage
+    info = plan_status.get("planInfo")
+    if isinstance(info, dict):
+        usage.plan = _plan(info.get("planName"))
+    for key, label in (("daily", "day"), ("weekly", "wk")):
+        left = _remaining_percent(plan_status.get(f"{key}QuotaRemainingPercent"))
+        if left is None:
+            continue
+        resets = _unix_seconds(plan_status.get(f"{key}QuotaResetAtUnix"))
+        usage.windows.append(Window(label, 100 - left, resets))
+    return usage
+
+
+_KIMI_UNIT_MINUTES = {
+    "SECOND": 1 / 60,
+    "SECONDS": 1 / 60,
+    "MINUTE": 1,
+    "MINUTES": 1,
+    "HOUR": 60,
+    "HOURS": 60,
+    "DAY": 1440,
+    "DAYS": 1440,
+    "WEEK": 10080,
+    "WEEKS": 10080,
+}
+
+
+def _int(raw: Any) -> int | None:
+    value = _num(raw)
+    return None if value is None else math.floor(value)
+
+
+def _kimi_window(duration: int | None, unit: Any) -> str:
+    """Window label from ``duration`` + ``timeUnit``; no or unknown unit = minutes (MC)."""
+    if duration is None or duration <= 0:
+        return ""
+    key = unit.strip().upper().removeprefix("TIME_UNIT_") if isinstance(unit, str) else ""
+    minutes = duration * _KIMI_UNIT_MINUTES.get(key, 1)
+    if minutes != int(minutes):
+        return f"{duration}s"
+    return status._minutes_label(int(minutes))
+
+
+def _kimi_reset(data: dict[str, Any], now: datetime) -> datetime | None:
+    for key in ("reset_at", "resetAt", "reset_time", "resetTime"):
+        moment = _instant(data.get(key))
+        if moment is not None:
+            return moment
+    for key in ("reset_in", "resetIn", "ttl"):
+        seconds = _num(data.get(key))
+        if seconds is not None and seconds > 0:
+            return now + timedelta(seconds=seconds)
+    return None
+
+
+def _kimi_row(data: dict[str, Any], label: str, now: datetime) -> Window | None:
+    limit, used = _int(data.get("limit")), _int(data.get("used"))
+    if used is None:
+        remaining = _int(data.get("remaining"))
+        if remaining is not None and limit is not None:
+            used = limit - remaining
+    if used is None or limit is None or limit <= 0:
+        return None
+    label = _label(data.get("name") or data.get("title"), 16) or label
+    return Window(label, min(max(used / limit * 100, 0.0), 100.0), _kimi_reset(data, now))
+
+
+def parse_kimi(payload: Any, now: datetime) -> Usage:
+    """Kimi ``limits[]`` rows, the ``usage`` summary (wk) and the monthly ratio."""
+    usage = Usage()
+    if not isinstance(payload, dict):
+        return usage
+    limits = payload.get("limits")
+    for index, item in enumerate(limits if isinstance(limits, list) else []):
+        if not isinstance(item, dict):
+            continue
+        detail = item["detail"] if isinstance(item.get("detail"), dict) else item
+        window = item["window"] if isinstance(item.get("window"), dict) else {}
+        label = ""
+        for key in ("name", "title", "scope"):
+            label = _label(item.get(key) or detail.get(key), 16)
+            if label:
+                break
+        if not label:
+            durations = (
+                _int(window.get("duration")),
+                _int(item.get("duration")),
+                _int(detail.get("duration")),
+            )
+            duration = next((d for d in durations if d is not None), None)
+            unit = window.get("timeUnit") or item.get("timeUnit") or detail.get("timeUnit")
+            label = _kimi_window(duration, unit) or f"#{index + 1}"
+        row = _kimi_row(detail, label, now)
+        if row is not None:
+            usage.windows.append(row)
+    summary = payload.get("usage")
+    if isinstance(summary, dict):
+        row = _kimi_row(summary, "wk", now)
+        if row is not None:
+            usage.windows.append(row)
+    usages = payload.get("usages")
+    monthly = usages.get("limit_month_total") if isinstance(usages, dict) else None
+    if isinstance(monthly, dict):
+        ratio = _num(monthly.get("used_ratio"))  # 0..1
+        if ratio is not None:
+            data = {
+                "used": math.floor(ratio * 100 + 0.5),
+                "limit": 100,
+                "reset_time": monthly.get("reset_time"),
+            }
+            row = _kimi_row(data, "mo", now)
+            if row is not None:
+                usage.windows.append(row)
+    return usage
+
+
 def parse_usage(provider: str, payload: Any, now: datetime) -> Usage:
-    return parse_codex(payload, now) if provider == "codex" else parse_claude(payload)
+    """Vendors answered by one reply."""
+    if provider == "codex":
+        return parse_codex(payload, now)
+    if provider == "devin":
+        return parse_devin(payload)
+    if provider == "kimi":
+        return parse_kimi(payload, now)
+    return parse_claude(payload)
 
 
-# ── CPA api-call ────────────────────────────────────────────────────────────
+# ── CPA requests ────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -207,15 +581,18 @@ class Inner:
     body: str
 
 
-def _post_json(url: str, key: str, body: dict[str, Any], timeout: float) -> Any:
-    request = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
+def _request_json(url: str, key: str, body: dict[str, Any] | None, timeout: float) -> Any:
+    """One management request: POST ``body``, or GET when it is None."""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET")
     request.add_header("Authorization", f"Bearer {key}")
-    request.add_header("Content-Type", "application/json")
+    if body is not None:
+        request.add_header("Content-Type", "application/json")
     request.add_header("Accept", "application/json")
     request.add_header("User-Agent", status.user_agent())
     try:
         with cpa._OPENER.open(request, timeout=timeout) as response:
-            data = response.read(MAX_OUTER_BYTES + 1)
+            raw = response.read(MAX_OUTER_BYTES + 1)
     except cpa.GatewayError:
         raise
     except urllib.error.HTTPError as exc:
@@ -226,26 +603,17 @@ def _post_json(url: str, key: str, body: dict[str, Any], timeout: float) -> Any:
         raise cpa.GatewayError(0, "timeout") from None
     except (urllib.error.URLError, OSError):
         raise cpa.GatewayError(0, "network") from None
-    if len(data) > MAX_OUTER_BYTES:
+    if len(raw) > MAX_OUTER_BYTES:
         raise cpa.GatewayError(200, "response_too_large")
     try:
-        return json.loads(data)
+        return json.loads(raw)
     except ValueError:
         raise cpa.GatewayError(200, "bad_response") from None
 
 
-def request_body(provider: str, target: str, account: str) -> dict[str, Any]:
-    """The exact JSON CPA receives: four keys, values fixed in code."""
-    url, headers = QUOTA_REQUESTS[provider]
-    header = dict(headers)
-    if provider == "codex" and account:
-        header["Chatgpt-Account-Id"] = account
-    return {"auth_index": target, "method": "GET", "url": url, "header": header}
-
-
 def api_call(root: str, key: str, path: str, body: dict[str, Any]) -> Inner:
     """One CPA api-call. Raises GatewayError for CPA's own (outer) failures."""
-    reply = _post_json(root + path, key, body, CALL_TIMEOUT)
+    reply = _request_json(root + path, key, body, CALL_TIMEOUT)
     if not isinstance(reply, dict):
         raise cpa.GatewayError(200, "bad_response")
     code = reply.get("status_code")
@@ -253,6 +621,15 @@ def api_call(root: str, key: str, path: str, body: dict[str, Any]) -> Inner:
     if not isinstance(code, int) or isinstance(code, bool):
         raise cpa.GatewayError(200, "bad_response")
     return Inner(code, text if isinstance(text, str) else "")
+
+
+def plugin_quota(root: str, key: str, plugin: str, target: str) -> Any:
+    """CPA's plugin quota GET: the reply is the plugin's own quota JSON."""
+    url = (
+        f"{root}/v8/management/plugins/{quote(plugin, safe='')}/quota"
+        f"?auth_index={quote(target, safe='')}"
+    )
+    return _request_json(url, key, None, CALL_TIMEOUT)
 
 
 # ── Run ─────────────────────────────────────────────────────────────────────
@@ -286,7 +663,7 @@ class QuotaRun:
     when: datetime | None = None
 
 
-_CACHE: dict[tuple[str, str, tuple[str, ...]], QuotaRun] = {}
+_CACHE: dict[tuple[str, str, str], QuotaRun] = {}
 _CACHE_LOCK = threading.Lock()
 
 
@@ -305,23 +682,164 @@ def _outer_error(exc: cpa.GatewayError) -> str:
     return f"CPA HTTP {exc.status}"
 
 
-def _inner_result(name: str, provider: str, inner: Inner, now: datetime) -> AccountResult:
+class _StopError(Exception):
+    """The run is over: a fatal outer status, or the key latched meanwhile."""
+
+
+class _AccountError(Exception):
+    """This account failed; the message (status and category only) is shown."""
+
+
+def _payload(inner: Inner) -> Any:
+    """The vendor reply as JSON, else _AccountError (an inner failure never latches)."""
     if inner.status == 401:
-        return AccountResult(name, provider, error="token rejected by vendor")
+        raise _AccountError("token rejected by vendor")
     if inner.status == 429:
-        return AccountResult(name, provider, error="vendor rate limited")
+        raise _AccountError("vendor rate limited")
     if not 200 <= inner.status < 300:
-        return AccountResult(name, provider, error=f"vendor HTTP {inner.status}")
+        raise _AccountError(f"vendor HTTP {inner.status}")
     if len(inner.body.encode("utf-8")) > MAX_INNER_BYTES:
-        return AccountResult(name, provider, error="vendor reply too large")
+        raise _AccountError("vendor reply too large")
     try:
-        payload = json.loads(inner.body)
+        return json.loads(inner.body)
     except ValueError:
-        return AccountResult(name, provider, error="bad vendor reply")
-    usage = parse_usage(provider, payload, now)
-    if not usage.windows:
-        return AccountResult(name, provider, error="no quota data")
-    return AccountResult(name, provider, usage=usage)
+        raise _AccountError("bad vendor reply") from None
+
+
+def route_of(entry: dict[str, Any]) -> str:
+    """``api`` for built-in vendors (even with a plugin id), ``plugin``, or ``""``."""
+    if status.provider_of(entry) in BUILTINS:
+        return "api"
+    return "plugin" if entry.get("_plugin") else ""
+
+
+def _selected(entry: dict[str, Any], selector: str) -> bool:
+    route = route_of(entry)
+    if not route:
+        return False
+    if not selector:
+        return True
+    if selector == "plugin":
+        return route == "plugin"
+    return status.provider_of(entry) == selector
+
+
+class _Runner:
+    """Sends one run's requests; every request passes ``_gate`` first."""
+
+    def __init__(self, home: Path, root: str, key: str, rejected: Callable[[], bool]):
+        self.home, self.root, self.key, self.rejected = home, root, key, rejected
+        self.path = V8_API_CALL
+        self.abort = threading.Event()
+        self.fatal: list[str] = []
+        self.proven = False  # a reply showed CPA accepted the key
+        self.lock = threading.Lock()
+
+    def _stop(self, why: str) -> NoReturn:
+        with self.lock:
+            self.fatal.append(why)
+        self.abort.set()
+        raise _StopError
+
+    def _gate(self) -> None:
+        if self.abort.is_set():
+            raise _StopError
+        if self.rejected():  # e.g. another process latched it meanwhile
+            self._stop("rejected")
+
+    def _outer(self, exc: cpa.GatewayError) -> None:
+        if exc.status == 401:
+            cpa.mark_rejected(self.home, self.root, self.key)  # inside the guard
+            self._stop("rejected")
+        if exc.status == 403:
+            self._stop("blocked")
+        if exc.status not in (0, 404):  # CPA answered past its key check
+            self.proven = True
+
+    def api(self, body: dict[str, Any]) -> Inner:
+        self._gate()
+        try:
+            try:
+                inner = api_call(self.root, self.key, self.path, body)
+            except cpa.GatewayError as exc:
+                if exc.status != 404 or self.path == V0_API_CALL:
+                    raise
+                self.path = V0_API_CALL  # only after a v8 404, never after a 401
+                self._gate()
+                inner = api_call(self.root, self.key, self.path, body)
+        except cpa.GatewayError as exc:
+            self._outer(exc)
+            if exc.status == 404:
+                self._stop("no_route")
+            raise _AccountError(_outer_error(exc)) from None
+        self.proven = True
+        return inner
+
+    def plugin(self, plugin: str, target: str) -> Any:
+        self._gate()
+        try:
+            reply = plugin_quota(self.root, self.key, plugin, target)
+        except cpa.GatewayError as exc:
+            self._outer(exc)
+            if exc.status == 404:  # auth or plugin quota provider not found
+                raise _AccountError("plugin quota not found") from None
+            if exc.status == 502:
+                raise _AccountError("plugin could not fetch") from None
+            raise _AccountError(_outer_error(exc)) from None
+        self.proven = True
+        return reply
+
+    def _usage(self, entry: dict[str, Any], provider: str, target: str, now: datetime) -> Usage:
+        if route_of(entry) == "plugin":
+            return parse_plugin(self.plugin(entry["_plugin"], target))
+        if provider == "antigravity" and not entry.get("_project"):
+            raise _AccountError("no project id")  # sends nothing
+        bodies = request_bodies(provider, entry, target)
+        if provider == "antigravity":
+            failure = _AccountError("no quota data")
+            for body in bodies:  # the next URL only after an inner failure
+                inner = self.api(body)  # an outer failure ends the account
+                try:
+                    windows = parse_groups(_payload(inner))
+                except _AccountError as exc:
+                    failure = exc
+                    continue
+                if windows:
+                    return Usage(windows=windows)
+                failure = _AccountError("no quota data")
+            raise failure
+        if provider == "xai":
+            payloads: list[Any] = []
+            first: _AccountError | None = None
+            for body in bodies:  # weekly, then monthly
+                inner = self.api(body)  # an outer failure ends the account
+                try:
+                    payloads.append(_payload(inner))
+                except _AccountError as exc:
+                    first = first or exc
+                    payloads.append(None)
+            usage = parse_xai(*payloads)
+            if not usage.windows and first is not None:
+                raise first
+            return usage
+        return parse_usage(provider, _payload(self.api(bodies[0])), now)
+
+    def account(self, entry: dict[str, Any], now: datetime) -> AccountResult:
+        name, provider = status.display_name(entry), status.provider_of(entry)
+        target = entry.get("_target")
+        if not isinstance(target, str) or not target:
+            return AccountResult(name, provider, error="CPA lists no account index")
+        if self.abort.is_set():
+            return AccountResult(name, provider, error="not checked")
+        try:
+            usage = self._usage(entry, provider, target, now)
+        except _StopError:
+            return AccountResult(name, provider, error="not checked")
+        except _AccountError as exc:
+            return AccountResult(name, provider, error=str(exc))
+        if not usage.windows:
+            return AccountResult(name, provider, error="no quota data")
+        return AccountResult(name, provider, usage=usage)
 
 
 def run(
@@ -329,11 +847,11 @@ def run(
     specs: list[cpa.InstanceSpec],
     root: str,
     key: str,
-    providers: tuple[str, ...],
+    selector: str,
     now: datetime,
 ) -> tuple[QuotaRun, bool]:
     """One quota run for a CPA root and key; and whether it came from the cache."""
-    job = (root, status._memory_id(key), providers)
+    job = (root, status._memory_id(key), selector)
     with _CACHE_LOCK:
         cached = _CACHE.get(job)
     if cached and 0 <= time.monotonic() - cached.at < CACHE_SECONDS:
@@ -341,7 +859,7 @@ def run(
     with cpa.mgmt_guard(home, root, status.GUARD_WAIT) as held:
         if not held:
             return QuotaRun("busy"), False
-        result = _run_locked(home, specs, root, key, providers, now)
+        result = _run_locked(home, specs, root, key, selector, now)
     result.at, result.when = time.monotonic(), now
     if result.status == "ok":
         with _CACHE_LOCK:
@@ -354,7 +872,7 @@ def _run_locked(
     specs: list[cpa.InstanceSpec],
     root: str,
     key: str,
-    providers: tuple[str, ...],
+    selector: str,
     now: datetime,
 ) -> QuotaRun:
     def rejected() -> bool:
@@ -368,73 +886,36 @@ def _run_locked(
     eligible = [
         entry
         for entry in listing.files
-        if status.provider_of(entry) in providers and status.classify(entry, now).kind != "disabled"
+        if _selected(entry, selector) and status.classify(entry, now).kind != "disabled"
     ]
     checked, skipped = eligible[:MAX_ACCOUNTS], max(0, len(eligible) - MAX_ACCOUNTS)
-    if not checked:
-        return QuotaRun("ok", skipped=skipped)
-
-    path = V8_API_CALL
-    abort = threading.Event()
-    fatal: list[str] = []
-
-    def one(entry: dict[str, Any]) -> AccountResult:
-        nonlocal path
-        name, provider = status.display_name(entry), status.provider_of(entry)
-        target = entry.get("_target")
-        if not isinstance(target, str) or not target:
-            return AccountResult(name, provider, error="CPA lists no account index")
-        if abort.is_set():
-            return AccountResult(name, provider, error="not checked")
-        if rejected():  # e.g. another process latched it meanwhile
-            fatal.append("rejected")
-            abort.set()
-            return AccountResult(name, provider, error="not checked")
-        body = request_body(provider, target, entry.get("_acct") or "")
-        try:
-            try:
-                inner = api_call(root, key, path, body)
-            except cpa.GatewayError as exc:
-                if exc.status != 404 or path == V0_API_CALL:
-                    raise
-                path = V0_API_CALL  # only after a v8 404, never after a 401
-                inner = api_call(root, key, path, body)
-        except cpa.GatewayError as exc:
-            if exc.status == 401:
-                cpa.mark_rejected(home, root, key)  # inside the guard
-                fatal.append("rejected")
-                abort.set()
-                return AccountResult(name, provider, error="not checked")
-            if exc.status == 403:
-                fatal.append("blocked")
-                abort.set()
-                return AccountResult(name, provider, error="not checked")
-            if exc.status == 404:
-                fatal.append("no_route")
-                abort.set()
-                return AccountResult(name, provider, error="not checked")
-            return AccountResult(name, provider, error=_outer_error(exc))
-        return _inner_result(name, provider, inner, now)
-
-    # Probe alone: a bad key costs CPA exactly one failure.
-    results = [one(checked[0])]
-    if not abort.is_set() and len(checked) > 1:
+    runner = _Runner(home, root, key, rejected)
+    queue = list(checked)
+    results: list[AccountResult] = []
+    # The probe: one account and one request at a time until a reply proves the
+    # key. Accounts that send nothing do not count. A bad key costs CPA one try.
+    while queue and not runner.proven and not runner.abort.is_set():
+        results.append(runner.account(queue.pop(0), now))
+    if queue and not runner.abort.is_set():
         with ThreadPoolExecutor(max_workers=MAX_IN_FLIGHT) as pool:
-            results += list(pool.map(one, checked[1:]))
-    if fatal:
-        if fatal[0] == "no_route":
+            results += list(pool.map(lambda entry: runner.account(entry, now), queue))
+    else:
+        results += [runner.account(entry, now) for entry in queue]
+    if runner.fatal:
+        if runner.fatal[0] == "no_route":
             return QuotaRun("unavailable", detail="this CPA has no api-call route")
-        return QuotaRun(fatal[0])
+        return QuotaRun(runner.fatal[0])
     return QuotaRun("ok", accounts=results, skipped=skipped)
 
 
 # ── View ────────────────────────────────────────────────────────────────────
 
 USAGE = (
-    "/cpa quota <pool> - live usage of every claude and codex account in a pool\n"
-    "/cpa quota <pool> <provider> - claude or codex only\n"
-    "Asks each vendor through CPA (like CPA's web UI quota page); one call per\n"
-    "account, at most 20, cached 60 s. Percent = used."
+    "/cpa quota <pool> - live usage of every account CPA's web UI shows quota for\n"
+    "/cpa quota <pool> <provider> - claude, codex, xai, antigravity, devin, kimi,\n"
+    "  or plugin (or a plugin's provider, e.g. kiro) for CPA plugin quota\n"
+    "Asks each vendor through CPA, like CPA's web UI quota page: at most 20\n"
+    "accounts and 3 requests per account, cached 60 s. Percent = used."
 )
 
 
@@ -499,18 +980,17 @@ def _provider_block(provider: str, items: list[AccountResult], now: datetime) ->
     return lines
 
 
-def render(
-    pool: str, result: QuotaRun, cached: bool, providers: tuple[str, ...], now: datetime
-) -> str:
+def render(pool: str, result: QuotaRun, cached: bool, selector: str, now: datetime) -> str:
     when = result.when or now
     stamp = f"cached {int(time.monotonic() - result.at)}s" if cached else "live"
     lines = [f"{pool} quota · {stamp} {when.astimezone().strftime('%H:%M')}"]
-    for provider in providers:
+    seen = {a.provider for a in result.accounts}
+    order = [p for p in BUILTINS if p in seen] + sorted(seen - set(BUILTINS))
+    for provider in order:
         items = [a for a in result.accounts if a.provider == provider]
-        if items:
-            lines.extend(_provider_block(provider, items, now))
+        lines.extend(_provider_block(provider, items, now))
     if len(lines) == 1:
-        lines.append("no " + " or ".join(providers) + " accounts")
+        lines.append(f"no {selector + ' ' if selector else ''}accounts with live quota")
     if result.skipped:
         lines.append(f"+{result.skipped} more not checked (at most {MAX_ACCOUNTS} per run)")
     return status._cap(lines)
@@ -532,13 +1012,13 @@ def report(
     if spec is None:
         names = ", ".join(s.name for s in specs) or "none"
         return f"Unknown pool '{status.mask_text(args[0])[:32]}'. Pools: {names}"
-    providers = QUOTA_PROVIDERS
+    selector = ""
     if len(args) == 2:
-        provider = cpa.normalize_provider(args[1])
-        if provider not in QUOTA_REQUESTS:
-            shown = status.mask_text(args[1])[:32]
-            return f"Live quota covers {' and '.join(QUOTA_PROVIDERS)}; not '{shown}'."
-        providers = (provider,)
+        selector = cpa.normalize_provider(args[1])
+        if selector == "meta":
+            return "meta: no live quota (CPA's web UI needs the raw credential for it)."
+        if not _SELECTOR_RE.match(selector) or status.mask_text(selector) != selector:
+            return f"Live quota covers {COVERED}; not '{status.mask_text(args[1])[:32]}'."
     if not spec.mgmt_key_env:
         return f"{spec.name}: {status._STATUS_TEXT['no_key']}"
     try:
@@ -547,10 +1027,10 @@ def report(
         key = ""
     if not key:
         return f"{spec.name}: {status._STATUS_TEXT['key_not_set']}"
-    result, cached = run(home, specs, spec.root, key, providers, now)
+    result, cached = run(home, specs, spec.root, key, selector, now)
     if result.status != "ok":
         text = status._STATUS_TEXT.get(result.status) or "unavailable" + (
             f" ({result.detail})" if result.detail else ""
         )
         return f"{spec.name}: {text}"
-    return render(spec.name, result, cached, providers, now)
+    return render(spec.name, result, cached, selector, now)
