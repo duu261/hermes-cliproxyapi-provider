@@ -300,8 +300,8 @@ codex-bo…@…  cooling until 17:20 (quota)
 - 最近一次的 quota（`5h` 和 `wk`）来自 CPA 在真实流量中为 Claude 和 Codex account
   记录的数据，其他 provider CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询 quota；
   `/cpa quota` 会。
-- account 名和消息里的邮箱会被遮盖；从不读取 `email`、`account`、`project_id` 和
-  `path`。
+- account 名和消息里的邮箱会被遮盖；从不显示 `email`、`account`、`project_id` 和
+  `path`（`/cpa quota` 只用 Antigravity 的 `project_id` 来构造它的 request）。
 - 在对话空闲时可用。agent 正在运行时发送，会像其他 plugin 命令一样交给 Hermes 的
   busy 处理（排队或转给 agent）。
 - IP 封禁：见 [避免被 CPA 封禁](#避免被-cpa-封禁)。
