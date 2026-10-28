@@ -11,7 +11,7 @@ Plugin model-provider cho
 CPA là một gateway: một instance đứng trước nhiều provider (Claude, Codex,
 Gemini, xAI, Kimi, Devin, các upstream tương thích OpenAI, các plugin provider như Kiro) và tự quản lý account, OAuth, xoay vòng và chuyển đổi định
 dạng của chúng. Nếu chỉ có Hermes, gateway như vậy là một endpoint tùy chỉnh
-trên một wire, với metadata pin bằng tay.
+trên một wire, với metadata được pin bằng tay.
 
 Plugin này phản chiếu CPA vào Hermes. Trỏ nó tới một instance CPA, nó sẽ đăng ký
 một provider Hermes cho mỗi provider CPA, mỗi provider dùng wire mà executor
@@ -91,7 +91,7 @@ thấy provider xuất hiện sau lúc khởi động khi đã khởi động l�
 | `kimi` | `anthropic_messages` | Executor Kimi chuyển định dạng Claude tới `/v1/messages` của Kimi |
 | `kiro` (plugin) | `anthropic_messages` | Plugin Kiro nhận đầu vào dạng Claude |
 | `codex`, `xai`, `meta` (Muse) | `codex_responses` | Các executor gửi định dạng Responses của CPA |
-| `gemini`, `vertex`, `aistudio`, `gemini-interactions`, `antigravity`, `devin` | `chat_completions` | Wire Gemini và Interactions không khả dụng với Hermes cho host không phải của Google; CPA chuyển đổi |
+| `gemini`, `vertex`, `aistudio`, `gemini-interactions`, `antigravity`, `devin` | `chat_completions` | Gemini wire và Interactions wire không khả dụng với Hermes cho host không phải của Google; CPA chuyển đổi |
 | Tương thích OpenAI và mọi loại khác | `chat_completions` | Mọi executor của CPA đều chấp nhận |
 
 Ghi đè theo từng provider bằng `api_mode` (xem bên dưới). Khi hai provider
@@ -101,7 +101,7 @@ wire là lựa chọn phù hợp nhất.
 Giữ `xai` trên `codex_responses`. Grok 4.7 trả về phần reasoning dưới dạng một
 mục đã mã hóa, và client phải gửi lại mục này ở lượt tiếp theo
 ([tài liệu xAI](https://docs.x.ai/developers/model-capabilities/text/reasoning)).
-Hermes làm việc đó trên wire Responses. Chat Completions không có trường nào để
+Hermes làm việc đó trên Responses wire. Chat Completions không có trường nào để
 chứa nó, và CPA (kiểm tra ở v8.0.44) chỉ phát lại cached reasoning xAI cho client
 Claude và Responses. Thiếu nó, Grok 4.7 ngừng reasoning sau vài vòng gọi công cụ,
 thường nói sẽ gọi công cụ rồi kết thúc lượt mà không gọi.
@@ -196,7 +196,7 @@ cliproxyapi:
   key không bán sẽ lỗi tại gateway cho tới refresh kế tiếp thu hẹp danh sách. Danh
   sách đã biết, kể cả rỗng, luôn lọc chặt.
 - Gateway thường chuyển đổi định dạng request theo từng kênh, trừ khi bật chế độ
-  chuyển thẳng body. Profile giữ wire CPA theo bảng ở trên; đặt `api_mode` theo nhóm
+  chuyển thẳng body. Profile giữ CPA wire theo bảng ở trên; đặt `api_mode` theo nhóm
   khi kênh gateway cần wire khác.
 - Context window và mức reasoning mô tả model của CPA, không phải giới hạn mà
   gateway có thể thêm vào.
@@ -271,7 +271,7 @@ Hai plugin làm gì, theo mỗi `HERMES_HOME` trên Linux và macOS:
 
 - Mỗi lúc chỉ một lượt kiểm tra management cho mỗi CPA, giữa provider, `/cpa` và
   mọi tiến trình Hermes (CLI và gateway). Provider bỏ qua lượt của nó khi `/cpa`
-  busy và thử lại ở refresh sau; `/cpa` chờ tối đa 25 giây rồi báo `busy`.
+  busy và thử lại ở lần refresh sau; `/cpa` chờ tối đa 25 giây rồi báo `busy`.
 - Một key đã sai sẵn tốn một lần thử. Lần từ chối được ghi nhớ (HMAC có salt)
   qua các lần khởi động lại và cho cả hai plugin, và key đó không được gửi lại tới
   CPA đó cho tới khi key thay đổi.
@@ -285,7 +285,7 @@ Bạn làm gì:
 
 1. Chỉ đặt key qua `mgmt_key_env`, và đăng nhập web UI của CPA một lần bằng key đó
    trước khi khởi động Hermes. Một lần đăng nhập đúng cũng đưa bộ đếm về 0.
-2. Rotate key trong một bước: đổi key của CPA, cập nhật biến môi trường, khởi động lại
+2. Rotate key (đổi key) trong một bước: đổi key của CPA, cập nhật biến môi trường, khởi động lại
    gateway. Key cũ vẫn được ghi nhớ là bị từ chối, nên Hermes im lặng thay vì retry
    nó.
 3. Chạy Hermes trên cùng host với CPA, hoặc đặt `server.trusted-proxies` của CPA
@@ -394,7 +394,7 @@ hermes plugins validate ./cpa-status
 ```
 
 Đóng góp: xem [CONTRIBUTING.md](CONTRIBUTING.md) để biết các safety rule mà mọi
-thay đổi phải giữ, và [SECURITY.md](SECURITY.md) để report vấn đề bảo mật một cách
+thay đổi đều giữ, và [SECURITY.md](SECURITY.md) để báo cáo vấn đề bảo mật một cách
 riêng tư.
 
 ## Giấy phép
