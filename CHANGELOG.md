@@ -15,6 +15,12 @@
   second or third request waits until CPA has accepted the key. At most 3
   requests per account and 4 in flight per run.
 - AGENTS.md lists every allowed quota request; anything else stays banned.
+- Antigravity accounts are `OUT` only when every model group is full, because
+  CPA holds back only the models that ran out; a full group shows as
+  `out: <group>`.
+- Fix: on a CPA without the v8 `api-call` route, two requests that both got
+  a 404 at once could stop a healthy run with "no route". Each request now
+  keeps its own path.
 
 ## 0.5.0
 
