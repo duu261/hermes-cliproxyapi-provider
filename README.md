@@ -272,9 +272,9 @@ What both plugins do, per `HERMES_HOME` on Linux and macOS:
 - A key that is already bad costs one try. The rejection is remembered (salted
   HMAC) across restarts and both plugins, and that key is not sent to that
   CPA again until it changes.
-- A key revoked in the middle of `/cpa quota` can cost up to 4: the calls
-  already in flight. `/cpa quota` first sends one call alone, so a key that
-  is already bad never reaches the parallel calls.
+- A key revoked in the middle of `/cpa quota` can cost up to 4: the requests
+  already in flight. `/cpa quota` first sends one request alone, so a key
+  that is already bad never reaches the parallel requests.
 - On Windows only the in-process lock applies; two Hermes processes there are
   coordinated by the remembered rejections alone.
 
@@ -318,7 +318,7 @@ show `no management key`. Restart running gateways after enabling.
 /cpa                    every instance: accounts per provider
 /cpa pre                one instance, plus the last hour of requests
 /cpa pre codex          one line per account
-/cpa quota pre          live usage of every Claude and Codex account
+/cpa quota pre          live usage of every account with quota
 /cpa quota pre codex    Codex only
 ```
 
@@ -338,7 +338,8 @@ codex-bo…@…  cooling until 17:20 (quota)
   for Claude and Codex accounts. CPA records none for other providers. Plain
   `/cpa` never asks CPA to check quota upstream; `/cpa quota` does.
 - Emails in account names and messages are masked; `email`, `account`,
-  `project_id` and `path` are never read.
+  `project_id` and `path` are never shown (`/cpa quota` uses the Antigravity
+  `project_id` only to build its request).
 - Works when the chat is idle. Sent while an agent turn is running, it goes to
   Hermes' busy handling (queued or sent to the agent) like any other plugin
   command.
@@ -355,31 +356,50 @@ codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
 codex-cu…@…  pro  wk 40% → Nov 01
 ```
 
-`/cpa quota <pool>` asks each vendor how much of each Claude and Codex account
-is used, the way CPA's own web UI quota page does: for each enabled account,
-CPA's `api-call` route sends one GET with that account's token (CPA fills it
-in; Hermes never sees it) to one of two fixed URLs:
+`/cpa quota <pool>` asks each vendor how much of each account is used, the way
+CPA's own web UI quota page does. For the built-in vendors, CPA's `api-call`
+route sends the web UI's request with that account's token (CPA fills it in;
+Hermes never sees it). Accounts of other providers are read from their CPA
+quota plugin when CPA lists one. Every request, and when it is sent:
 
-- Claude: `https://api.anthropic.com/api/oauth/usage` (5h, weekly, and the
-  weekly Opus and Sonnet windows when the account has them).
-- Codex: `https://chatgpt.com/backend-api/wham/usage` (windows labelled by
-  their own length: `5h`, `wk`, `mo`; the plan as the vendor names it).
+| Provider | Requests per account | What you see |
+|---|---|---|
+| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`, weekly `opus` / `sonnet` |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk`; monthly spend `mo` and plan (`supergrok` / `supergrok_heavy`) only when xAI reports a monthly limit |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota | per model group, `5h` and `wk` |
+| Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
+| Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` when CPA lists the account as `kimi-ai`) | each limit window, weekly, `mo` |
+| CPA plugin quota (e.g. Kiro) | GET `/v8/management/plugins/<id>/quota` on CPA; the plugin asks its vendor | the plugin's meters and plan |
+
+None of these cost money or use up quota: they are the same usage reads the
+web UI makes. Left out on purpose: xAI's paid 1-token chat check (the web UI's
+fallback for paid API-key accounts, which then show the billing error),
+identity and plan lookups, downloading account files, and every reset.
 
 The headers, including each vendor's CLI `User-Agent`, are the web UI's. The
-percent is what is used, as the vendor reports it; there are no totals across
-plans. An account is `OUT` when a window is at 100% or the vendor says it is
-blocked.
+percent is what is used (vendors that report what is left are converted);
+there are no totals across plans. An account is `OUT` when a window is at 100%
+or the vendor says it is blocked. Antigravity is per model group: CPA holds back
+only the models that ran out, so an account is `OUT` only when every group is
+full; otherwise the full groups show as `out: <group>`.
 
-- Only when you type it. One call per account, at most 20 accounts per run,
-  first call alone, then at most 4 at a time; a repeat within 60 seconds
-  answers from memory. Disabled accounts are skipped.
+- Only when you type it. At most 20 accounts and 3 requests per account per
+  run. The first request goes alone, then at most 4 at a time; a repeat within
+  60 seconds answers from memory. Disabled accounts are skipped.
+- `/cpa quota <pool> <provider>` takes `claude`, `codex`, `xai`,
+  `antigravity`, `devin`, `kimi`, `plugin`, or a plugin's provider such as
+  `kiro`.
 - An expired account token shows `token rejected by vendor` and never counts
   against CPA's lockout. A rejected management key stops the run.
-- CPA's account index and the Codex account id are used only to build each
-  call and are never shown, logged or cached. Vendor replies are read field by
-  field; bodies and headers are never shown.
-- Not covered: other providers (xAI, Antigravity, Kiro and others), Codex
-  code-review and per-model extra limits, reset credits.
+- CPA's account index, the Codex account id, the Antigravity project id and
+  the CPA plugin id are used only to build requests and are never shown,
+  logged or cached. Vendor replies are read field by field; bodies and
+  headers are never shown.
+- Not covered: Meta (the web UI reads its raw credential file), Kimi `.ai`
+  accounts that CPA lists only as `kimi` (they get the `.com` URL and show
+  `token rejected by vendor`), Codex code-review and per-model extra limits,
+  plugin summary figures.
 
 ## Development
 

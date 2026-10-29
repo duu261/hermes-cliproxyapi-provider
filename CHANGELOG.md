@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.0
+
+- `/cpa quota` covers every provider CPA's web UI shows quota for, except
+  Meta: xAI (weekly credits; monthly spend and plan when xAI reports a
+  monthly limit), Antigravity (per model group),
+  Devin, Kimi, and any provider whose CPA quota plugin serves quota (e.g.
+  Kiro), next to Claude and Codex. Each uses the web UI's own requests; none
+  costs money, uses up quota, downloads an account file or resets anything.
+  `/cpa quota <pool> <provider>` takes any of them, `plugin`, or a plugin's
+  provider name.
+- The probe is now one request, not one account: accounts that send nothing
+  (e.g. Antigravity without a project id) do not count, and an account's
+  second or third request waits until CPA has accepted the key. At most 3
+  requests per account and 4 in flight per run.
+- AGENTS.md lists every allowed quota request; anything else stays banned.
+- Antigravity accounts are `OUT` only when every model group is full, because
+  CPA holds back only the models that ran out; a full group shows as
+  `out: <group>`.
+- Fix: on a CPA without the v8 `api-call` route, two requests that both got
+  a 404 at once could stop a healthy run with "no route". Each request now
+  keeps its own path.
+
 ## 0.5.0
 
 - `/cpa quota <pool> [claude|codex]`: live usage per Claude and Codex

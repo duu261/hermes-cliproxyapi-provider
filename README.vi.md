@@ -319,7 +319,7 @@ Cần `mgmt_key_env` trên instance muốn xem; instance không có sẽ hiện
 /cpa                    mọi instance: số account theo provider
 /cpa pre                một instance, kèm số request trong 1 giờ qua
 /cpa pre codex          mỗi account một dòng
-/cpa quota pre          live usage của mọi account Claude và Codex
+/cpa quota pre          live usage của mọi account có quota
 /cpa quota pre codex    Codex only
 ```
 
@@ -339,7 +339,8 @@ codex-bo…@…  cooling until 17:20 (quota)
   Claude và Codex. CPA không ghi cho provider khác. `/cpa` (không có `quota`)
   không bao giờ bảo CPA kiểm tra quota với upstream; `/cpa quota` thì có.
 - Email trong tên account và thông báo được che; `email`, `account`,
-  `project_id` và `path` không bao giờ được đọc.
+  `project_id` và `path` không bao giờ được hiển thị (`/cpa quota` chỉ dùng
+  `project_id` của Antigravity để dựng request).
 - Chạy khi chat đang rảnh. Gửi lúc agent đang chạy thì Hermes xử lý như mọi
   lệnh plugin khác, theo busy handling của Hermes (xếp hàng hoặc chuyển cho agent).
 - Lockout: xem [Không bao giờ bị CPA khóa](#không-bao-giờ-bị-cpa-khóa).
@@ -355,30 +356,50 @@ codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
 codex-cu…@…  pro  wk 40% → Nov 01
 ```
 
-`/cpa quota <pool>` hỏi từng vendor xem mỗi account Claude và Codex đã dùng bao
-nhiêu, giống trang quota trên web UI của chính CPA: với mỗi account đang bật,
-route `api-call` của CPA gửi một GET kèm token của account đó (CPA tự điền;
-Hermes không bao giờ thấy token) tới một trong hai URL cố định:
+`/cpa quota <pool>` hỏi từng vendor xem mỗi account đã dùng bao nhiêu, giống
+trang quota trên web UI của chính CPA. Với các vendor có sẵn, route `api-call`
+của CPA gửi đúng request của web UI kèm token của account đó (CPA tự điền;
+Hermes không bao giờ thấy token). Account của provider khác được đọc từ CPA
+quota plugin của nó khi CPA có liệt kê. Mọi request, và khi nào chúng được gửi:
 
-- Claude: `https://api.anthropic.com/api/oauth/usage` (5h, tuần, và window tuần
-  riêng cho Opus và Sonnet khi account có).
-- Codex: `https://chatgpt.com/backend-api/wham/usage` (window được đặt nhãn theo
-  độ dài của chính nó: `5h`, `wk`, `mo`; plan theo đúng tên vendor đặt).
+| Provider | Request cho mỗi account | Bạn thấy gì |
+|---|---|---|
+| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`, window tuần `opus` / `sonnet` |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, rồi GET `https://cli-chat-proxy.grok.com/v1/billing` | credits tuần `wk`; chi tiêu tháng `mo` và plan (`supergrok` / `supergrok_heavy`) chỉ khi xAI báo monthly limit |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` kèm `project_id` của account; host `daily-cloudcode-pa.sandbox` và `cloudcode-pa` chỉ khi host trước lỗi ở phía vendor hoặc không trả quota | theo từng nhóm model, `5h` và `wk` |
+| Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
+| Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` khi CPA liệt kê account là `kimi-ai`) | từng window giới hạn, tuần, `mo` |
+| CPA plugin quota (vd. Kiro) | GET `/v8/management/plugins/<id>/quota` trên CPA; plugin tự hỏi vendor của nó | các meter và plan của plugin |
+
+Không request nào tốn tiền hay dùng hết quota: đều là các lần đọc usage mà web
+UI cũng làm. Cố ý không làm: bước kiểm tra chat trả phí 1 token của xAI
+(fallback của web UI cho account xAI trả phí dùng API key, các account này sẽ
+hiện lỗi billing), tra cứu danh tính và plan, tải file account, và mọi thao
+tác reset.
 
 Các header, kể cả `User-Agent` CLI của từng vendor, lấy từ web UI. Phần trăm là
-phần đã dùng, đúng như vendor báo; không cộng gộp giữa các plan. Một account là
-`OUT` khi có window ở 100% hoặc vendor báo nó đang bị chặn.
+phần đã dùng (vendor nào báo phần còn lại thì được đổi lại); không cộng gộp
+giữa các plan. Một account là `OUT` khi có window ở 100% hoặc vendor báo nó
+đang bị chặn. Antigravity tính theo model group: CPA chỉ tạm ngưng các model đã
+hết, nên account chỉ là `OUT` khi mọi group đều đầy; nếu không, group đầy hiện
+là `out: <group>`.
 
-- Chỉ khi bạn gõ lệnh. Mỗi account một request, tối đa 20 account mỗi lần
-  chạy, request đầu gửi một mình, sau đó tối đa 4 request cùng lúc; gõ lại trong
-  60 giây sẽ trả từ bộ nhớ. Bỏ qua account đã tắt.
+- Chỉ khi bạn gõ lệnh. Mỗi lần chạy tối đa 20 account và 3 request cho mỗi
+  account. Request đầu gửi một mình, sau đó tối đa 4 request cùng lúc; gõ lại
+  trong 60 giây sẽ trả từ bộ nhớ. Bỏ qua account đã tắt.
+- `/cpa quota <pool> <provider>` nhận `claude`, `codex`, `xai`, `antigravity`,
+  `devin`, `kimi`, `plugin`, hoặc provider của một plugin như `kiro`.
 - Token account hết hạn hiện `token rejected by vendor` và không bao giờ bị tính
   vào lockout của CPA. Management key bị từ chối sẽ dừng lượt chạy.
-- Account index của CPA và account id của Codex chỉ dùng để dựng từng request,
-  không bao giờ được hiển thị, ghi log hay lưu cache. Phản hồi của vendor được đọc
-  theo từng trường; body và header không bao giờ được hiển thị.
-- Chưa hỗ trợ: provider khác (xAI, Antigravity, Kiro và các provider khác), giới
-  hạn code-review và extra limit theo model của Codex, reset credits.
+- Account index của CPA, account id của Codex, project id của Antigravity và
+  plugin id của CPA chỉ dùng để dựng request, không bao giờ được hiển thị, ghi
+  log hay lưu cache. Phản hồi của vendor được đọc theo từng trường; body và
+  header không bao giờ được hiển thị.
+- Không hỗ trợ: Meta (web UI đọc file credential gốc của nó), account Kimi
+  `.ai` mà CPA chỉ liệt kê là `kimi` (bị gửi tới URL `.com` và hiện
+  `token rejected by vendor`), giới hạn code-review và extra limit theo model
+  của Codex, các số liệu summary của plugin.
 
 ## Phát triển
 

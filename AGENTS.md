@@ -137,7 +137,8 @@ CPA instance serves providers the gateway sells in different groups.
 ## /cpa status (companion plugin)
 
 `cpa-status/` registers `/cpa`: account health per CPA instance, provider and
-account, and `/cpa quota`: live usage per Claude and Codex account. It reuses
+account, and `/cpa quota`: live usage per account for every provider CPA's
+web UI shows quota for, except Meta. It reuses
 the provider's transport code through a checked copy (`cpa-status/cpa.py`
 must equal root `cpa.py`; CI runs `cmp`).
 
@@ -153,28 +154,50 @@ must equal root `cpa.py`; CI runs `cmp`).
   `cache/cpa-status/rejected.json` is still read, never written.
 - Showing last-seen `quota.signals` that the credentials GET already returns
   is not a quota call.
-- `/cpa quota` may call `api-call` (v8 `requests/api-call`; v0 `api-call`
-  only after a v8 404) for one purpose: a GET to a URL in `QUOTA_REQUESTS`, a
-  closed list of exactly `https://api.anthropic.com/api/oauth/usage` and
-  `https://chatgpt.com/backend-api/wham/usage`. No query strings, no third
-  entry, no override from config or input. The request JSON contains only
-  `auth_index`, `method`, `url`, `header`; never `proxy_url`, `data` or a
-  `Host` header. Header values fixed in code; `$TOKEN$` only in
-  `Authorization`. Adding a vendor needs its own plan and review.
-- Never reset, consume, claim, profile, subscription, refresh, download or
-  any write route. Plugin-quota routes stay banned.
-- Lockout: hold the guard once for the whole quota run (never nested), probe
-  with the first `api-call` alone, check the latch before every call, latch
-  and stop on an outer 401, never retry v0 after a 401, never latch on a
-  vendor (inner) 401. At most 4 in flight.
-- `auth_index` and the Codex `id_token.chatgpt_account_id` claim may be read
-  for claude/codex entries and held in memory only to build that call; never
-  shown, logged or written to disk. Never read or show `email`, `account`,
-  `project_id`, `path` or `id`, nor any other `id_token` claim. Mask emails
-  and token-like runs in names and `status_message`.
-- Vendor replies: allowlisted fields only; never print a raw body or headers.
-- One call per account per run, at most 20 per run, results cached 60 s,
-  only on command. The provider plugin keeps "Never api-call".
+- Default deny: `/cpa quota` sends only the requests listed here. Adding a
+  vendor, URL, header or body needs its own plan, review and Duu's ok.
+- `api-call` (v8 `requests/api-call`; v0 `api-call` only after a v8 404) for
+  one purpose: a request in `QUOTA_REQUESTS`, this closed table, values fixed
+  in code, no override from config or input:
+  - claude: GET `https://api.anthropic.com/api/oauth/usage`
+  - codex: GET `https://chatgpt.com/backend-api/wham/usage`
+  - xai: GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`,
+    then GET `https://cli-chat-proxy.grok.com/v1/billing`
+  - antigravity: POST `v1internal:retrieveUserQuotaSummary` on
+    `https://daily-cloudcode-pa.googleapis.com/`, then (only after an inner
+    non-2xx or an empty or unparseable reply; an outer CPA error ends the
+    account) `https://daily-cloudcode-pa.sandbox.googleapis.com/`, then
+    `https://cloudcode-pa.googleapis.com/`; data `{"project":"<project_id>"}`
+  - devin: POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus`
+    with the fixed metadata data template (`apiKey` is `$TOKEN$`)
+  - kimi: GET `https://api.kimi.com/coding/v1/usages`, or
+    `https://api.kimi.ai/coding/v1/usages` when the listing says kimi-ai
+  The request JSON holds only `auth_index`, `method`, `url`, `header` and,
+  for antigravity and devin only, `data`; never `proxy_url` or a `Host`
+  header. `$TOKEN$` only in `Authorization` or devin's `apiKey`; CPA fills it.
+- One plugin route: `GET /v8/management/plugins/<quota_plugin_id>/quota?auth_index=`
+  for entries whose provider is not one of the above and that CPA lists with
+  `supports_quota` and a `quota_plugin_id`. No v0 fallback.
+- Never: credentials download, any chat or completions call (no paid xAI
+  ping), `api.x.ai/v1/me`, `loadCodeAssist`, `onboardUser`, reset routes
+  (`DELETE`/`POST .../quota/reset`, `routing/cooldown/reset`), claim, profile,
+  subscription, refresh or any write. Meta is unsupported (it needs the raw
+  credential).
+- Lockout: hold the guard once for the whole quota run (never nested). The
+  probe is the first management request the run actually sends: it goes
+  alone, and nothing else is sent until its status is known. Check the latch
+  before every request, latch and stop on an outer 401, never retry v0 after
+  a 401, never latch on a vendor (inner) 401. At most 4 requests in flight.
+- `auth_index`, the Codex `id_token.chatgpt_account_id` claim, antigravity
+  `project_id` and `quota_plugin_id` may be read for the entries that need
+  them and held in memory only to build that request; never shown, logged or
+  written to disk. Never read or show `email`, `account`, `path` or `id`, nor
+  any other `id_token` claim. Mask emails and token-like runs in names,
+  labels and `status_message`.
+- Vendor and plugin replies: allowlisted fields only; never print a raw body
+  or headers.
+- At most 20 accounts and 3 requests per account per run, results cached
+  60 s, only on command. The provider plugin keeps "Never api-call".
 - Errors show status and category only, as in the provider.
 
 ## Secrets and transport

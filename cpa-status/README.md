@@ -2,7 +2,7 @@
 
 `/cpa` for [Hermes Agent](https://github.com/NousResearch/hermes-agent): account
 health for every [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
-(CPA) pool in your config, and live Claude and Codex usage on request.
+(CPA) pool in your config, and live per-account usage on request.
 Companion to the
 [`cliproxyapi-provider`](https://github.com/duu261/hermes-cliproxyapi-provider)
 model-provider plugin; it reads the same `cliproxyapi:` section.
@@ -20,21 +20,24 @@ provider plugin: both share one lock per CPA.
 /cpa                       every instance: accounts per provider
 /cpa <pool>                one instance, plus the last hour of requests
 /cpa <pool> <provider>     one line per account
-/cpa quota <pool> [claude|codex]   live usage from each vendor
+/cpa quota <pool> [provider]   live usage from each vendor
 ```
 
 - `/cpa`: one read-only `GET /v8/management/credentials` per instance, only
   when you type it. No timers, no retries; repeats within 20 seconds use
   memory. Last-seen 5h and weekly quota for Claude and Codex accounts, as CPA
   recorded it on real traffic.
-- `/cpa quota`: like CPA's web UI quota page, one call per enabled Claude or
-  Codex account through CPA's `api-call` route to the vendor's usage URL
-  (`api.anthropic.com/api/oauth/usage`, `chatgpt.com/backend-api/wham/usage`),
-  with that account's token filled in by CPA. At most 20 accounts per run,
-  first call alone, then 4 at a time; repeats within 60 seconds use memory.
-- Emails are masked; `email`, `account`, `project_id` and `path` are never
-  read. CPA's account index and the Codex account id are used only to build
-  the quota calls, never shown or stored.
+- `/cpa quota`: like CPA's web UI quota page, for Claude, Codex, xAI,
+  Antigravity, Devin and Kimi accounts through CPA's `api-call` route with the
+  web UI's fixed requests (the account's token filled in by CPA), and for
+  other providers through their CPA quota plugin (e.g. Kiro). Nothing paid,
+  no downloads, no resets; the full request list is in the
+  [README](../README.md#cpa-quota-live-usage). At most 20 accounts and 3
+  requests per account per run, first request alone, then 4 at a time;
+  repeats within 60 seconds use memory.
+- Emails are masked; `email`, `account` and `path` are never read. CPA's
+  account index, the Codex account id, the Antigravity project id and the CPA
+  plugin id are used only to build the quota requests, never shown or stored.
 - Idle chats only: sent during an agent turn it goes to Hermes' busy handling.
 - The management key is full admin on CPA, and Hermes does not strip it from
   agent shells. CPA bans an IP after five failed management keys in a row; a

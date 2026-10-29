@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -101,6 +101,9 @@ class _CPA(BaseHTTPRequestHandler):
     seen: list = []
     posts: list = []
     inner: dict = {}  # auth_index -> (status, body)
+    by_url: dict = {}  # (auth_index, url) -> (status, body); wins over inner
+    plugin: dict = {}  # auth_index -> (outer status, body) for the plugin quota GET
+    plugin_gets: list = []
     outer: int = 0  # force an outer status on api-call
     flip_after: int = -1  # api-call outer 401 after this many posts
     v8_api_call = True
@@ -120,10 +123,39 @@ class _CPA(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _enter(self):
+        cls = type(self)
+        with cls.lock:
+            cls.in_flight += 1
+            cls.peak = max(cls.peak, cls.in_flight)
+
+    def _leave(self):
+        cls = type(self)
+        with cls.lock:
+            cls.in_flight -= 1
+
     def do_GET(self):  # noqa: N802
         cls = type(self)
-        path = urlsplit(self.path).path
+        parts = urlsplit(self.path)
+        path = parts.path
         cls.seen.append(("GET", path))
+        if path.startswith("/v8/management/plugins/") and path.endswith("/quota"):
+            self._enter()
+            try:
+                query = parse_qs(parts.query)
+                with cls.lock:
+                    cls.plugin_gets.append(
+                        {"path": path, "query": query, "auth": self.headers.get("Authorization")}
+                    )
+                if cls.delay:
+                    time.sleep(cls.delay)
+                if self.headers.get("Authorization") != f"Bearer {KEY}":
+                    return self._send(401)
+                index = query.get("auth_index", [""])[0]
+                code, body = cls.plugin.get(index, (404, {"error": "auth not found"}))
+                return self._send(code, body)
+            finally:
+                self._leave()
         if self.headers.get("Authorization") != f"Bearer {KEY}":
             return self._send(401)
         if path == "/v8/management/credentials":
@@ -137,8 +169,7 @@ class _CPA(BaseHTTPRequestHandler):
         with cls.lock:
             cls.seen.append(("POST", path))
             index = len(cls.posts)
-            cls.in_flight += 1
-            cls.peak = max(cls.peak, cls.in_flight)
+        self._enter()
         try:
             if path == "/v8/management/requests/api-call" and not cls.v8_api_call:
                 return self._send(404)
@@ -162,14 +193,16 @@ class _CPA(BaseHTTPRequestHandler):
                 return self._send(401)
             if 0 <= cls.flip_after <= index:
                 return self._send(401)
-            code, inner = cls.inner.get(body.get("auth_index"), (200, {}))
+            target = body.get("auth_index")
+            code, inner = cls.by_url.get(
+                (target, body.get("url")), cls.inner.get(target, (200, {}))
+            )
             text = inner if isinstance(inner, str) else json.dumps(inner)
             return self._send(
                 200, {"status_code": code, "header": {"Set-Cookie": ["leak"]}, "body": text}
             )
         finally:
-            with cls.lock:
-                cls.in_flight -= 1
+            self._leave()
 
 
 class QuotaTestCase(unittest.TestCase):
@@ -193,6 +226,7 @@ class QuotaTestCase(unittest.TestCase):
             f"{3:016x}": (200, CODEX_PLUS_OUT),
         }
         _CPA.outer, _CPA.flip_after, _CPA.v8_api_call, _CPA.delay = 0, -1, True, 0.0
+        _CPA.by_url, _CPA.plugin, _CPA.plugin_gets = {}, {}, []
         _CPA.in_flight = _CPA.peak = 0
         self.home = Path(tempfile.mkdtemp())
         self.env = {"PRE_MGMT": KEY}
@@ -328,7 +362,7 @@ class RequestShapeTests(QuotaTestCase):
         by_url = {p["body"]["url"]: p["body"] for p in _CPA.posts}
         self.assertEqual(set(by_url), {quota.CLAUDE_USAGE_URL, quota.CODEX_USAGE_URL})
         claude = by_url[quota.CLAUDE_USAGE_URL]["header"]
-        self.assertEqual(claude, quota.QUOTA_REQUESTS["claude"][1])
+        self.assertEqual(claude, quota.QUOTA_REQUESTS["claude"][0].header)
         self.assertEqual(claude["Authorization"], "Bearer $TOKEN$")
         codex = [
             p["body"]["header"] for p in _CPA.posts if p["body"]["url"] == quota.CODEX_USAGE_URL
@@ -337,21 +371,31 @@ class RequestShapeTests(QuotaTestCase):
             self.assertNotIn("Accept", header)
             self.assertIn(header["Chatgpt-Account-Id"], {"acct-0002", "acct-0003"})
             base = {k: v for k, v in header.items() if k != "Chatgpt-Account-Id"}
-            self.assertEqual(base, quota.QUOTA_REQUESTS["codex"][1])
+            self.assertEqual(base, quota.QUOTA_REQUESTS["codex"][0].header)
 
-    def test_only_two_urls_and_no_query(self):
+    def test_only_table_urls_and_token_only_where_allowed(self):
+        urls = {p.url for probes in quota.QUOTA_REQUESTS.values() for p in probes}
         self.assertEqual(
-            {url for url, _ in quota.QUOTA_REQUESTS.values()},
+            urls,
             {
                 "https://api.anthropic.com/api/oauth/usage",
                 "https://chatgpt.com/backend-api/wham/usage",
+                "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+                "https://cli-chat-proxy.grok.com/v1/billing",
+                "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+                "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
+                "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+                "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus",
+                "https://api.kimi.com/coding/v1/usages",
             },
         )
-        for url, headers in quota.QUOTA_REQUESTS.values():
-            self.assertNotIn("?", url)
-            self.assertNotIn("Host", headers)
-            for name, value in headers.items():
-                self.assertEqual("$TOKEN$" in value, name == "Authorization")
+        for provider, probes in quota.QUOTA_REQUESTS.items():
+            for probe in probes:
+                self.assertNotIn("Host", probe.header)
+                for name, value in probe.header.items():
+                    self.assertEqual("$TOKEN$" in value, name == "Authorization")
+                if "$TOKEN$" in probe.data:
+                    self.assertEqual(provider, "devin")
 
     def test_codex_without_account_id_has_no_header(self):
         _CPA.files = [account("codex", 2, id_token=None)]
@@ -366,6 +410,27 @@ class RequestShapeTests(QuotaTestCase):
         self.assertEqual(paths[1], "/v0/management/api-call")
         self.assertTrue(all(p == "/v0/management/api-call" for p in paths[2:]))
         self.assertIn("claude · 1 account", out)
+
+    def test_concurrent_v8_404s_do_not_abort_the_run(self):
+        # The probe has proven the key; then two workers both get a v8 404
+        # before either switches. The second must retry v0, not stop the run.
+        _CPA.files = [account("codex", n) for n in range(2, 8)]
+        _CPA.inner = {f"{n:016x}": (200, CODEX_PRO) for n in range(2, 8)}
+        _CPA.delay = 0.05
+        runner_paths = []
+        real = quota.api_call
+
+        def spy(root, key, path, body):
+            runner_paths.append(path)
+            if path == quota.V8_API_CALL and len(runner_paths) > 1:
+                time.sleep(0.05)  # let a second worker read the v8 path too
+                raise cpa.GatewayError(404, "not_found")
+            return real(root, key, quota.V0_API_CALL if path == quota.V8_API_CALL else path, body)
+
+        with mock.patch.object(quota, "api_call", spy):
+            out = self.run_quota()
+        self.assertIn("codex · 6 accounts: 6 have room", out)
+        self.assertGreaterEqual(runner_paths.count(quota.V8_API_CALL), 2)
 
     def test_v8_401_never_tries_v0(self):
         _CPA.outer = 401
@@ -410,7 +475,8 @@ class PrivacyTests(QuotaTestCase):
             self.assertNotIn("email", entry)
         self.assertEqual(files[0]["_target"], f"{2:016x}")
         self.assertEqual(files[0]["_acct"], "acct-0002")
-        self.assertNotIn("_target", files[1])  # never for providers quota does not call
+        self.assertEqual(files[1]["_target"], f"{4:016x}")  # every built-in vendor now
+        self.assertNotIn("_acct", files[1])  # the account id stays Codex-only
 
     def test_bad_shaped_identifiers_are_dropped(self):
         entry = account("codex", 2, auth_index="../../etc", id_token={"chatgpt_account_id": "a b"})
@@ -580,16 +646,17 @@ class RunControlTests(QuotaTestCase):
         self.assertLessEqual(_CPA.peak, quota.MAX_IN_FLIGHT)
         self.assertGreater(_CPA.peak, 1)
 
-    def test_disabled_and_other_providers_not_called(self):
+    def test_disabled_and_uncovered_providers_not_called(self):
         _CPA.files = [
             account("codex", 2, disabled=True),
             account("codex", 3, status="disabled"),
-            account("xai", 4),
-            account("antigravity", 5),
+            account("gemini", 4),
+            account("meta", 5, supports_quota=True, quota_plugin_id="meta-plugin"),
+            account("kiro", 6),  # no quota plugin listed
         ]
         out = self.run_quota()
-        self.assertEqual(_CPA.posts, [])
-        self.assertIn("no claude or codex accounts", out)
+        self.assertEqual(_CPA.seen, [("GET", "/v8/management/credentials")])
+        self.assertIn("no accounts with live quota", out)
 
     def test_repeat_within_60s_is_cached_and_takes_no_guard(self):
         self.run_quota()
@@ -601,7 +668,7 @@ class RunControlTests(QuotaTestCase):
         self.assertEqual(_CPA.seen, [])
 
     def test_injection_args_never_reach_a_request(self):
-        allowed_urls = {url for url, _ in quota.QUOTA_REQUESTS.values()}
+        allowed_urls = {p.url for probes in quota.QUOTA_REQUESTS.values() for p in probes}
         for args in ("quota pre https://evil.example", 'quota pre "codex', "quota pre codex extra"):
             _CPA.posts = []
             quota.reset_state()
@@ -644,8 +711,12 @@ class ViewTests(QuotaTestCase):
 
     def test_unsupported_provider_is_masked(self):
         out = self.run_quota("quota pre sk-" + "a" * 40)
-        self.assertIn("Live quota covers claude and codex", out)
+        self.assertIn("Live quota covers claude, codex, xai", out)
         self.assertNotIn("a" * 24, out)
+        self.assertEqual(_CPA.seen, [])
+
+    def test_meta_is_explained_and_sends_nothing(self):
+        self.assertIn("meta: no live quota", self.run_quota("quota pre meta"))
         self.assertEqual(_CPA.seen, [])
 
     def test_usage_and_unknown_pool(self):
