@@ -3,7 +3,8 @@
 ## 0.6.0
 
 - `/cpa quota` covers every provider CPA's web UI shows quota for, except
-  Meta: xAI (weekly credits and monthly spend), Antigravity (per model group),
+  Meta: xAI (weekly credits; monthly spend and plan when xAI reports a
+  monthly limit), Antigravity (per model group),
   Devin, Kimi, and any provider whose CPA quota plugin serves quota (e.g.
   Kiro), next to Claude and Codex. Each uses the web UI's own requests; none
   costs money, uses up quota, downloads an account file or resets anything.

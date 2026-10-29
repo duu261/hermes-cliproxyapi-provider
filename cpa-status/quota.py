@@ -392,7 +392,7 @@ def parse_groups(payload: Any) -> list[Window]:
     for index, group in enumerate(groups):
         if not isinstance(group, dict) or not isinstance(group.get("buckets"), list):
             continue
-        name = _label(_first(group, "displayName", "display_name"), 12) or f"g{index + 1}"
+        name = _label(_first(group, "displayName", "display_name"), 24) or f"g{index + 1}"
         found: list[tuple[int, str, Window]] = []
         for bucket in group["buckets"]:
             if not isinstance(bucket, dict):

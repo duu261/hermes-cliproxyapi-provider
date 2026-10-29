@@ -180,6 +180,17 @@ class ParserTests(unittest.TestCase):
         self.assertNotIn(TOKENISH, windows[0].label)
         self.assertEqual(quota.parse_groups([]), [])
 
+    def test_groups_keep_live_group_names_whole(self):
+        body = {
+            "groups": [
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [{"window": "5h", "remainingFraction": 1}],
+                }
+            ]
+        }
+        self.assertEqual(quota.parse_groups(body)[0].label, "Claude and GPT models 5h")
+
     def test_plugin_kiro_shape(self):
         usage = quota.parse_plugin(KIRO_BODY)
         self.assertEqual(usage.plan, "kiro_pro")
