@@ -338,7 +338,9 @@ account 会显示 billing 错误）、身份和 plan 查询、下载 account 文
 
 header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已用量（报告剩余量的
 厂商会被换算）；不跨 plan 汇总。某个 window 达到 100% 或厂商标记该 account 为 blocked
-时，该 account 显示 `OUT`。
+时，该 account 显示 `OUT`。Antigravity 按 model group 计算：CPA 只暂停用完的
+model，所以只有每个 group 都满时 account 才显示 `OUT`；否则满的 group 显示为
+`out: <group>`。
 
 - 只在你输入时运行。每次最多 20 个 account，每个 account 最多 3 个请求。第一个请求
   单独发送，之后最多 4 个并发；60 秒内重复输入直接用内存结果。跳过已禁用的 account。

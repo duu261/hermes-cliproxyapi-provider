@@ -191,6 +191,7 @@ class Window:
     label: str
     used: float  # percent used, 0..100
     resets_at: datetime | None = None
+    group: str = ""  # model group (Antigravity, plugin quota); CPA cools per model
 
 
 @dataclass
@@ -383,8 +384,12 @@ def _fraction(raw: Any) -> float | None:
     return _num(raw)
 
 
-def parse_groups(payload: Any) -> list[Window]:
-    """``groups[].buckets[]`` (Antigravity, CPA plugin quota). Fraction = remaining."""
+def parse_groups(payload: Any, per_model: bool = False) -> list[Window]:
+    """``groups[].buckets[]`` (Antigravity, CPA plugin quota). Fraction = remaining.
+
+    ``per_model`` tags each window with its group: CPA cools Antigravity per
+    model, so one full group does not stop the account (CPA v8.0.46).
+    """
     groups = payload.get("groups") if isinstance(payload, dict) else None
     if not isinstance(groups, list):
         return []
@@ -409,6 +414,8 @@ def parse_groups(payload: Any) -> list[Window]:
             label = label or _label(bucket.get("description"), 16) or "?"
             resets = _instant(_first(bucket, "resetTime", "reset_time"))
             window = Window(f"{name} {label}", 100 - fraction * 100, resets)
+            if per_model:
+                window.group = f"{index}:{name}"
             found.append((_WINDOW_ORDER.get(label, 2), label, window))
         windows += [w for _, _, w in sorted(found, key=lambda item: (item[0], item[1]))]
     return windows
@@ -643,14 +650,40 @@ class AccountResult:
     error: str = ""
 
     def out_until(self) -> tuple[bool, datetime | None]:
-        """Whether the account is out of quota now, and when it frees."""
+        """Whether the account is out of quota now, and when it frees.
+
+        With model groups, CPA cools only the models that ran out, so the
+        account is out only when every group has a full window; it frees when
+        the first of those groups does.
+        """
         if self.usage is None:
             return False, None
+        groups = self.full_groups()
+        if groups is not None and not self.usage.reached:
+            if not groups or len(groups) < len({w.group for w in self.usage.windows}):
+                return False, None
+            frees = [until for until in groups.values() if until]
+            return True, min(frees) if frees else None
         full = [w for w in self.usage.windows if w.used >= 100]
         if not full and not self.usage.reached:
             return False, None
         resets = [w.resets_at for w in (full or self.usage.windows) if w.resets_at]
         return True, max(resets) if resets else None
+
+    def full_groups(self) -> dict[str, datetime | None] | None:
+        """Model groups with a full window and when each frees; None if ungrouped."""
+        if self.usage is None or not any(w.group for w in self.usage.windows):
+            return None
+        groups: dict[str, datetime | None] = {}
+        for w in self.usage.windows:
+            if w.used >= 100:
+                resets = [
+                    x.resets_at
+                    for x in self.usage.windows
+                    if x.group == w.group and x.used >= 100 and x.resets_at
+                ]
+                groups[w.group] = max(resets) if resets else None
+        return groups
 
 
 @dataclass
@@ -801,7 +834,7 @@ class _Runner:
             for body in bodies:  # the next URL only after an inner failure
                 inner = self.api(body)  # an outer failure ends the account
                 try:
-                    windows = parse_groups(_payload(inner))
+                    windows = parse_groups(_payload(inner), per_model=True)
                 except _AccountError as exc:
                     failure = exc
                     continue
@@ -977,7 +1010,11 @@ def _provider_block(provider: str, items: list[AccountResult], now: datetime) ->
         text = " · ".join(_window_text(w, now) for w in item.usage.windows)
         plan = f"  {item.usage.plan}" if item.usage.plan else ""
         is_out, _ = item.out_until()
-        lines.append(f"{item.name}{plan}  {text}" + ("  OUT" if is_out else ""))
+        groups = item.full_groups()
+        suffix = "  OUT" if is_out else ""
+        if not is_out and groups:
+            suffix = "  out: " + ", ".join(sorted(g.split(":", 1)[-1] for g in groups))
+        lines.append(f"{item.name}{plan}  {text}{suffix}")
     return lines
 
 

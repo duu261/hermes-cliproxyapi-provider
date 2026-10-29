@@ -381,7 +381,9 @@ tác reset.
 Các header, kể cả `User-Agent` CLI của từng vendor, lấy từ web UI. Phần trăm là
 phần đã dùng (vendor nào báo phần còn lại thì được đổi lại); không cộng gộp
 giữa các plan. Một account là `OUT` khi có window ở 100% hoặc vendor báo nó
-đang bị chặn.
+đang bị chặn. Antigravity tính theo model group: CPA chỉ tạm ngưng các model đã
+hết, nên account chỉ là `OUT` khi mọi group đều đầy; nếu không, group đầy hiện
+là `out: <group>`.
 
 - Chỉ khi bạn gõ lệnh. Mỗi lần chạy tối đa 20 account và 3 request cho mỗi
   account. Request đầu gửi một mình, sau đó tối đa 4 request cùng lúc; gõ lại

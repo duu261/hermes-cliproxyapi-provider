@@ -191,6 +191,48 @@ class ParserTests(unittest.TestCase):
         }
         self.assertEqual(quota.parse_groups(body)[0].label, "Claude and GPT models 5h")
 
+    def test_antigravity_out_only_when_every_group_is_full(self):
+        def body(gemini, claude):
+            return {
+                "groups": [
+                    {
+                        "displayName": "Gemini Models",
+                        "buckets": [
+                            {
+                                "window": "weekly",
+                                "remainingFraction": gemini,
+                                "resetTime": iso(3000),
+                            }
+                        ],
+                    },
+                    {
+                        "displayName": "Claude and GPT models",
+                        "buckets": [
+                            {
+                                "window": "weekly",
+                                "remainingFraction": claude,
+                                "resetTime": iso(600),
+                            },
+                            {"window": "5h", "remainingFraction": 0.5, "resetTime": iso(60)},
+                        ],
+                    },
+                ]
+            }
+
+        def account(payload, per_model=True):
+            usage = quota.Usage(windows=quota.parse_groups(payload, per_model=per_model))
+            return quota.AccountResult("a", "antigravity", usage)
+
+        one = account(body(0.8, 0))
+        self.assertEqual(one.out_until(), (False, None))
+        self.assertEqual(list(one.full_groups() or {}), ["1:Claude and GPT models"])
+        both = account(body(0, 0))
+        self.assertEqual(both.out_until(), (True, NOW + timedelta(minutes=600)))
+        self.assertEqual(account(body(0.8, 0.9)).out_until(), (False, None))
+        # plugin quota (no per_model) keeps the any-window rule
+        self.assertTrue(account(body(0.8, 0), per_model=False).out_until()[0])
+        self.assertIsNone(account(body(0.8, 0), per_model=False).full_groups())
+
     def test_plugin_kiro_shape(self):
         usage = quota.parse_plugin(KIRO_BODY)
         self.assertEqual(usage.plan, "kiro_pro")

@@ -380,7 +380,9 @@ identity and plan lookups, downloading account files, and every reset.
 The headers, including each vendor's CLI `User-Agent`, are the web UI's. The
 percent is what is used (vendors that report what is left are converted);
 there are no totals across plans. An account is `OUT` when a window is at 100%
-or the vendor says it is blocked.
+or the vendor says it is blocked. Antigravity is per model group: CPA holds back
+only the models that ran out, so an account is `OUT` only when every group is
+full; otherwise the full groups show as `out: <group>`.
 
 - Only when you type it. At most 20 accounts and 3 requests per account per
   run. The first request goes alone, then at most 4 at a time; a repeat within
