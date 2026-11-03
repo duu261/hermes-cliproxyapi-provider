@@ -1,5 +1,5 @@
 name: cliproxyapi
-description: CLIProxyAPI pools as Hermes model providers, plus /cpa pool status
+description: CLIProxyAPI pools as Hermes model providers, plus /cpa pool health and quota
 author: duu261
 version: 0.7.0
 plugins:

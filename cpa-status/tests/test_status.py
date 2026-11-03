@@ -120,6 +120,20 @@ class ClassifyTests(unittest.TestCase):
     def test_unavailable_without_cooldown_is_error(self):
         self.assertEqual(self.state(status="active", unavailable=True).kind, "error")
 
+    def test_requires_sign_in_is_error_even_while_cooling(self):
+        st = self.state(
+            status="active",
+            requires_sign_in=True,
+            cooldowns=[{"scope": "credential", "reason": "quota", "retry_at": iso(30)}],
+        )
+        self.assertEqual((st.kind, st.reason), ("error", "sign in again"))
+        entry = {"status": "active", "requires_sign_in": True, "status_message": "x@y.com expired"}
+        text = status._state_text(entry, status.classify(entry, NOW), NOW)
+        self.assertEqual(text, "error: sign in again")
+        self.assertEqual(self.state(status="active", requires_sign_in=False).kind, "ready")
+        kept = status.files_of({"files": [dict(entry, provider="codex")]})[0]
+        self.assertIs(kept["requires_sign_in"], True)
+
     def test_never_ready_unless_active(self):
         for value in ("pending", "refreshing", "unknown", "new-state", ""):
             st = self.state(status=value)

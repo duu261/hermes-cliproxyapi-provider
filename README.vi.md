@@ -4,9 +4,9 @@
 
 > Bản dịch này có thể chậm hơn bản tiếng Anh. Khi có khác biệt, [README.md](README.md) là bản chuẩn.
 
-Plugin model-provider cho
-[Hermes Agent](https://github.com/NousResearch/hermes-agent), dùng với
-[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA).
+Plugin cho [Hermes Agent](https://github.com/NousResearch/hermes-agent), dùng
+với [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA): một
+model-provider, và lệnh chat `/cpa` đi kèm để xem tình trạng pool và quota live.
 
 CPA là một gateway: một instance đứng trước nhiều provider (Claude, Codex,
 Gemini, xAI, Kimi, Devin, các upstream tương thích OpenAI, các plugin provider như Kiro) và tự quản lý account, OAuth, xoay vòng và chuyển đổi định
@@ -18,6 +18,10 @@ một provider Hermes cho mỗi provider CPA, mỗi provider dùng wire mà exec
 của CPA cho provider đó chấp nhận với ít chuyển đổi nhất, kèm danh sách model
 và các khả năng của model mà CPA công bố (context window, max output, đầu
 vào hình ảnh, các mức reasoning). Plugin không thêm bất cứ thứ gì CPA không phục vụ.
+
+`/cpa` đi kèm cho xem account của từng pool ngay trong chat (active, limited,
+cooling, error, disabled) và, khi được gọi, quota live của từng account (Claude,
+Codex, xAI, Antigravity, Devin, Kimi, Kiro). Chỉ đọc, an toàn với lockout.
 
 ## Cài đặt
 
@@ -370,8 +374,8 @@ quota plugin của nó khi CPA có liệt kê. Mọi request, và khi nào chún
 
 | Provider | Request cho mỗi account | Bạn thấy gì |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; giới hạn tuần theo model và app khi được gửi (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage khi bật |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; giới hạn tuần theo model và app khi được gửi (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage khi bật, kèm đã tiêu/hạn mức; credit pool (`$ left`) |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan, credits khi account có |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, rồi GET `https://cli-chat-proxy.grok.com/v1/billing` | credits tuần `wk` (`wk no figure yet` khi xAI chưa báo phần trăm); chi tiêu tháng `mo` và plan (`supergrok` / `supergrok_heavy`) chỉ khi xAI báo monthly limit |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` kèm `project_id` của account; host `daily-cloudcode-pa.sandbox` và `cloudcode-pa` chỉ khi host trước lỗi ở phía vendor hoặc không trả quota | theo từng nhóm model, `5h` và `wk` |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |

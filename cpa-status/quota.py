@@ -205,7 +205,7 @@ class Usage:
     # The vendor confirmed a running window but sent no figure for it (xAI
     # leaves the percent out until an account has used enough). Never a 0.
     pending: list[Window] = field(default_factory=list)
-    extra: str = ""  # Claude extra usage, only when the account has it on
+    extra: str = ""  # Claude extra usage and credit pools, Codex credits; only when present
 
 
 def _num(raw: Any) -> float | None:
@@ -256,7 +256,7 @@ def _label(raw: Any, limit: int) -> str:
 
 # Window keys in the Management Center's order (CLAUDE_USAGE_WINDOW_KEYS);
 # scoped = a limit on some models or apps only. ``iguana_necktie`` is Fable
-# unless it carries dollar fields (then it is a credit pool, not shown).
+# unless it carries dollar fields (then it is a credit pool: _claude_balances).
 _CLAUDE_WINDOWS = (
     ("five_hour", "5h", False),
     ("seven_day", "wk", False),
@@ -291,14 +291,45 @@ def _claude_scoped(payload: dict[str, Any]) -> list[Window]:
     return [window for _, window in found.values()]
 
 
+def _money(minor: float, currency: str) -> str:
+    amount = f"{minor / 100:,.2f}"
+    return f"${amount}" if currency == "USD" else f"{amount} {currency}"
+
+
 def _claude_extra(payload: dict[str, Any]) -> str:
     extra = payload.get("extra_usage")
     if not isinstance(extra, dict) or extra.get("is_enabled") is not True:
         return ""
     if extra.get("spend_limit_reached") is True:
-        return "extra limit reached"
-    used = _used(extra.get("utilization"))
-    return f"extra {int(used)}%" if used is not None else "extra on"
+        text = "extra limit reached"
+    else:
+        used = _used(extra.get("utilization"))
+        text = f"extra {int(used)}%" if used is not None else "extra on"
+    spent, limit = _num(extra.get("used_credits")), _num(extra.get("monthly_limit"))
+    raw_currency = extra.get("currency")
+    currency = raw_currency.strip().upper() if isinstance(raw_currency, str) else ""
+    currency = currency or "USD"
+    if spent is not None and limit is not None and spent >= 0 and limit > 0:
+        if re.fullmatch(r"[A-Z]{3}", currency):  # amounts are minor units, as in the MC
+            text += f" ({_money(spent, currency)}/{_money(limit, currency)})"
+    return text
+
+
+def _claude_balances(payload: dict[str, Any]) -> list[str]:
+    """Dollar credit pools (Team/API): any window carrying dollar fields."""
+    out = []
+    for key, window in payload.items():
+        if key in ("five_hour", "seven_day", "extra_usage") or not isinstance(window, dict):
+            continue
+        if not all(k in window for k in (*_DOLLAR_KEYS, "utilization", "resets_at")):
+            continue  # the MC's rule for a credit pool
+        left = _num(window.get("remaining_dollars"))
+        # Key names are vendor field names, not secrets; spaces keep the
+        # token mask from eating long ones.
+        label = key.replace("_", " ") if re.fullmatch(r"[a-z0-9_]{1,40}", key) else ""
+        if label and left is not None and left >= 0:
+            out.append(f"{label} ${left:,.2f} left")
+    return out
 
 
 def parse_claude(payload: Any) -> Usage:
@@ -320,7 +351,7 @@ def parse_claude(payload: Any) -> Usage:
         usage.windows.append(Window(label, used, resets, scoped=is_scoped))
         labels.add(label)
     usage.windows += scoped
-    usage.extra = _claude_extra(payload)
+    usage.extra = " · ".join(filter(None, [_claude_extra(payload), *_claude_balances(payload)]))
     return usage
 
 
@@ -351,6 +382,7 @@ def parse_codex(payload: Any, now: datetime) -> Usage:
     plan = payload.get("plan_type")
     if isinstance(plan, str) and _PLAN_RE.match(plan.strip().lower()):
         usage.plan = plan.strip().lower()
+    usage.extra = _codex_credits(payload)
     limit = payload.get("rate_limit")
     if limit is None:
         limit = payload.get("rateLimit")
@@ -383,6 +415,23 @@ def parse_codex(payload: Any, now: datetime) -> Usage:
         taken.add(label)
         usage.windows.append(Window(label, used, resets))
     return usage
+
+
+def _codex_credits(payload: dict[str, Any]) -> str:
+    """Pay-as-you-go credits next to the plan windows, as the MC shows them."""
+    credits = payload.get("credits")
+    if not isinstance(credits, dict):
+        return ""
+    if credits.get("unlimited") is True:
+        return "credits unlimited"
+    raw = credits.get("balance")
+    text = (
+        str(raw).strip() if isinstance(raw, (int, float, str)) and not isinstance(raw, bool) else ""
+    )
+    if not re.fullmatch(r"\d{1,12}(\.\d{1,6})?", text):
+        return ""
+    value = float(text)
+    return f"credits {value:,.2f}".removesuffix(".00") if value else ""
 
 
 _XAI_PLANS = {15000: "supergrok", 150000: "supergrok_heavy"}  # monthly limit, cents

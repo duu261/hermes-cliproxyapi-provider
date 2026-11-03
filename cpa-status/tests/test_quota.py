@@ -117,6 +117,9 @@ class _CPA(BaseHTTPRequestHandler):
 
     def _send(self, code, body=None):
         data = json.dumps(body if body is not None else {"error": "secret-body"}).encode()
+        # Leave before replying: once the client has the reply it may send its
+        # next request, which must not overlap this one in the peak count.
+        self._leave()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -128,8 +131,12 @@ class _CPA(BaseHTTPRequestHandler):
         with cls.lock:
             cls.in_flight += 1
             cls.peak = max(cls.peak, cls.in_flight)
+        self._counted = True
 
     def _leave(self):
+        if not getattr(self, "_counted", False):
+            return
+        self._counted = False
         cls = type(self)
         with cls.lock:
             cls.in_flight -= 1
@@ -315,6 +322,49 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(quota.parse_claude({"extra_usage": on}).extra, "extra 37%")
         hit = {"is_enabled": True, "spend_limit_reached": True}
         self.assertEqual(quota.parse_claude({"extra_usage": hit}).extra, "extra limit reached")
+
+    def test_claude_extra_usage_money_in_minor_units(self):
+        on = {"is_enabled": True, "utilization": 25, "used_credits": 1250, "monthly_limit": 5000}
+        self.assertEqual(quota.parse_claude({"extra_usage": on}).extra, "extra 25% ($12.50/$50.00)")
+        on |= {"currency": "eur"}
+        self.assertEqual(
+            quota.parse_claude({"extra_usage": on}).extra, "extra 25% (12.50 EUR/50.00 EUR)"
+        )
+        for junk in ({"currency": "<b>"}, {"monthly_limit": 0}, {"used_credits": None}):
+            self.assertEqual(
+                quota.parse_claude({"extra_usage": on | junk}).extra, "extra 25%", junk
+            )
+        off = {"is_enabled": False, "used_credits": 1250, "monthly_limit": 5000}
+        self.assertEqual(quota.parse_claude({"extra_usage": off}).extra, "")
+
+    def test_claude_dollar_credit_pool(self):
+        pool = {
+            "limit_dollars": 100,
+            "used_dollars": 40,
+            "remaining_dollars": 60,
+            "utilization": 40,
+            "resets_at": None,
+        }
+        usage = quota.parse_claude({"additional_credit_balance": pool, "five_hour": None})
+        self.assertEqual(usage.windows, [])
+        self.assertEqual(usage.extra, "additional credit balance $60.00 left")
+        partial = {"limit_dollars": 100, "used_dollars": 40, "remaining_dollars": 60}
+        self.assertEqual(quota.parse_claude({"x": partial}).extra, "")
+        self.assertEqual(quota.parse_claude({"Bad Key!": pool}).extra, "")
+        usage = quota.parse_claude({"iguana_necktie": pool})  # dollar Fable key = a pool
+        self.assertEqual((usage.windows, usage.extra), ([], "iguana necktie $60.00 left"))
+
+    def test_codex_credits(self):
+        body = dict(CODEX_PRO, credits={"has_credits": True, "balance": "1250.5"})
+        self.assertEqual(quota.parse_codex(body, NOW).extra, "credits 1,250.50")
+        body["credits"] = {"balance": 1000}
+        self.assertEqual(quota.parse_codex(body, NOW).extra, "credits 1,000")
+        body["credits"] = {"unlimited": True}
+        self.assertEqual(quota.parse_codex(body, NOW).extra, "credits unlimited")
+        for junk in ({"balance": "0"}, {"balance": "-5"}, {"balance": "1e9"}, {"balance": True}):
+            body["credits"] = junk
+            self.assertEqual(quota.parse_codex(body, NOW).extra, "", junk)
+        self.assertEqual(quota.parse_codex(CODEX_PRO, NOW).extra, "")
 
     def test_claude_full_scoped_limit_is_not_out(self):
         usage = quota.Usage(
