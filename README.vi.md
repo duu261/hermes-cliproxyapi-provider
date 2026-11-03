@@ -324,9 +324,10 @@ Cần `mgmt_key_env` trên instance muốn xem; instance không có sẽ hiện
 ```
 
 ```
-pre
+pre · v8.0.51
   codex 4: 3 active · 1 cooling (next 17:20)
   xai 2: 2 active
+CPA v8.0.52 available (running v8.0.51)
 pre / codex · 4 accounts
 codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
 codex-bo…@…  cooling until 17:20 (quota)
@@ -335,6 +336,11 @@ codex-bo…@…  cooling until 17:20 (quota)
 - Chỉ đọc: mỗi lần chạy gửi một `GET /v8/management/credentials` cho mỗi
   instance (v0 `auth-files` chỉ sau 404), và chỉ khi bạn gõ `/cpa`. Không hẹn
   giờ, không retry. Gõ lại trong 20 giây sẽ trả từ bộ nhớ.
+- Phiên bản CPA cạnh mỗi instance là `X-CPA-VERSION` header của cùng
+  phản hồi đó. Trên `/cpa` (không có `quota`), `CPA <version> available`
+  đến từ update route của chính CPA (`GET /v8/management/server/latest-version`,
+  hỏi GitHub): một request cho mỗi tiến trình Hermes mỗi 6 giờ, 10 phút
+  sau khi thất bại. Thất bại chỉ ẩn dòng đó.
 - Quota gần nhất (5h và tuần) là số CPA ghi lại từ traffic thật của account
   Claude và Codex. CPA không ghi cho provider khác. `/cpa` (không có `quota`)
   không bao giờ bảo CPA kiểm tra quota với upstream; `/cpa quota` thì có.
@@ -364,7 +370,7 @@ quota plugin của nó khi CPA có liệt kê. Mọi request, và khi nào chún
 
 | Provider | Request cho mỗi account | Bạn thấy gì |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`, window tuần `opus` / `sonnet` |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; giới hạn tuần theo model và app khi được gửi (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage khi bật |
 | Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, rồi GET `https://cli-chat-proxy.grok.com/v1/billing` | credits tuần `wk` (`wk no figure yet` khi xAI chưa báo phần trăm); chi tiêu tháng `mo` và plan (`supergrok` / `supergrok_heavy`) chỉ khi xAI báo monthly limit |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` kèm `project_id` của account; host `daily-cloudcode-pa.sandbox` và `cloudcode-pa` chỉ khi host trước lỗi ở phía vendor hoặc không trả quota | theo từng nhóm model, `5h` và `wk` |
@@ -383,7 +389,9 @@ phần đã dùng (vendor nào báo phần còn lại thì được đổi lại
 giữa các plan. Một account là `OUT` khi có window ở 100% hoặc vendor báo nó
 đang bị chặn. Antigravity tính theo model group: CPA chỉ tạm ngưng các model đã
 hết, nên account chỉ là `OUT` khi mọi group đều đầy; nếu không, group đầy hiện
-là `out: <group>`.
+là `out: <group>`. Các giới hạn tuần theo model của Claude
+(Fable, Opus, Sonnet, apps, Cowork) cũng vậy: cái nào đầy hiện là `out: fable`
+và account vẫn phục vụ các model khác.
 
 - Chỉ khi bạn gõ lệnh. Mỗi lần chạy tối đa 20 account và 3 request cho mỗi
   account. Request đầu gửi một mình, sau đó tối đa 4 request cùng lúc; gõ lại
@@ -400,6 +408,24 @@ là `out: <group>`.
   `.ai` mà CPA chỉ liệt kê là `kimi` (bị gửi tới URL `.com` và hiện
   `token rejected by vendor`), giới hạn code-review và extra limit theo model
   của Codex, các số liệu summary của plugin.
+
+## CPA versions
+
+Các plugin theo các release của CPA và không đặt phiên bản tối đa. Các tính
+năng cần CPA mới hơn:
+
+| Tính năng | CPA |
+|---|---|
+| Nhóm công khai theo `owned_by` (`/v1/models`) | v4.1.1+ |
+| Chế độ management (credentials, credential models, model definitions) | v6.7.26+ (v8 routes from v8.0.0) |
+| Định nghĩa model cho plugin provider (Kiro và các plugin khác) | v8.0.34+ |
+| `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
+| `/cpa` quota gần nhất | v7.2.142+ |
+| `/cpa` phiên bản và gợi ý update | v6.5.42+ |
+| `/cpa quota` vendor có sẵn (`api-call` với `$TOKEN$`) | v6.6.63+ |
+| `/cpa quota` plugin quota (vd. Kiro) | v8.0.25+ |
+
+Các bản cũ trả 404 cho route còn thiếu, và tính năng đó bị bỏ qua.
 
 ## Phát triển
 

@@ -1,13 +1,27 @@
 # Changelog
 
-## 0.6.1
+## 0.7.0
 
+- `/cpa` shows each pool's CPA version (from the `X-CPA-VERSION` header CPA
+  already sends on the credentials reply, no extra request) and, on the
+  plain overview only, `CPA <version> available (running <versions>)` when
+  a pool runs an older release. The check is CPA's own read-only
+  `server/latest-version` route: one request per Hermes process every 6
+  hours (10 minutes after a failure), and a failure only hides the hint.
+- `/cpa` says `active` instead of `ready`, CPA's own word for the state.
+- `/cpa quota` Claude: Fable's weekly limit (`fable`), the OAuth apps and
+  Cowork weekly limits when Claude sends them, and extra usage when it is on
+  (`extra 37%`, `extra limit reached`). Model-scoped limits (Fable, Opus,
+  Sonnet, apps, Cowork) never mark the account `OUT`: a full one shows as
+  `out: fable` while the account keeps serving other models. All from the
+  same usage request as before.
 - `/cpa quota`: an xAI account whose week is running but has no percent yet
   (xAI leaves it out until the account has used enough) shows
   `wk no figure yet → <reset>` and counts as having room. It used to count
   as failed with `no quota data`. No percent is ever made up.
 - `/cpa quota xai` (a provider where the pool goes) now says to use
   `/cpa quota <pool> xai` instead of "Unknown pool".
+- README: minimum CPA version per feature.
 
 ## 0.6.0
 

@@ -286,9 +286,10 @@ hermes plugins enable cpa-status
 ```
 
 ```
-pre
+pre · v8.0.51
   codex 4: 3 active · 1 cooling (next 17:20)
   xai 2: 2 active
+CPA v8.0.52 available (running v8.0.51)
 pre / codex · 4 accounts
 codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
 codex-bo…@…  cooling until 17:20 (quota)
@@ -297,6 +298,10 @@ codex-bo…@…  cooling until 17:20 (quota)
 - 只读：每次运行对每个 instance 发送一次 `GET /v8/management/credentials`（只有在
   404 之后才用 v0 `auth-files`），并且只在你输入 `/cpa` 时发送。没有定时任务，
   不 retry。20 秒内重复输入直接用内存结果。
+- 每个 instance 旁边的 CPA 版本是同一次回复的 `X-CPA-VERSION` header。普通的
+  `/cpa` 总览上，`CPA <version> available` 来自 CPA 自己的 update route
+  （`GET /v8/management/server/latest-version`，会问 GitHub）：每个 Hermes
+  进程每 6 小时一次 request，失败后 10 分钟。失败只隐藏该行。
 - 最近一次的 quota（`5h` 和 `wk`）来自 CPA 在真实流量中为 Claude 和 Codex account
   记录的数据，其他 provider CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询 quota；
   `/cpa quota` 会。
@@ -324,7 +329,7 @@ quota 页面相同。对内置的厂商，CPA 的 `api-call` 路由带着该 acc
 
 | Provider | 每个 account 的请求 | 显示内容 |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`, 每周 `opus` / `sonnet` |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`；每周 model 和 app 限额在有发送时显示 (`fable`, `opus`, `sonnet`, `apps`, `cowork`)；extra usage 在开启时显示 |
 | Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, 然后 GET `https://cli-chat-proxy.grok.com/v1/billing` | 每周 credits `wk`（xAI 还没报告百分比时显示 `wk no figure yet`）；只有 xAI 报告 monthly limit 时才显示每月花费 `mo` 和 plan（`supergrok` / `supergrok_heavy`） |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` ，带该 account 的 `project_id`；只有前一个 host 在厂商侧失败或没有返回 quota 时，才依次请求 `daily-cloudcode-pa.sandbox` 和 `cloudcode-pa` | 按 model 分组，`5h` 和 `wk` |
@@ -340,7 +345,8 @@ header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已�
 厂商会被换算）；不跨 plan 汇总。某个 window 达到 100% 或厂商标记该 account 为 blocked
 时，该 account 显示 `OUT`。Antigravity 按 model group 计算：CPA 只暂停用完的
 model，所以只有每个 group 都满时 account 才显示 `OUT`；否则满的 group 显示为
-`out: <group>`。
+`out: <group>`。Claude 按 model 划分的每周限额（Fable、Opus、Sonnet、apps、Cowork）
+同样如此：满的那个显示为 `out: fable`，account 继续提供其他 model。
 
 - 只在你输入时运行。每次最多 20 个 account，每个 account 最多 3 个请求。第一个请求
   单独发送，之后最多 4 个并发；60 秒内重复输入直接用内存结果。跳过已禁用的 account。
@@ -354,6 +360,23 @@ model，所以只有每个 group 都满时 account 才显示 `OUT`；否则满�
 - 不涵盖：Meta（web UI 要读它的原始 credential 文件）、CPA 只列为 `kimi` 的 Kimi
   `.ai` account（会发到 `.com` URL 并显示 `token rejected by vendor`）、Codex 的
   code-review 和按 model 的额外限额、plugin 的 summary 数字。
+
+## CPA versions
+
+这些 plugin 跟随 CPA 的 release，不设上限。需要较新 CPA 的功能：
+
+| 功能 | CPA |
+|---|---|
+| 按 `owned_by` (`/v1/models`) 公开分组 | v4.1.1+ |
+| management 模式 (credentials, credential models, model definitions) | v6.7.26+ (v8 routes from v8.0.0) |
+| plugin provider 的 model 定义（Kiro 等） | v8.0.34+ |
+| `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
+| `/cpa` 最近一次的 quota | v7.2.142+ |
+| `/cpa` 版本和 update 提示 | v6.5.42+ |
+| `/cpa quota` 内置厂商 (`api-call` 带 `$TOKEN$`) | v6.6.63+ |
+| `/cpa quota` plugin quota（如 Kiro） | v8.0.25+ |
+
+较旧的 release 对缺失的 route 返回 404，该功能会被跳过。
 
 ## 开发
 
