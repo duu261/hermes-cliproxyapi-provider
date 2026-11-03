@@ -117,6 +117,9 @@ class _CPA(BaseHTTPRequestHandler):
 
     def _send(self, code, body=None):
         data = json.dumps(body if body is not None else {"error": "secret-body"}).encode()
+        # Leave before replying: once the client has the reply it may send its
+        # next request, which must not overlap this one in the peak count.
+        self._leave()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -128,8 +131,12 @@ class _CPA(BaseHTTPRequestHandler):
         with cls.lock:
             cls.in_flight += 1
             cls.peak = max(cls.peak, cls.in_flight)
+        self._counted = True
 
     def _leave(self):
+        if not getattr(self, "_counted", False):
+            return
+        self._counted = False
         cls = type(self)
         with cls.lock:
             cls.in_flight -= 1
@@ -344,6 +351,8 @@ class ParserTests(unittest.TestCase):
         partial = {"limit_dollars": 100, "used_dollars": 40, "remaining_dollars": 60}
         self.assertEqual(quota.parse_claude({"x": partial}).extra, "")
         self.assertEqual(quota.parse_claude({"Bad Key!": pool}).extra, "")
+        usage = quota.parse_claude({"iguana_necktie": pool})  # dollar Fable key = a pool
+        self.assertEqual((usage.windows, usage.extra), ([], "iguana necktie $60.00 left"))
 
     def test_codex_credits(self):
         body = dict(CODEX_PRO, credits={"has_credits": True, "balance": "1250.5"})
