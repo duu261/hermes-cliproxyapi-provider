@@ -4,9 +4,9 @@
 
 > Bản dịch này có thể chậm hơn bản tiếng Anh. Khi có khác biệt, [README.md](README.md) là bản chuẩn.
 
-Plugin model-provider cho
-[Hermes Agent](https://github.com/NousResearch/hermes-agent), dùng với
-[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA).
+Plugin cho [Hermes Agent](https://github.com/NousResearch/hermes-agent), dùng
+với [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA): một
+model-provider, và lệnh chat `/cpa` đi kèm để xem tình trạng pool và quota live.
 
 CPA là một gateway: một instance đứng trước nhiều provider (Claude, Codex,
 Gemini, xAI, Kimi, Devin, các upstream tương thích OpenAI, các plugin provider như Kiro) và tự quản lý account, OAuth, xoay vòng và chuyển đổi định
@@ -18,6 +18,10 @@ một provider Hermes cho mỗi provider CPA, mỗi provider dùng wire mà exec
 của CPA cho provider đó chấp nhận với ít chuyển đổi nhất, kèm danh sách model
 và các khả năng của model mà CPA công bố (context window, max output, đầu
 vào hình ảnh, các mức reasoning). Plugin không thêm bất cứ thứ gì CPA không phục vụ.
+
+`/cpa` đi kèm cho xem account của từng pool ngay trong chat (active, limited,
+cooling, error, disabled) và, khi được gọi, quota live của từng account (Claude,
+Codex, xAI, Antigravity, Devin, Kimi, Kiro). Chỉ đọc, an toàn với lockout.
 
 ## Cài đặt
 

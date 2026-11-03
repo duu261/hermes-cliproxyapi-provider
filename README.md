@@ -2,8 +2,10 @@
 
 English | [Tiếng Việt](README.vi.md) | [简体中文](README.zh-CN.md)
 
-A [Hermes Agent](https://github.com/NousResearch/hermes-agent) model-provider
-plugin for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA).
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) plugins for
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA): a
+model-provider, and a companion [`/cpa`](#cpa-pool-status-companion-plugin)
+chat command for pool health and live quota.
 
 CPA is a gateway: one instance fronts many providers (Claude, Codex, Gemini,
 xAI, Kimi, Devin, OpenAI-compatible upstreams, plugin providers such as Kiro)
@@ -15,6 +17,10 @@ registers one Hermes provider per CPA provider, each on the wire that CPA's
 executor for that provider accepts with the least translation, with the model
 list and the model capabilities CPA publishes (context window, max output,
 image input, reasoning levels). It adds nothing CPA does not serve.
+
+The companion `/cpa` shows each pool's accounts in chat (active, limited,
+cooling, error, disabled) and, on request, each account's live quota (Claude,
+Codex, xAI, Antigravity, Devin, Kimi, Kiro). Read-only and lockout-safe.
 
 ## Install
 

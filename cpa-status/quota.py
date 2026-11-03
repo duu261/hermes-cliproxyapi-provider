@@ -256,7 +256,7 @@ def _label(raw: Any, limit: int) -> str:
 
 # Window keys in the Management Center's order (CLAUDE_USAGE_WINDOW_KEYS);
 # scoped = a limit on some models or apps only. ``iguana_necktie`` is Fable
-# unless it carries dollar fields (then it is a credit pool, not shown).
+# unless it carries dollar fields (then it is a credit pool: _claude_balances).
 _CLAUDE_WINDOWS = (
     ("five_hour", "5h", False),
     ("seven_day", "wk", False),

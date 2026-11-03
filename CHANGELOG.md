@@ -12,6 +12,7 @@
 - `/cpa quota` Codex: the account's credits balance when it has one
   (`credits 1,250.50`, `credits unlimited`).
 - All from the replies `/cpa` already reads; no new requests.
+- README intro and pack description name both plugins.
 
 ## 0.7.0
 

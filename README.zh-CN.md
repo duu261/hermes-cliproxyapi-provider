@@ -4,7 +4,7 @@
 
 > 本译文可能落后于英文版。如有出入，以 [README.md](README.md) 为准。
 
-一个面向 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的 model-provider plugin，用于 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA）。
+面向 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA）plugin：一个 model-provider，以及配套的聊天命令 `/cpa`，用于查看 pool 状态和实时 quota。
 
 CPA 是一个 gateway：一个 instance 可以代理多个 provider（Claude、Codex、Gemini、xAI、Kimi、
 Devin、兼容 OpenAI 的上游，以及 Kiro 等 plugin provider），并自行管理它们的 account、OAuth、
@@ -14,6 +14,8 @@ Devin、兼容 OpenAI 的上游，以及 Kiro 等 plugin provider），并自行
 本 plugin 则把 CPA 映射到 Hermes 中。将它指向一个 CPA instance，它会为每个 CPA provider 注册
 一个 Hermes provider，每个 provider 走该 provider 的 CPA executor 能以最少转换接受的那种 wire，
 并带上 CPA 发布的 model 列表和 model 能力（context window、max output、图像输入、推理级别）。CPA 不提供的东西，本 plugin 一概不加。
+
+配套的 `/cpa` 在聊天中显示每个 pool 的 account 状态（active、limited、cooling、error、disabled），并可按需查看每个 account 的实时 quota（Claude、Codex、xAI、Antigravity、Devin、Kimi、Kiro）。只读，且不会触发 lockout。
 
 ## 安装
 
