@@ -722,6 +722,8 @@ class ViewTests(QuotaTestCase):
     def test_usage_and_unknown_pool(self):
         self.assertEqual(self.run_quota("quota"), quota.USAGE)
         self.assertIn("Unknown pool 'nope'", self.run_quota("quota nope"))
+        self.assertIn("'xai' is a provider. Try /cpa quota <pool> xai", self.run_quota("quota xai"))
+        self.assertIn("Unknown pool 'xai'", self.run_quota("quota xai xai"))
         self.assertEqual(_CPA.seen, [])
 
     def test_pool_named_quota(self):

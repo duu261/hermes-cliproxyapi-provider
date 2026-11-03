@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1
+
+- `/cpa quota`: an xAI account whose week is running but has no percent yet
+  (xAI leaves it out until the account has used enough) shows
+  `wk no figure yet → <reset>` and counts as having room. It used to count
+  as failed with `no quota data`. No percent is ever made up.
+- `/cpa quota xai` (a provider where the pool goes) now says to use
+  `/cpa quota <pool> xai` instead of "Unknown pool".
+
 ## 0.6.0
 
 - `/cpa quota` covers every provider CPA's web UI shows quota for, except

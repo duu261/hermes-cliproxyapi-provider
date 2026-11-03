@@ -32,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover - Windows
     fcntl = None  # type: ignore[assignment]
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 USER_AGENT = f"hermes-cliproxyapi-provider/{VERSION}"
 # CPA serves its richest public list (context window, reasoning levels) only to
 # Grok Shell clients: internal/client/grokbuild IsGrokShellUserAgent.

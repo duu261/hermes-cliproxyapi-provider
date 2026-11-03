@@ -154,6 +154,30 @@ class ParserTests(unittest.TestCase):
         over = {"config": {"monthlyLimit": 100, "used": 250}}
         self.assertEqual(quota.parse_xai(None, over).windows[0].used, 100)
 
+    def test_xai_running_week_without_percent_is_pending_not_zero(self):
+        # Live shape: xAI confirms the week but sends no percent until the
+        # account has used enough; the monthly reply has monthlyLimit 0.
+        weekly = {
+            "config": {
+                "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": iso(4 * 1440)},
+                "onDemandCap": {"val": 0},
+                "onDemandUsed": {"val": 0},
+                "prepaidBalance": {"val": 0},
+            }
+        }
+        monthly = {"config": {"monthlyLimit": {"val": 0}, "used": {"val": 1}}}
+        usage = quota.parse_xai(weekly, monthly)
+        self.assertEqual(usage.windows, [])
+        self.assertEqual(
+            [(w.label, w.resets_at) for w in usage.pending], [("wk", NOW + timedelta(days=4))]
+        )
+        result = quota.AccountResult("a", "xai", usage)
+        self.assertEqual(result.out_until(), (False, None))
+        out = "\n".join(quota._provider_block("xai", [result], NOW))
+        self.assertIn("1 have room", out)
+        self.assertIn("wk no figure yet → ", out)
+        self.assertNotIn("0%", out)
+
     def test_groups_remaining_fraction_becomes_used(self):
         windows = quota.parse_groups(AG_BODY)
         self.assertEqual(

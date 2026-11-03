@@ -199,6 +199,9 @@ class Usage:
     plan: str = ""
     windows: list[Window] = field(default_factory=list)
     reached: bool = False  # the vendor says the account is blocked right now
+    # The vendor confirmed a running window but sent no figure for it (xAI
+    # leaves the percent out until an account has used enough). Never a 0.
+    pending: list[Window] = field(default_factory=list)
 
 
 def _num(raw: Any) -> float | None:
@@ -350,12 +353,16 @@ def parse_xai(weekly: Any, monthly: Any) -> Usage:
     if config is not None:
         period = _first(config, "currentPeriod", "current_period")
         period = period if isinstance(period, dict) else {}
-        kind = period.get("type") if isinstance(period.get("type"), str) else ""
+        raw_kind = period.get("type")
+        kind = raw_kind if isinstance(raw_kind, str) else ""
         used = _used(_first(config, "creditUsagePercent", "credit_usage_percent"))
+        end = period.get("end") or _first(config, "billingPeriodEnd", "billing_period_end")
+        label = "mo" if "monthly" in kind.lower() else "wk"
+        period_end = _instant(period.get("end"))
         if used is not None:
-            end = period.get("end") or _first(config, "billingPeriodEnd", "billing_period_end")
-            label = "mo" if "monthly" in kind.lower() else "wk"
             usage.windows.append(Window(label, used, _instant(end)))
+        elif kind and period_end is not None:
+            usage.pending.append(Window(label, 0.0, period_end))
     configs = [c for c in (_xai_config(weekly), _xai_config(monthly)) if c is not None]
     limits = [_cents(_first(c, "monthlyLimit", "monthly_limit")) for c in configs]
     limit = next((v for v in limits if v is not None), None)
@@ -853,7 +860,7 @@ class _Runner:
                     first = first or exc
                     payloads.append(None)
             usage = parse_xai(*payloads)
-            if not usage.windows and first is not None:
+            if not usage.windows and not usage.pending and first is not None:
                 raise first
             return usage
         return parse_usage(provider, _payload(self.api(bodies[0])), now)
@@ -871,7 +878,7 @@ class _Runner:
             return AccountResult(name, provider, error="not checked")
         except _AccountError as exc:
             return AccountResult(name, provider, error=str(exc))
-        if not usage.windows:
+        if not usage.windows and not usage.pending:
             return AccountResult(name, provider, error="no quota data")
         return AccountResult(name, provider, usage=usage)
 
@@ -967,6 +974,13 @@ def _window_text(window: Window, now: datetime) -> str:
     return text
 
 
+def _pending_text(window: Window, now: datetime) -> str:
+    text = f"{window.label} no figure yet"
+    if window.resets_at is not None and window.resets_at > now:
+        text += f" → {_when(window.resets_at, now)}"
+    return text
+
+
 def _sort_key(item: AccountResult) -> tuple[int, float, str]:
     out, _ = item.out_until()
     if out:
@@ -1007,7 +1021,10 @@ def _provider_block(provider: str, items: list[AccountResult], now: datetime) ->
         if item.error or item.usage is None:
             lines.append(f"{item.name}  {item.error}")
             continue
-        text = " · ".join(_window_text(w, now) for w in item.usage.windows)
+        text = " · ".join(
+            [_window_text(w, now) for w in item.usage.windows]
+            + [_pending_text(w, now) for w in item.usage.pending]
+        )
         plan = f"  {item.usage.plan}" if item.usage.plan else ""
         is_out, _ = item.out_until()
         groups = item.full_groups()
@@ -1049,6 +1066,9 @@ def report(
     spec = next((s for s in specs if s.name == args[0].lower()), None)
     if spec is None:
         names = ", ".join(s.name for s in specs) or "none"
+        word = cpa.normalize_provider(args[0])
+        if len(args) == 1 and (word in BUILTINS or word in ("plugin", "meta")):
+            return f"'{word}' is a provider. Try /cpa quota <pool> {word} (pools: {names})."
         return f"Unknown pool '{status.mask_text(args[0])[:32]}'. Pools: {names}"
     selector = ""
     if len(args) == 2:

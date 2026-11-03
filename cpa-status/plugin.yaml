@@ -1,5 +1,5 @@
 name: cpa-status
-version: 0.6.0
+version: 0.6.1
 manifest_version: 2
 requires_hermes: ">=0.21.7"
 description: "/cpa: account health for every configured CLIProxyAPI pool, and live per-account usage (every provider CPA's web UI shows quota for) on request."
