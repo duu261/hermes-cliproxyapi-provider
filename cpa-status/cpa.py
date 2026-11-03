@@ -465,7 +465,9 @@ def get_json(
     user_agent: str = USER_AGENT,
     max_bytes: int = MAX_RESPONSE_BYTES,
     headers: dict[str, str] | None = None,
+    capture: dict[str, str] | None = None,
 ) -> Any:
+    """GET ``url`` as JSON. ``capture`` names response headers to copy (values only)."""
     request = urllib.request.Request(url, method="GET")
     request.add_header("Authorization", f"Bearer {api_key}")
     request.add_header("Accept", "application/json")
@@ -475,6 +477,10 @@ def get_json(
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             body = response.read(max_bytes + 1)
+            for name in capture or ():
+                value = response.headers.get(name)
+                if isinstance(value, str):
+                    capture[name] = value
     except GatewayError:
         raise
     except urllib.error.HTTPError as exc:

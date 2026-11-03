@@ -37,6 +37,8 @@ class _CPA(BaseHTTPRequestHandler):
     v8 = True
     force: int = 0
     redirect = False
+    version = ""  # X-CPA-VERSION on replies when set
+    latest: object = None  # body of the latest-version route; None = 404
 
     def log_message(self, *args):
         pass
@@ -46,6 +48,8 @@ class _CPA(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        if type(self).version:
+            self.send_header("X-CPA-VERSION", type(self).version)
         self.end_headers()
         self.wfile.write(data)
 
@@ -73,6 +77,8 @@ class _CPA(BaseHTTPRequestHandler):
             return self._send(200, LISTING)
         if path == "/v0/management/auth-files" and not cls.v8:
             return self._send(200, LISTING)
+        if path == "/v8/management/server/latest-version" and cls.latest is not None:
+            return self._send(200, cls.latest)
         return self._send(404)
 
 
@@ -96,6 +102,8 @@ class FetchTests(unittest.TestCase):
         _CPA.v8 = True
         _CPA.force = 0
         _CPA.redirect = False
+        _CPA.version = ""
+        _CPA.latest = None
         self.home = Path(tempfile.mkdtemp())
         self.env = {"CPA_A_MGMT": KEY, "CPA_B_MGMT": KEY}
         status.reset_state()
@@ -314,6 +322,76 @@ class FetchTests(unittest.TestCase):
         out = self.run_cpa("", config)
         self.assertIn("instance 'a'", out)
         self.assertNotIn("pw", out)
+
+    def paths(self):
+        return [s["path"] for s in _CPA.seen]
+
+    def test_version_from_header_and_update_hint(self):
+        _CPA.version, _CPA.latest = "v8.0.51", {"latest-version": "v8.0.52"}
+        out = self.run_cpa()
+        self.assertIn("a · v8.0.51", out)
+        self.assertIn("CPA v8.0.52 available (running v8.0.51)", out)
+        self.assertEqual(
+            self.paths(), ["/v8/management/credentials", "/v8/management/server/latest-version"]
+        )
+        status.reset_state()
+        _CPA.seen = []
+        _CPA.version = "v8.0.52"
+        out = self.run_cpa()
+        self.assertIn("a · v8.0.52", out)
+        self.assertNotIn("available", out)
+
+    def test_latest_is_asked_once_per_process(self):
+        _CPA.version, _CPA.latest = "v8.0.51", {"latest-version": "v8.0.52"}
+        self.run_cpa()
+        status._RESULTS.clear()  # listing cache gone, latest cache kept
+        _CPA.seen = []
+        self.assertIn("v8.0.52 available", self.run_cpa())
+        self.assertEqual(self.paths(), ["/v8/management/credentials"])
+
+    def test_no_update_check_without_version_or_on_detail_views(self):
+        _CPA.latest = {"latest-version": "v9.0.0"}
+        self.run_cpa()  # CPA sent no version header
+        self.assertEqual(self.paths(), ["/v8/management/credentials"])
+        status.reset_state()
+        _CPA.seen, _CPA.version = [], "v8.0.1"
+        self.run_cpa("a")
+        self.run_cpa("a codex")
+        self.assertEqual(self.paths(), ["/v8/management/credentials"])
+
+    def test_update_check_failure_is_silent_and_never_latches(self):
+        _CPA.version = "v8.0.51"  # latest route 404 on v8 and v0
+        out = self.run_cpa()
+        self.assertIn("a · v8.0.51", out)
+        self.assertNotIn("available", out)
+        self.assertEqual(
+            self.paths(),
+            [
+                "/v8/management/credentials",
+                "/v8/management/server/latest-version",
+                "/v0/management/latest-version",
+            ],
+        )
+        self.assertFalse(cpa.latch_path(self.home).exists())
+        status._RESULTS.clear()
+        _CPA.seen = []
+        self.run_cpa()  # failure cached for 10 minutes
+        self.assertEqual(self.paths(), ["/v8/management/credentials"])
+
+    def test_junk_version_values_are_dropped(self):
+        _CPA.version, _CPA.latest = "v8.0.51 <script>", {"latest-version": "x" * 300}
+        out = self.run_cpa()
+        self.assertNotIn("script", out)
+        self.assertNotIn("·", out.splitlines()[1])
+        self.assertEqual(self.paths(), ["/v8/management/credentials"])
+
+    def test_newer(self):
+        self.assertTrue(status.newer("v8.0.52", "v8.0.51"))
+        self.assertTrue(status.newer("v8.1.0", "v8.0.99"))
+        self.assertFalse(status.newer("v8.0.52", "v8.0.52"))
+        self.assertFalse(status.newer("v8.0.51", "v8.0.52"))
+        self.assertFalse(status.newer("v8.0.52", "dev"))
+        self.assertFalse(status.newer("", "v8.0.1"))
 
 
 if __name__ == "__main__":

@@ -324,10 +324,10 @@ show `no management key`. Restart running gateways after enabling.
 
 ```
 pre
-  codex 4: 3 ready · 1 cooling (next 17:20)
-  xai 2: 2 ready
+  codex 4: 3 active · 1 cooling (next 17:20)
+  xai 2: 2 active
 pre / codex · 4 accounts
-codex-al…@…  ready · 1h 173/71 · 5h 22% · wk 0% (1m ago)
+codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
 codex-bo…@…  cooling until 17:20 (quota)
 ```
 
