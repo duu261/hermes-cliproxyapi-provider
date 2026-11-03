@@ -372,7 +372,8 @@ model，所以只有每个 group 都满时 account 才显示 `OUT`；否则满�
 | plugin provider 的 model 定义（Kiro 等） | v8.0.34+ |
 | `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
 | `/cpa` 最近一次的 quota | v7.2.142+ |
-| `/cpa` 版本和 update 提示 | v6.5.42+ |
+| `/cpa` CPA 版本 | v6.3.36+ |
+| `/cpa` update 提示 | v6.5.42+ |
 | `/cpa quota` 内置厂商 (`api-call` 带 `$TOKEN$`) | v6.6.63+ |
 | `/cpa quota` plugin quota（如 Kiro） | v8.0.25+ |
 

@@ -379,6 +379,8 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(self.paths(), ["/v8/management/credentials"])
 
     def test_junk_version_values_are_dropped(self):
+        self.assertEqual(status.clean_version("v8.0.52\n"), "")
+        self.assertEqual(status.clean_version("v8.0.52"), "v8.0.52")
         _CPA.version, _CPA.latest = "v8.0.51 <script>", {"latest-version": "x" * 300}
         out = self.run_cpa()
         self.assertNotIn("script", out)

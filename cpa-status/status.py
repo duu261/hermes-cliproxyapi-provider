@@ -552,15 +552,17 @@ class Fetched:
 
 
 VERSION_HEADER = "X-CPA-VERSION"
-_VERSION_RE = re.compile(r"^v?\d{1,4}(\.\d{1,6}){1,3}([-+][0-9A-Za-z.-]{1,24})?$")
+_VERSION_RE = re.compile(r"v?\d{1,4}(\.\d{1,6}){1,3}([-+][0-9A-Za-z.-]{1,24})?")
+
+
+def clean_version(raw: Any) -> str:
+    return raw if isinstance(raw, str) and _VERSION_RE.fullmatch(raw) else ""
+
+
 LATEST_PATHS = ("/v8/management/server/latest-version", "/v0/management/latest-version")
 LATEST_SECONDS = 6 * 3600.0  # CPA asks GitHub; one ask per process per 6 h
 LATEST_RETRY_SECONDS = 600.0  # after a failure
 _LATEST: dict[str, Any] = {"value": "", "at": None, "ok": False}
-
-
-def clean_version(raw: Any) -> str:
-    return raw if isinstance(raw, str) and _VERSION_RE.match(raw) else ""
 
 
 def _version_tuple(value: str) -> tuple[int, ...] | None:
@@ -658,14 +660,22 @@ def latest_version(home: Path, specs: list[cpa.InstanceSpec], root: str, key: st
     credentials GET with this key succeeded. CPA asks GitHub; a failure only
     hides the hint and is not retried for 10 minutes.
     """
+
+    def fresh() -> bool:
+        wait = LATEST_SECONDS if _LATEST["ok"] else LATEST_RETRY_SECONDS
+        at = _LATEST["at"]
+        return at is not None and 0 <= time.monotonic() - at < wait
+
     with _STATE_LOCK:
-        at, ok, value = _LATEST["at"], _LATEST["ok"], _LATEST["value"]
-    wait = LATEST_SECONDS if ok else LATEST_RETRY_SECONDS
-    if at is not None and 0 <= time.monotonic() - at < wait:
-        return value
+        if fresh():
+            return _LATEST["value"]
+        value = _LATEST["value"]
     with cpa.mgmt_guard(home, root, GUARD_WAIT) as held:
         if not held or known_rejected(home, specs, root, key):
             return value
+        with _STATE_LOCK:
+            if fresh():  # another /cpa asked while this one waited for the guard
+                return _LATEST["value"]
         value, ok = "", False
         options = {"timeout": TIMEOUT, "user_agent": user_agent(), "max_bytes": 4096}
         try:
@@ -694,7 +704,8 @@ USAGE = (
     "/cpa <pool> - one pool, with the last hour of requests\n"
     "/cpa <pool> <provider> - one line per account\n"
     "/cpa quota <pool> [provider] - live usage from each vendor\n"
-    "Needs mgmt_key_env on the pool. Read-only; one request per pool\n"
+    "Needs mgmt_key_env on the pool. Read-only; one request per pool,\n"
+    "plain /cpa adds one CPA update check per 6 h\n"
     "(quota: at most 3 more per account, 20 accounts, 4 at a time)."
 )
 _STATUS_TEXT = {

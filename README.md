@@ -421,7 +421,8 @@ newer CPA:
 | Model definitions for plugin providers (Kiro and others) | v8.0.34+ |
 | `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
 | `/cpa` last-seen quota | v7.2.142+ |
-| `/cpa` version and update hint | v6.5.42+ |
+| `/cpa` CPA version | v6.3.36+ |
+| `/cpa` update hint | v6.5.42+ |
 | `/cpa quota` built-in vendors (`api-call` with `$TOKEN$`) | v6.6.63+ |
 | `/cpa quota` plugin quota (e.g. Kiro) | v8.0.25+ |
 

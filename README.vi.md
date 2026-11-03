@@ -337,7 +337,7 @@ codex-bo…@…  cooling until 17:20 (quota)
   instance (v0 `auth-files` chỉ sau 404), và chỉ khi bạn gõ `/cpa`. Không hẹn
   giờ, không retry. Gõ lại trong 20 giây sẽ trả từ bộ nhớ.
 - Phiên bản CPA cạnh mỗi instance là `X-CPA-VERSION` header của cùng
-  phản hồi đó. Trên `/cpa` (không có `quota`), `CPA <version> available`
+  phản hồi đó. Chỉ với `/cpa` không kèm tham số, `CPA <version> available`
   đến từ update route của chính CPA (`GET /v8/management/server/latest-version`,
   hỏi GitHub): một request cho mỗi tiến trình Hermes mỗi 6 giờ, 10 phút
   sau khi thất bại. Thất bại chỉ ẩn dòng đó.
@@ -421,7 +421,8 @@ năng cần CPA mới hơn:
 | Định nghĩa model cho plugin provider (Kiro và các plugin khác) | v8.0.34+ |
 | `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
 | `/cpa` quota gần nhất | v7.2.142+ |
-| `/cpa` phiên bản và gợi ý update | v6.5.42+ |
+| `/cpa` phiên bản CPA | v6.3.36+ |
+| `/cpa` gợi ý update | v6.5.42+ |
 | `/cpa quota` vendor có sẵn (`api-call` với `$TOKEN$`) | v6.6.63+ |
 | `/cpa quota` plugin quota (vd. Kiro) | v8.0.25+ |
 
