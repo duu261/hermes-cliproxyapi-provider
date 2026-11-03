@@ -192,6 +192,9 @@ class Window:
     used: float  # percent used, 0..100
     resets_at: datetime | None = None
     group: str = ""  # model group (Antigravity, plugin quota); CPA cools per model
+    # A limit on some models only (Claude Fable, Opus, Sonnet): when full, the
+    # account still serves the rest, so it never makes the account OUT.
+    scoped: bool = False
 
 
 @dataclass
@@ -199,6 +202,10 @@ class Usage:
     plan: str = ""
     windows: list[Window] = field(default_factory=list)
     reached: bool = False  # the vendor says the account is blocked right now
+    # The vendor confirmed a running window but sent no figure for it (xAI
+    # leaves the percent out until an account has used enough). Never a 0.
+    pending: list[Window] = field(default_factory=list)
+    extra: str = ""  # Claude extra usage, only when the account has it on
 
 
 def _num(raw: Any) -> float | None:
@@ -247,26 +254,73 @@ def _label(raw: Any, limit: int) -> str:
     return status.mask_text(" ".join(raw.split()))[:limit]
 
 
+# Window keys in the Management Center's order (CLAUDE_USAGE_WINDOW_KEYS);
+# scoped = a limit on some models or apps only. ``iguana_necktie`` is Fable
+# unless it carries dollar fields (then it is a credit pool, not shown).
 _CLAUDE_WINDOWS = (
-    ("five_hour", "5h"),
-    ("seven_day", "wk"),
-    ("seven_day_opus", "opus"),
-    ("seven_day_sonnet", "sonnet"),
+    ("five_hour", "5h", False),
+    ("seven_day", "wk", False),
+    ("seven_day_oauth_apps", "apps", True),
+    ("seven_day_opus", "opus", True),
+    ("seven_day_sonnet", "sonnet", True),
+    ("seven_day_cowork", "cowork", True),
+    ("iguana_necktie", "fable", True),
 )
+_DOLLAR_KEYS = ("limit_dollars", "used_dollars", "remaining_dollars")
+
+
+def _claude_scoped(payload: dict[str, Any]) -> list[Window]:
+    """``limits[]`` entries of kind ``weekly_scoped``: one per model (e.g. Fable)."""
+    limits = payload.get("limits")
+    found: dict[str, tuple[bool, Window]] = {}
+    for item in limits if isinstance(limits, list) else []:
+        if not isinstance(item, dict) or item.get("kind") != "weekly_scoped":
+            continue
+        scope = item.get("scope")
+        model = scope.get("model") if isinstance(scope, dict) else None
+        name = model.get("display_name") if isinstance(model, dict) else None
+        label = _label(name, 24).lower().removesuffix(" 5").strip()
+        used = _used(item.get("percent"))
+        if not label or used is None:
+            continue
+        active = item.get("is_active") is True
+        if label in found and (found[label][0] or not active):
+            continue  # like the MC: the active entry, else the first
+        window = Window(label, used, status.parse_time(item.get("resets_at")), scoped=True)
+        found[label] = (active, window)
+    return [window for _, window in found.values()]
+
+
+def _claude_extra(payload: dict[str, Any]) -> str:
+    extra = payload.get("extra_usage")
+    if not isinstance(extra, dict) or extra.get("is_enabled") is not True:
+        return ""
+    if extra.get("spend_limit_reached") is True:
+        return "extra limit reached"
+    used = _used(extra.get("utilization"))
+    return f"extra {int(used)}%" if used is not None else "extra on"
 
 
 def parse_claude(payload: Any) -> Usage:
     usage = Usage()
     if not isinstance(payload, dict):
         return usage
-    for key, label in _CLAUDE_WINDOWS:
+    scoped = _claude_scoped(payload)
+    labels = {w.label for w in scoped}
+    for key, label, is_scoped in _CLAUDE_WINDOWS:
         window = payload.get(key)
-        if not isinstance(window, dict):
+        if not isinstance(window, dict) or label in labels:
             continue
+        if any(window.get(k) is not None for k in _DOLLAR_KEYS):
+            continue  # a dollar balance, not a usage window
         used = _used(window.get("utilization"))
         if used is None:
             continue
-        usage.windows.append(Window(label, used, status.parse_time(window.get("resets_at"))))
+        resets = status.parse_time(window.get("resets_at"))
+        usage.windows.append(Window(label, used, resets, scoped=is_scoped))
+        labels.add(label)
+    usage.windows += scoped
+    usage.extra = _claude_extra(payload)
     return usage
 
 
@@ -350,12 +404,16 @@ def parse_xai(weekly: Any, monthly: Any) -> Usage:
     if config is not None:
         period = _first(config, "currentPeriod", "current_period")
         period = period if isinstance(period, dict) else {}
-        kind = period.get("type") if isinstance(period.get("type"), str) else ""
+        raw_kind = period.get("type")
+        kind = raw_kind if isinstance(raw_kind, str) else ""
         used = _used(_first(config, "creditUsagePercent", "credit_usage_percent"))
+        end = period.get("end") or _first(config, "billingPeriodEnd", "billing_period_end")
+        label = "mo" if "monthly" in kind.lower() else "wk"
+        period_end = _instant(period.get("end"))
         if used is not None:
-            end = period.get("end") or _first(config, "billingPeriodEnd", "billing_period_end")
-            label = "mo" if "monthly" in kind.lower() else "wk"
             usage.windows.append(Window(label, used, _instant(end)))
+        elif kind and period_end is not None:
+            usage.pending.append(Window(label, 0.0, period_end))
     configs = [c for c in (_xai_config(weekly), _xai_config(monthly)) if c is not None]
     limits = [_cents(_first(c, "monthlyLimit", "monthly_limit")) for c in configs]
     limit = next((v for v in limits if v is not None), None)
@@ -664,11 +722,17 @@ class AccountResult:
                 return False, None
             frees = [until for until in groups.values() if until]
             return True, min(frees) if frees else None
-        full = [w for w in self.usage.windows if w.used >= 100]
+        full = [w for w in self.usage.windows if w.used >= 100 and not w.scoped]
         if not full and not self.usage.reached:
             return False, None
         resets = [w.resets_at for w in (full or self.usage.windows) if w.resets_at]
         return True, max(resets) if resets else None
+
+    def scoped_full(self) -> list[str]:
+        """Model-scoped limits that are used up (the account still serves the rest)."""
+        if self.usage is None:
+            return []
+        return [w.label for w in self.usage.windows if w.scoped and w.used >= 100]
 
     def full_groups(self) -> dict[str, datetime | None] | None:
         """Model groups with a full window and when each frees; None if ungrouped."""
@@ -853,7 +917,7 @@ class _Runner:
                     first = first or exc
                     payloads.append(None)
             usage = parse_xai(*payloads)
-            if not usage.windows and first is not None:
+            if not usage.windows and not usage.pending and first is not None:
                 raise first
             return usage
         return parse_usage(provider, _payload(self.api(bodies[0])), now)
@@ -871,7 +935,7 @@ class _Runner:
             return AccountResult(name, provider, error="not checked")
         except _AccountError as exc:
             return AccountResult(name, provider, error=str(exc))
-        if not usage.windows:
+        if not usage.windows and not usage.pending:
             return AccountResult(name, provider, error="no quota data")
         return AccountResult(name, provider, usage=usage)
 
@@ -967,6 +1031,13 @@ def _window_text(window: Window, now: datetime) -> str:
     return text
 
 
+def _pending_text(window: Window, now: datetime) -> str:
+    text = f"{window.label} no figure yet"
+    if window.resets_at is not None and window.resets_at > now:
+        text += f" → {_when(window.resets_at, now)}"
+    return text
+
+
 def _sort_key(item: AccountResult) -> tuple[int, float, str]:
     out, _ = item.out_until()
     if out:
@@ -975,7 +1046,11 @@ def _sort_key(item: AccountResult) -> tuple[int, float, str]:
         rank = 1
     else:
         rank = 2
-    top = max((w.used for w in item.usage.windows), default=0.0) if item.usage else 0.0
+    top = (
+        max((w.used for w in item.usage.windows if not w.scoped), default=0.0)
+        if item.usage
+        else 0.0
+    )
     return rank, -top, item.name
 
 
@@ -1007,13 +1082,19 @@ def _provider_block(provider: str, items: list[AccountResult], now: datetime) ->
         if item.error or item.usage is None:
             lines.append(f"{item.name}  {item.error}")
             continue
-        text = " · ".join(_window_text(w, now) for w in item.usage.windows)
+        text = " · ".join(
+            [_window_text(w, now) for w in item.usage.windows]
+            + [_pending_text(w, now) for w in item.usage.pending]
+            + ([item.usage.extra] if item.usage.extra else [])
+        )
         plan = f"  {item.usage.plan}" if item.usage.plan else ""
         is_out, _ = item.out_until()
         groups = item.full_groups()
         suffix = "  OUT" if is_out else ""
         if not is_out and groups:
             suffix = "  out: " + ", ".join(sorted(g.split(":", 1)[-1] for g in groups))
+        elif not is_out and item.scoped_full():
+            suffix = "  out: " + ", ".join(item.scoped_full())
         lines.append(f"{item.name}{plan}  {text}{suffix}")
     return lines
 
@@ -1049,6 +1130,9 @@ def report(
     spec = next((s for s in specs if s.name == args[0].lower()), None)
     if spec is None:
         names = ", ".join(s.name for s in specs) or "none"
+        word = cpa.normalize_provider(args[0])
+        if len(args) == 1 and (word in BUILTINS or word in ("plugin", "meta")):
+            return f"'{word}' is a provider. Try /cpa quota <pool> {word} (pools: {names})."
         return f"Unknown pool '{status.mask_text(args[0])[:32]}'. Pools: {names}"
     selector = ""
     if len(args) == 2:

@@ -144,7 +144,13 @@ must equal root `cpa.py`; CI runs `cmp`).
 
 - User-triggered only. One `GET credentials` per distinct root and key
   (v0 `auth-files` fallback on 404 only). No timers, no retries, 20 s
-  in-memory cache.
+  in-memory cache. The reply's `X-CPA-VERSION` header (shape-checked) is the
+  only header read.
+- Update check: on the plain `/cpa` overview only, after a credentials GET
+  that returned a version, one `GET /v8/management/server/latest-version`
+  (v0 `latest-version` only after a v8 404) under the guard, with a key that
+  just succeeded. CPA asks GitHub. Cached per process 6 h (10 min after a
+  failure); a failure only hides the hint and never latches except on 401.
 - Before any request, take `cpa.mgmt_guard` for the root (wait at most 25 s,
   else answer busy) and skip a key `cpa.key_rejected` reports. On a 401,
   `cpa.mark_rejected` first, inside the guard. The shared latch

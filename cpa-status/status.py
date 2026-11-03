@@ -507,6 +507,7 @@ def reset_state() -> None:
     """Forget in-memory results and rejections. The latch files are never touched."""
     with _STATE_LOCK:
         _RESULTS.clear()
+        _LATEST.update(value="", at=None, ok=False)
     with cpa._REJECTED_LOCK:
         cpa._REJECTED.clear()
     _quota().reset_state()
@@ -547,18 +548,45 @@ class Fetched:
     files: list[dict[str, Any]] = field(default_factory=list)
     detail: str = ""
     at: float = 0.0
+    version: str = ""  # CPA's X-CPA-VERSION header, shape-checked
+
+
+VERSION_HEADER = "X-CPA-VERSION"
+_VERSION_RE = re.compile(r"v?\d{1,4}(\.\d{1,6}){1,3}([-+][0-9A-Za-z.-]{1,24})?")
+
+
+def clean_version(raw: Any) -> str:
+    return raw if isinstance(raw, str) and _VERSION_RE.fullmatch(raw) else ""
+
+
+LATEST_PATHS = ("/v8/management/server/latest-version", "/v0/management/latest-version")
+LATEST_SECONDS = 6 * 3600.0  # CPA asks GitHub; one ask per process per 6 h
+LATEST_RETRY_SECONDS = 600.0  # after a failure
+_LATEST: dict[str, Any] = {"value": "", "at": None, "ok": False}
+
+
+def _version_tuple(value: str) -> tuple[int, ...] | None:
+    match = re.match(r"^v?(\d+)\.(\d+)(?:\.(\d+))?", value)
+    return tuple(int(part or 0) for part in match.groups()) if match else None
+
+
+def newer(latest: str, current: str) -> bool:
+    """Whether ``latest`` is a higher release than ``current`` (never for ``dev``)."""
+    a, b = _version_tuple(latest), _version_tuple(current)
+    return a is not None and b is not None and a > b
 
 
 def user_agent() -> str:
     return f"cpa-status/{cpa.VERSION}"
 
 
-def _get_listing(root: str, key: str) -> Any:
+def _get_listing(root: str, key: str, capture: dict[str, str] | None = None) -> Any:
     """v8 credentials; v0 auth-files only after a v8 404. Raises GatewayError."""
     options = {
         "timeout": TIMEOUT,
         "user_agent": user_agent(),
         "max_bytes": cpa.MAX_MANAGEMENT_LIST_BYTES,
+        "capture": capture,
     }
     try:
         return cpa.get_json(root + cpa._V8.credentials, key, **options)
@@ -612,7 +640,8 @@ def _fetch_once(home: Path, specs: list[cpa.InstanceSpec], root: str, key: str) 
     if not cpa.transport_allowed(root):
         return Fetched("unavailable", detail="transport not allowed")
     try:
-        listing = _get_listing(root, key)
+        seen = {VERSION_HEADER: ""}
+        listing = _get_listing(root, key, seen)
     except cpa.GatewayError as exc:
         if exc.status == 401:
             cpa.mark_rejected(home, root, key)  # inside the guard, before release
@@ -621,7 +650,50 @@ def _fetch_once(home: Path, specs: list[cpa.InstanceSpec], root: str, key: str) 
             return Fetched("blocked")
         detail = exc.category + (f" HTTP {exc.status}" if exc.status else "")
         return Fetched("unavailable", detail=detail)
-    return Fetched("ok", files=files_of(listing))
+    return Fetched("ok", files=files_of(listing), version=clean_version(seen[VERSION_HEADER]))
+
+
+def latest_version(home: Path, specs: list[cpa.InstanceSpec], root: str, key: str) -> str:
+    """CPA's newest release, via CPA's own update route; cached per process.
+
+    One GET (v0 only after a v8 404) under the root's guard, only after a
+    credentials GET with this key succeeded. CPA asks GitHub; a failure only
+    hides the hint and is not retried for 10 minutes.
+    """
+
+    def fresh() -> bool:
+        wait = LATEST_SECONDS if _LATEST["ok"] else LATEST_RETRY_SECONDS
+        at = _LATEST["at"]
+        return at is not None and 0 <= time.monotonic() - at < wait
+
+    with _STATE_LOCK:
+        if fresh():
+            return _LATEST["value"]
+        value = _LATEST["value"]
+    with cpa.mgmt_guard(home, root, GUARD_WAIT) as held:
+        if not held or known_rejected(home, specs, root, key):
+            return value
+        with _STATE_LOCK:
+            if fresh():  # another /cpa asked while this one waited for the guard
+                return _LATEST["value"]
+        value, ok = "", False
+        options = {"timeout": TIMEOUT, "user_agent": user_agent(), "max_bytes": 4096}
+        try:
+            try:
+                reply = cpa.get_json(root + LATEST_PATHS[0], key, **options)
+            except cpa.GatewayError as exc:
+                if exc.status != 404:
+                    raise
+                reply = cpa.get_json(root + LATEST_PATHS[1], key, **options)
+            raw = reply.get("latest-version") if isinstance(reply, dict) else None
+            value = clean_version(raw)
+            ok = bool(value)
+        except cpa.GatewayError as exc:
+            if exc.status == 401:
+                cpa.mark_rejected(home, root, key)
+    with _STATE_LOCK:
+        _LATEST.update(value=value, at=time.monotonic(), ok=ok)
+    return value
 
 
 # ── Report ──────────────────────────────────────────────────────────────────
@@ -632,7 +704,8 @@ USAGE = (
     "/cpa <pool> - one pool, with the last hour of requests\n"
     "/cpa <pool> <provider> - one line per account\n"
     "/cpa quota <pool> [provider] - live usage from each vendor\n"
-    "Needs mgmt_key_env on the pool. Read-only; one request per pool\n"
+    "Needs mgmt_key_env on the pool. Read-only; one request per pool,\n"
+    "plain /cpa adds one CPA update check per 6 h\n"
     "(quota: at most 3 more per account, 20 accounts, 4 at a time)."
 )
 _STATUS_TEXT = {
@@ -663,7 +736,7 @@ def clock(when: datetime, now: datetime) -> str:
 def _provider_line(name: str, summary: ProviderSummary, now: datetime, detail: bool) -> str:
     parts = []
     if summary.ready:
-        parts.append(f"{summary.ready} ready")
+        parts.append(f"{summary.ready} active")
     if summary.limited:
         nxt = f" (next {clock(summary.next_free, now)})" if summary.next_free else ""
         parts.append(f"{summary.limited} limited{nxt}")
@@ -692,8 +765,8 @@ def _state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> st
         text = f"limited until {clock(state.until, now)}" if state.until else "limited"
         return text + (f" · {state.models_cooling} models cooling" if state.models_cooling else "")
     if state.kind == "ready" and state.models_cooling:
-        return f"ready · {state.models_cooling} models cooling"
-    return state.kind
+        return f"active · {state.models_cooling} models cooling"
+    return "active" if state.kind == "ready" else state.kind
 
 
 def _account_lines(files: list[dict[str, Any]], provider: str, now: datetime) -> list[str]:
@@ -786,6 +859,7 @@ def report(
         return _provider_view(rows[0], cpa.normalize_provider(args[1]), now)
 
     lines = [f"CPA pools · {now.astimezone().strftime('%H:%M')}"]
+    versions: list[str] = []
     for row in rows:
         result = row.result
         if row.status != "ok" or result is None:
@@ -795,12 +869,22 @@ def report(
             lines.append(f"{row.spec.name}: {text}")
             continue
         age = int(time.monotonic() - result.at)
-        lines.append(row.spec.name + (f" (cached {age}s)" if row.cached else ""))
+        head = row.spec.name + (f" · {result.version}" if result.version else "")
+        lines.append(head + (f" (cached {age}s)" if row.cached else ""))
+        if result.version:
+            versions.append(result.version)
         summary = summarize(result.files, now)
         if not summary:
             lines.append("  no accounts")
         for provider, item in summary.items():
             lines.append(_provider_line(provider, item, now, detail=bool(args)))
+    if not args and versions:
+        index = next(i for i, r in enumerate(rows) if r.result and r.result.version)
+        root, key = jobs[keys[index]]
+        latest = latest_version(home, specs, root, key)
+        behind = sorted({v for v in versions if newer(latest, v)})
+        if behind:
+            lines.append(f"CPA {latest} available (running {', '.join(behind)})")
     lines.extend(f"config: {error}" for error in errors)
     return _cap(lines)
 

@@ -81,9 +81,9 @@ class ViewTests(unittest.TestCase):
 
     def test_overview_lists_every_pool(self):
         out = self.run_cpa()
-        self.assertIn("pre\n  codex 3: 1 ready · 1 cooling (next ", out)
+        self.assertIn("pre\n  codex 3: 1 active · 1 cooling (next ", out)
         self.assertIn("1 error", out)
-        self.assertIn("  xai 1: 1 ready", out)
+        self.assertIn("  xai 1: 1 active", out)
         self.assertIn("fast: no management key (set mgmt_key_env)", out)
         self.assertNotIn("1h", out)
 
@@ -99,7 +99,7 @@ class ViewTests(unittest.TestCase):
         self.assertTrue(lines[1].startswith("codex-ca…@…  error: token for ca…@… expired"))
         self.assertTrue(lines[2].startswith("codex-bo…@…  cooling until "))
         self.assertIn("(quota)", lines[2])
-        self.assertEqual(lines[3], "codex-al…@…  ready · 1h 3/1 · 5h 63% (4m ago)")
+        self.assertEqual(lines[3], "codex-al…@…  active · 1h 3/1 · 5h 63% (4m ago)")
 
     def test_no_email_anywhere(self):
         for args in ("", "pre", "pre codex", "pre xai"):
@@ -169,12 +169,12 @@ class ViewTests(unittest.TestCase):
             False,
         )
         until = status.clock(datetime.fromtimestamp(reset, timezone.utc), NOW)
-        self.assertIn(f"  codex 3: 2 ready · 1 limited (next {until})", self.run_cpa())
+        self.assertIn(f"  codex 3: 2 active · 1 limited (next {until})", self.run_cpa())
         lines = self.run_cpa("pre codex").splitlines()
         self.assertTrue(lines[1].startswith("codex-za…@…  limited until "), lines)
         self.assertIn(f"5h 100% until {until}", lines[1])
-        self.assertTrue(lines[2].startswith("codex-al…@…  ready"), lines)
-        self.assertTrue(lines[3].startswith("codex-ol…@…  ready"), lines)
+        self.assertTrue(lines[2].startswith("codex-al…@…  active"), lines)
+        self.assertTrue(lines[3].startswith("codex-ol…@…  active"), lines)
 
     def test_help_and_too_many_args(self):
         self.assertEqual(self.run_cpa("help"), status.USAGE)

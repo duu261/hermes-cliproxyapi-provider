@@ -323,17 +323,23 @@ show `no management key`. Restart running gateways after enabling.
 ```
 
 ```
-pre
-  codex 4: 3 ready · 1 cooling (next 17:20)
-  xai 2: 2 ready
+pre · v8.0.51
+  codex 4: 3 active · 1 cooling (next 17:20)
+  xai 2: 2 active
+CPA v8.0.52 available (running v8.0.51)
 pre / codex · 4 accounts
-codex-al…@…  ready · 1h 173/71 · 5h 22% · wk 0% (1m ago)
+codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
 codex-bo…@…  cooling until 17:20 (quota)
 ```
 
 - Read-only: one `GET /v8/management/credentials` per instance per run (v0
   `auth-files` only after a 404), and only when you type `/cpa`. No timers, no
   retries. A repeat within 20 seconds answers from memory.
+- The CPA version next to each instance is the `X-CPA-VERSION` header of that
+  same reply. On the plain `/cpa` overview, `CPA <version> available` comes
+  from CPA's own update route (`GET /v8/management/server/latest-version`,
+  which asks GitHub): one request per Hermes process every 6 hours, 10
+  minutes after a failure. A failure only hides the line.
 - Last-seen quota (5h and weekly) comes from what CPA recorded on real traffic
   for Claude and Codex accounts. CPA records none for other providers. Plain
   `/cpa` never asks CPA to check quota upstream; `/cpa quota` does.
@@ -364,9 +370,9 @@ quota plugin when CPA lists one. Every request, and when it is sent:
 
 | Provider | Requests per account | What you see |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`, weekly `opus` / `sonnet` |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; weekly model and app limits when sent (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage when on |
 | Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan |
-| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk`; monthly spend `mo` and plan (`supergrok` / `supergrok_heavy`) only when xAI reports a monthly limit |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk` (`wk no figure yet` until xAI reports a percent); monthly spend `mo` and plan (`supergrok` / `supergrok_heavy`) only when xAI reports a monthly limit |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota | per model group, `5h` and `wk` |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` when CPA lists the account as `kimi-ai`) | each limit window, weekly, `mo` |
@@ -382,7 +388,9 @@ percent is what is used (vendors that report what is left are converted);
 there are no totals across plans. An account is `OUT` when a window is at 100%
 or the vendor says it is blocked. Antigravity is per model group: CPA holds back
 only the models that ran out, so an account is `OUT` only when every group is
-full; otherwise the full groups show as `out: <group>`.
+full; otherwise the full groups show as `out: <group>`. Claude's model-scoped
+weekly limits (Fable, Opus, Sonnet, apps, Cowork) work the same way: a full one
+shows as `out: fable` and the account keeps serving other models.
 
 - Only when you type it. At most 20 accounts and 3 requests per account per
   run. The first request goes alone, then at most 4 at a time; a repeat within
@@ -400,6 +408,26 @@ full; otherwise the full groups show as `out: <group>`.
   accounts that CPA lists only as `kimi` (they get the `.com` URL and show
   `token rejected by vendor`), Codex code-review and per-model extra limits,
   plugin summary figures.
+
+## CPA versions
+
+The plugins follow CPA releases and set no maximum. Features that need a
+newer CPA:
+
+| Feature | CPA |
+|---|---|
+| Public grouping by `owned_by` (`/v1/models`) | v4.1.1+ |
+| Management mode (credentials, credential models, model definitions) | v6.7.26+ (v8 routes from v8.0.0) |
+| Model definitions for plugin providers (Kiro and others) | v8.0.34+ |
+| `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
+| `/cpa` last-seen quota | v7.2.142+ |
+| `/cpa` CPA version | v6.3.36+ |
+| `/cpa` update hint | v6.5.42+ |
+| `/cpa quota` built-in vendors (`api-call` with `$TOKEN$`) | v6.6.63+ |
+| `/cpa quota` plugin quota (e.g. Kiro) | v8.0.25+ |
+
+Older releases answer the missing route with 404, and that feature is
+skipped.
 
 ## Development
 
