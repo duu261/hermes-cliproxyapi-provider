@@ -261,6 +261,77 @@ class ParserTests(unittest.TestCase):
         )
         self.assertEqual(usage.windows[0].resets_at, NOW + timedelta(minutes=65))
         self.assertIsNone(usage.windows[2].resets_at)
+        self.assertTrue(usage.windows[2].scoped)
+        self.assertFalse(usage.windows[1].scoped)
+        self.assertEqual(usage.extra, "extra on")
+
+    def test_claude_fable_from_limits(self):
+        # Live shape (Ultra, 2026-11-03): Fable only in limits[] as weekly_scoped.
+        body = {
+            "five_hour": {"utilization": 2.0, "resets_at": iso(60), "limit_dollars": None},
+            "seven_day": {"utilization": 0.0, "resets_at": iso(6 * 1440)},
+            "iguana_necktie": None,
+            "extra_usage": {"is_enabled": False, "utilization": None},
+            "limits": [
+                {"kind": "session", "percent": 2, "is_active": True, "scope": None},
+                {"kind": "weekly_all", "percent": 0, "is_active": False, "scope": None},
+                {
+                    "kind": "weekly_scoped",
+                    "percent": 7,
+                    "resets_at": "2026-11-03T05:00:00+00:00",
+                    "scope": {"model": {"id": None, "display_name": "Fable"}},
+                    "is_active": False,
+                },
+            ],
+        }
+        usage = quota.parse_claude(body)
+        self.assertEqual(
+            [(w.label, w.used, w.scoped) for w in usage.windows],
+            [("5h", 2, False), ("wk", 0, False), ("fable", 7, True)],
+        )
+        self.assertEqual(usage.windows[2].resets_at, datetime(2026, 11, 3, 5, tzinfo=timezone.utc))
+        self.assertEqual(usage.extra, "")
+
+    def test_claude_fable_active_entry_wins_and_key_fallback(self):
+        scoped = {"kind": "weekly_scoped", "scope": {"model": {"display_name": "Fable 5"}}}
+        body = {
+            "iguana_necktie": {"utilization": 90, "resets_at": iso(60)},
+            "limits": [dict(scoped, percent=10), dict(scoped, percent=40, is_active=True)],
+        }
+        self.assertEqual(
+            [(w.label, w.used) for w in quota.parse_claude(body).windows], [("fable", 40)]
+        )
+        body = {"iguana_necktie": {"utilization": 90, "resets_at": iso(60)}}
+        self.assertEqual(
+            [(w.label, w.used) for w in quota.parse_claude(body).windows], [("fable", 90)]
+        )
+
+    def test_claude_dollar_window_is_not_a_usage_window(self):
+        body = {"iguana_necktie": {"utilization": 50, "limit_dollars": 20, "used_dollars": 10}}
+        self.assertEqual(quota.parse_claude(body).windows, [])
+
+    def test_claude_extra_usage_text(self):
+        on = {"is_enabled": True, "utilization": 37.5}
+        self.assertEqual(quota.parse_claude({"extra_usage": on}).extra, "extra 37%")
+        hit = {"is_enabled": True, "spend_limit_reached": True}
+        self.assertEqual(quota.parse_claude({"extra_usage": hit}).extra, "extra limit reached")
+
+    def test_claude_full_scoped_limit_is_not_out(self):
+        usage = quota.Usage(
+            windows=[
+                quota.Window("5h", 10, NOW + timedelta(hours=1)),
+                quota.Window("wk", 40, NOW + timedelta(days=2)),
+                quota.Window("fable", 100, NOW + timedelta(days=2), scoped=True),
+            ]
+        )
+        result = quota.AccountResult("a", "claude", usage)
+        self.assertEqual(result.out_until(), (False, None))
+        lines = quota._provider_block("claude", [result], NOW)
+        self.assertEqual(lines[0], "claude · 1 account: 1 have room")
+        self.assertTrue(lines[1].endswith("  out: fable"), lines)
+        usage.windows[1].used = 100
+        self.assertTrue(result.out_until()[0])
+        self.assertTrue(quota._provider_block("claude", [result], NOW)[1].endswith("  OUT"))
 
     def test_codex_pro_weekly_primary_only(self):
         usage = quota.parse_codex(CODEX_PRO, NOW)
