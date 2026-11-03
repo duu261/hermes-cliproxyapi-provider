@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.1
+
+- `/cpa`: an account CPA marks `requires_sign_in` (CPA v8.0.5x, the refresh
+  token is gone) shows `error: sign in again` instead of a cooldown or a
+  vague message. Re-login on that CPA instance is the only fix.
+- `/cpa quota` Claude: extra usage adds spend and limit when Claude sends
+  them (`extra 25% ($12.50/$50.00)`, minor units as in CPA's web UI), and
+  dollar credit pools show what is left (`additional credit balance $60.00
+  left`).
+- `/cpa quota` Codex: the account's credits balance when it has one
+  (`credits 1,250.50`, `credits unlimited`).
+- All from the replies `/cpa` already reads; no new requests.
+
 ## 0.7.0
 
 - `/cpa` shows each pool's CPA version (from the `X-CPA-VERSION` header CPA

@@ -329,8 +329,8 @@ quota 页面相同。对内置的厂商，CPA 的 `api-call` 路由带着该 acc
 
 | Provider | 每个 account 的请求 | 显示内容 |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`；每周 model 和 app 限额在有发送时显示 (`fable`, `opus`, `sonnet`, `apps`, `cowork`)；extra usage 在开启时显示 |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`；每周 model 和 app 限额在有发送时显示 (`fable`, `opus`, `sonnet`, `apps`, `cowork`)；extra usage 在开启时显示，含已用/上限；credit pool (`$ left`) |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan，account 有 credits 时显示 |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, 然后 GET `https://cli-chat-proxy.grok.com/v1/billing` | 每周 credits `wk`（xAI 还没报告百分比时显示 `wk no figure yet`）；只有 xAI 报告 monthly limit 时才显示每月花费 `mo` 和 plan（`supergrok` / `supergrok_heavy`） |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` ，带该 account 的 `project_id`；只有前一个 host 在厂商侧失败或没有返回 quota 时，才依次请求 `daily-cloudcode-pa.sandbox` 和 `cloudcode-pa` | 按 model 分组，`5h` 和 `wk` |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |

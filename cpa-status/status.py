@@ -111,6 +111,9 @@ def classify(entry: dict[str, Any], now: datetime) -> AccountState:
     status = raw_status.strip().lower() if isinstance(raw_status, str) else ""
     if entry.get("disabled") is True or status == "disabled":
         return AccountState("disabled")
+    if entry.get("requires_sign_in") is True:
+        # CPA v8.0.5x: the refresh token is gone; waiting will not fix it.
+        return AccountState("error", reason="sign in again")
 
     credential_until, reason, models = None, "", 0
     for item in _cooldowns(entry):
@@ -192,6 +195,7 @@ _KEPT_FIELDS = frozenset(
         "cooldowns",
         "recent_requests",
         "quota",
+        "requires_sign_in",
     }
 )
 # Providers ``/cpa quota`` reads through CPA's api-call (see quota.py). Others
@@ -759,7 +763,7 @@ def _state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> st
         reason = short_message(state.reason)
         return text + (f" ({reason})" if reason else "")
     if state.kind == "error":
-        message = short_message(entry.get("status_message"))
+        message = state.reason or short_message(entry.get("status_message"))
         return "error" + (f": {message}" if message else "")
     if state.kind == "limited":
         text = f"limited until {clock(state.until, now)}" if state.until else "limited"

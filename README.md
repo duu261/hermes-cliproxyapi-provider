@@ -370,8 +370,8 @@ quota plugin when CPA lists one. Every request, and when it is sent:
 
 | Provider | Requests per account | What you see |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; weekly model and app limits when sent (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage when on |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; weekly model and app limits when sent (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage when on, with spend/limit; credit pools (`$ left`) |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan, credits when the account has them |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk` (`wk no figure yet` until xAI reports a percent); monthly spend `mo` and plan (`supergrok` / `supergrok_heavy`) only when xAI reports a monthly limit |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota | per model group, `5h` and `wk` |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
