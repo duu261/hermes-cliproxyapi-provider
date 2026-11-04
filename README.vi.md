@@ -324,7 +324,9 @@ hermes plugins enable cpa-status
 ```
 
 Cần `mgmt_key_env` trên instance muốn xem; instance không có sẽ hiện
-`no management key`. Khởi động lại gateway đang chạy sau khi bật.
+`no management key`, trừ khi một instance khác cùng `base_url` CPA có key: khi
+đó nó được liệt kê dưới instance đó là `same CPA`. Khởi động lại gateway đang
+chạy sau khi bật.
 
 ```
 /cpa                    mọi instance: số account theo provider

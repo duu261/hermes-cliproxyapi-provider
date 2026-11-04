@@ -539,6 +539,33 @@ def known_rejected(home: Path, specs: list[cpa.InstanceSpec], root: str, key: st
     return cpa.key_rejected(home, root, key, _names_on_root(specs, root))
 
 
+def same_cpa_owner(specs: Iterable[cpa.InstanceSpec], name: str) -> str:
+    """The first instance with ``mgmt_key_env`` on the same root as a keyless ``name``.
+
+    Two instances on one CPA (say, one direct and one billed through a
+    gateway) are one CPA to report on. "" when ``name`` has its own key or
+    nothing on its root has one.
+    """
+    specs = list(specs)
+    spec = next((s for s in specs if s.name == name), None)
+    if spec is None or spec.mgmt_key_env:
+        return ""
+    return next((s.name for s in specs if s.root == spec.root and s.mgmt_key_env), "")
+
+
+def same_cpa_hint(specs: Iterable[cpa.InstanceSpec], name: str, command: str) -> str:
+    """``<name>: same CPA as <owner>, see <command with owner>``, or ""."""
+    owner = same_cpa_owner(specs, name)
+    if not owner:
+        return ""
+    return f"{name}: same CPA as {owner}, see {command.format(owner)}"
+
+
+def _shown(words: Iterable[str]) -> list[str]:
+    """User words safe to echo: provider-normalized, masked, short."""
+    return [mask_text(cpa.normalize_provider(word))[:32] for word in words]
+
+
 # ── Fetch ───────────────────────────────────────────────────────────────────
 
 CACHE_SECONDS = 20.0
@@ -824,6 +851,17 @@ def report(
         if not wanted:
             names = ", ".join(s.name for s in specs) or "none"
             return f"Unknown pool '{mask_text(args[0])[:32]}'. Pools: {names}"
+        hint = same_cpa_hint(specs, wanted[0].name, " ".join(["/cpa {}", *_shown(args[1:2])]))
+        if hint:
+            return hint
+    # Keyless instances on a CPA another instance reports on: one CPA, one block.
+    folded: dict[str, list[str]] = {}
+    for spec in wanted:
+        owner = same_cpa_owner(specs, spec.name)
+        if owner:
+            label = spec.name + (" (routed)" if spec.routed else "")
+            folded.setdefault(owner, []).append(label)
+    wanted = [s for s in wanted if not same_cpa_owner(specs, s.name)]
 
     rows = [_Row(spec, "") for spec in wanted]
     jobs: dict[tuple[str, str], tuple[str, str]] = {}
@@ -866,15 +904,20 @@ def report(
     versions: list[str] = []
     for row in rows:
         result = row.result
+        same = folded.get(row.spec.name)
         if row.status != "ok" or result is None:
             text = _STATUS_TEXT.get(row.status) or "unavailable" + (
                 f" ({result.detail})" if result and result.detail else ""
             )
             lines.append(f"{row.spec.name}: {text}")
+            if same:
+                lines.append("  same CPA: " + ", ".join(same))
             continue
         age = int(time.monotonic() - result.at)
         head = row.spec.name + (f" · {result.version}" if result.version else "")
         lines.append(head + (f" (cached {age}s)" if row.cached else ""))
+        if same:
+            lines.append("  same CPA: " + ", ".join(same))
         if result.version:
             versions.append(result.version)
         summary = summarize(result.files, now)
