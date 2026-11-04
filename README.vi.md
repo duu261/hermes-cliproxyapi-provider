@@ -87,6 +87,10 @@ các lần chạy sau đăng ký chúng ngay lúc khởi động mà không cầ
 `hermes doctor` và các thiết lập nhiều tiến trình (`plugins.isolation: host`) chỉ
 thấy provider xuất hiện sau lúc khởi động khi đã khởi động lại.
 
+Instance mới có cùng `base_url` CPA với một instance đã có cache sẽ bắt đầu từ
+cache đó, nên provider của nó được đăng ký ở lần khởi động kế tiếp mà không cần
+liệt kê model. Nó chỉ ghi cache riêng sau lần liệt kê thành công đầu tiên.
+
 ## Wire theo provider
 
 | Provider CPA | Hermes `api_mode` | Nguồn trong CPA |
@@ -195,10 +199,13 @@ cliproxyapi:
   gửi tới CPA. Hai key phải là hai biến môi trường khác nhau.
 - Chỉ giữ các model mà gateway liệt kê cho key đó (`GET /v1/models`). Nếu lấy danh
   sách từ gateway thất bại, danh sách đã biết gần nhất được giữ lại. Trước khi đọc
-  được danh sách đầu tiên cho một key, profile của key đó dùng danh sách của CPA, nên
-  các provider định tuyến được đăng ký ngay khi khởi động từ cache CPA; gọi model mà
-  key không bán sẽ lỗi tại gateway cho tới refresh kế tiếp thu hẹp danh sách. Danh
-  sách đã biết, kể cả rỗng, luôn lọc chặt.
+  được danh sách đầu tiên cho một key, profile của key đó dùng danh sách của CPA:
+  các provider định tuyến được đăng ký ngay khi khởi động từ danh sách CPA trong
+  cache của instance, hoặc từ cache của một instance khác đã cấu hình trên cùng
+  `base_url` CPA. Instance định tuyến trên một CPA chưa instance nào liệt kê thì
+  cần liệt kê model một lần trước, như ở trên. Gọi model mà key không bán sẽ lỗi
+  tại gateway cho tới refresh kế tiếp thu hẹp danh sách. Danh sách đã biết, kể cả
+  rỗng, luôn lọc chặt.
 - Gateway thường chuyển đổi định dạng request theo từng kênh, trừ khi bật chế độ
   chuyển thẳng body. Profile giữ CPA wire theo bảng ở trên; đặt `api_mode` theo nhóm
   khi kênh gateway cần wire khác.

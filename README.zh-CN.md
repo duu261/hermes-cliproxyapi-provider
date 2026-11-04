@@ -77,6 +77,9 @@ cliproxyapi:
 `hermes doctor` 和多进程部署（`plugins.isolation: host`）只有在重启后才能看到启动后
 新出现的 provider。
 
+与某个已有 cache 的 instance 使用同一 CPA `base_url` 的新 instance 会从该 cache 开始，
+因此下次启动时无需列出 model 即可注册其 provider。它只在首次成功列出 model 后才写入自己的 cache。
+
 ## 各 provider 的 wire
 
 | CPA provider | Hermes `api_mode` | CPA 依据 |
@@ -175,8 +178,10 @@ cliproxyapi:
   发送给 gateway；gateway key 也绝不发送给 CPA。两者必须是不同的环境变量。
 - 只保留 gateway 为该 key 列出的 model（`GET /v1/models`）。如果获取 gateway 列表失败，则保留
   最近一次已知的列表。在首次读到某个 key 的 gateway 列表之前，该 key 的 profile 使用 CPA 的
-  列表，因此路由 provider 会在启动时从 CPA cache 注册；调用该 key 未售卖的 model 会在 gateway 处
-  失败，直到下一次 refresh 收窄列表。已知的列表（即使为空）始终严格过滤。
+  列表：路由 provider 会在启动时从该 instance 缓存的 CPA 列表注册，或从同一 CPA `base_url` 上
+  另一个已配置 instance 的 cache 注册。若路由 instance 所在的 CPA 尚无任何 instance 列出过 model，
+  则需先列出一次（见上文）。调用该 key 未售卖的 model 会在 gateway 处失败，直到下一次 refresh
+  收窄列表。已知的列表（即使为空）始终严格过滤。
 - 除非开启 body 透传，gateway 通常会按渠道转换 request 格式。profile 保持上表中的 CPA wire；
   当 gateway 渠道需要不同 wire 时，按分组设置 `api_mode`。
 - context window 和推理级别描述的是 CPA 的 model，不包括 gateway 可能额外施加的限制。
