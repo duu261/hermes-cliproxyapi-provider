@@ -281,7 +281,8 @@ hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
 hermes plugins enable cpa-status
 ```
 
-要查看的 instance 需要设置 `mgmt_key_env`；没有设置的 instance 显示 `no management key`。
+要查看的 instance 需要设置 `mgmt_key_env`；没有设置的 instance 显示 `no management key`，
+除非同一 CPA `base_url` 上另有设置了它的 instance：此时它列在该 instance 下，显示为 `same CPA`。
 启用后请重启正在运行的 gateway。
 
 ```

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.3
+
+- `/cpa`: an instance without `mgmt_key_env` on the same CPA `base_url` as
+  one with it (for example the same CPA, once direct and once billed through
+  a gateway) is that CPA, not another pool. The overview shows it under the
+  managed instance as `same CPA: <name> (routed)` instead of
+  `<name>: no management key`. `/cpa <name>` and `/cpa quota <name>` answer
+  `same CPA as <managed>, see /cpa <managed>`. No new requests; the keyless
+  instance never sent any.
+
 ## 0.7.2
 
 - A new instance on the same CPA `base_url` as an instance already cached now

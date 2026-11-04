@@ -202,6 +202,79 @@ class ViewTests(unittest.TestCase):
         self.assertIn("  no accounts", out)
 
 
+class SameRootTests(unittest.TestCase):
+    """A keyless instance on a CPA another instance manages is that CPA, not a pool."""
+
+    def setUp(self):
+        status.reset_state()
+        self.home = Path(tempfile.mkdtemp())
+        self.config = {
+            "cliproxyapi": {
+                "instances": {
+                    "fast": {
+                        "base_url": "http://127.0.0.1:2",
+                        "key_env": "C",
+                        "mgmt_key_env": "M",
+                    },
+                    "strict": {
+                        "base_url": "http://127.0.0.1:2/v1",
+                        "key_env": "C",
+                        "route_via": "https://gateway.example",
+                        "route_key_env": "G",
+                    },
+                    "mirror": {"base_url": "http://127.0.0.1:2", "key_env": "C"},
+                    "lone": {"base_url": "http://127.0.0.1:3", "key_env": "C"},
+                }
+            }
+        }
+        fetched = status.Fetched("ok", files=[dict(e) for e in LISTING], version="v8.0.53")
+        patcher = mock.patch.object(status, "_fetch", return_value=(fetched, False))
+        self.fetch = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_cpa(self, args=""):
+        return status.report(
+            args, config=self.config, home=self.home, secret={"M": "k"}.get, now=NOW
+        )
+
+    def test_overview_folds_keyless_instances_under_their_cpa(self):
+        with mock.patch.object(status, "latest_version", return_value=""):
+            out = self.run_cpa()
+        self.assertIn("fast · v8.0.53\n  same CPA: strict (routed), mirror\n  codex 3:", out)
+        self.assertNotIn("strict:", out)
+        self.assertNotIn("mirror:", out)
+        self.assertIn("lone: no management key (set mgmt_key_env)", out)
+        self.assertEqual(self.fetch.call_count, 1)
+
+    def test_pool_view_points_to_the_managed_instance(self):
+        self.assertEqual(self.run_cpa("strict"), "strict: same CPA as fast, see /cpa fast")
+        self.assertEqual(
+            self.run_cpa("strict codex"), "strict: same CPA as fast, see /cpa fast codex"
+        )
+        self.fetch.assert_not_called()
+
+    def test_quota_points_to_the_managed_instance(self):
+        self.assertEqual(
+            self.run_cpa("quota strict"), "strict: same CPA as fast, see /cpa quota fast"
+        )
+        self.assertEqual(
+            self.run_cpa("quota strict xai"),
+            "strict: same CPA as fast, see /cpa quota fast xai",
+        )
+        self.fetch.assert_not_called()
+
+    def test_first_keyed_instance_owns_the_cpa(self):
+        instances = self.config["cliproxyapi"]["instances"]
+        instances["other"] = {
+            "base_url": "http://127.0.0.1:2",
+            "key_env": "C",
+            "mgmt_key_env": "M",
+        }
+        self.assertEqual(status.same_cpa_owner(cpa.parse_config(self.config)[0], "mirror"), "fast")
+        self.assertEqual(status.same_cpa_owner(cpa.parse_config(self.config)[0], "other"), "")
+        self.assertEqual(status.same_cpa_owner(cpa.parse_config(self.config)[0], "lone"), "")
+
+
 class HandleTests(unittest.TestCase):
     def test_handle_never_raises(self):
         home = Path(tempfile.mkdtemp())

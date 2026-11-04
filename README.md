@@ -324,7 +324,9 @@ hermes plugins enable cpa-status
 ```
 
 It needs `mgmt_key_env` on the instances it reports on; instances without one
-show `no management key`. Restart running gateways after enabling.
+show `no management key`, unless another instance on the same CPA `base_url`
+has one: then they are listed under it as `same CPA`. Restart running
+gateways after enabling.
 
 ```
 /cpa                    every instance: accounts per provider

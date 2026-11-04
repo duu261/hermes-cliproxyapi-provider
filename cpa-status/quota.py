@@ -1191,7 +1191,10 @@ def report(
         if not _SELECTOR_RE.match(selector) or status.mask_text(selector) != selector:
             return f"Live quota covers {COVERED}; not '{status.mask_text(args[1])[:32]}'."
     if not spec.mgmt_key_env:
-        return f"{spec.name}: {status._STATUS_TEXT['no_key']}"
+        hint = status.same_cpa_hint(
+            specs, spec.name, " ".join(["/cpa quota {}", *status._shown(args[1:2])])
+        )
+        return hint or f"{spec.name}: {status._STATUS_TEXT['no_key']}"
     try:
         key = secret(spec.mgmt_key_env) or ""
     except Exception:  # noqa: BLE001 - e.g. unscoped read under multiplexing

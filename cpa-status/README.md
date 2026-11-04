@@ -13,8 +13,9 @@ hermes plugins enable cpa-status
 ```
 
 Requires Hermes 0.21.7 or newer and `mgmt_key_env` on each instance you want
-to see. Restart running gateways after enabling. Upgrade it together with the
-provider plugin: both share one lock per CPA.
+to see (an instance without it on the same CPA `base_url` as one with it is
+shown under that one as `same CPA`). Restart running gateways after enabling.
+Upgrade it together with the provider plugin: both share one lock per CPA.
 
 ```
 /cpa                       every instance: accounts per provider
