@@ -517,6 +517,41 @@ class BillingRouteTests(unittest.TestCase):
         self.assertEqual(set(profiles), {"cpa-t"})
         self.assertEqual(profiles["cpa-t"].fallback_models, ())
 
+    def test_new_routed_instance_on_a_cached_root_registers_at_import(self):
+        # "t" is already cached; "s" is added later on the same CPA, routed.
+        instances = {
+            "t": {"base_url": self.cpa_root, "key_env": "T_KEY"},
+            "s": {
+                "base_url": self.cpa_root + "/v1",
+                "key_env": "T_KEY",
+                "route_via": self.gw_root,
+                "route_key_env": "GW_A",
+            },
+        }
+        config = {"model": {"default": "x"}, "cliproxyapi": {"instances": instances}}
+        (self.home / "config.yaml").write_text(json.dumps(config))
+        catalog = cpa.Catalog(
+            ids=["claude-opus-5-5", "grok-4.6"],
+            meta={"claude-opus-5-5": {"context_window": 1000000}},
+            owners={"claude-opus-5-5": "anthropic", "grok-4.6": "xai"},
+            route_ids={"OTHER_GW": []},  # another instance's gateway state: not borrowed
+        )
+        cpa.save_cache(self.home, "t", catalog)
+        _, profiles = self.load()
+        self.assertIn("cpa-s-claude", profiles)
+        claude = profiles["cpa-s-claude"]
+        self.assertEqual(claude.base_url, self.gw_root)
+        self.assertEqual(claude.env_vars[0], "GW_A")
+        self.assertEqual(claude.fallback_models, ("claude-opus-5-5",))
+        self.assertEqual(claude.model_capabilities["claude-opus-5-5"]["context_window"], 1000000)
+        self.assertEqual((_Gateway.seen, _BillingGateway.seen), ([], []))
+        # Borrowed, not copied: "s" gets its own cache only from a real listing.
+        self.assertFalse(cpa.cache_path(self.home, "s").exists())
+        profiles["cpa-s"].fetch_models(api_key=GW_KEY_A)
+        own = cpa.load_cache(self.home, "s")
+        self.assertEqual(set(own.route_ids), {"GW_A"})
+        self.assertEqual(cpa.load_cache(self.home, "t").route_ids, {"OTHER_GW": []})
+
     def test_unknown_gateway_list_keeps_cpa_ids_until_it_is_read(self):
         _BillingGateway.status = 503
         _, profiles = self.load()

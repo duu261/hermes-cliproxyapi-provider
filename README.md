@@ -87,6 +87,10 @@ so later runs register them at startup with no network calls:
 `hermes doctor` and multi-process setups (`plugins.isolation: host`) see
 providers that appeared after startup only after a restart.
 
+A new instance on the same CPA `base_url` as an instance already cached starts
+from that cache, so its providers register at the next startup without a
+listing. It writes its own cache after its first successful listing.
+
 ## Wire per provider
 
 | CPA provider | Hermes `api_mode` | CPA source |
@@ -195,10 +199,12 @@ cliproxyapi:
   never sent to CPA. They must be different env vars.
 - Only models the gateway lists for that key (`GET /v1/models`) are kept. If
   the gateway list fails, the last known list is kept. Until the first list
-  for a key is read, its profiles use CPA's list, so routed providers register
-  at startup from CPA's cache; a call to a model the key does not sell fails
-  at the gateway until the next refresh narrows the list. A known list, even
-  an empty one, filters strictly.
+  for a key is read, its profiles use CPA's list: routed providers register
+  at startup from the instance's cached CPA list, or from another configured
+  instance's cache on the same CPA `base_url`. A routed instance on a CPA no
+  instance has listed yet needs one model listing first, as above. A call to
+  a model the key does not sell fails at the gateway until the next refresh
+  narrows the list. A known list, even an empty one, filters strictly.
 - Gateways often convert request formats per channel unless body pass-through
   is on. Profiles keep the CPA wire from the table above; set `api_mode` per
   group where the gateway channel needs a different one.

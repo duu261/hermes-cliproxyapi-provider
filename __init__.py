@@ -326,7 +326,7 @@ def register_all() -> list[str]:
     for error in errors:
         logger.warning("cliproxyapi config: %s", error)
     for spec in specs:
-        instance = _Instance(spec, home, cpa.load_cache(home, spec.name))
+        instance = _Instance(spec, home, cpa.load_instance_cache(home, spec, specs))
         _INSTANCES[spec.name] = instance
         _register(instance, None)
         _register_groups(instance)

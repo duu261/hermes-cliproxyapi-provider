@@ -1143,6 +1143,87 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(cpa.load_cache(home, "bad").ids, [])
 
 
+class InstanceCacheTests(unittest.TestCase):
+    """A new instance on an already-cached CPA root starts from that cache."""
+
+    ROOT = "http://127.0.0.1:8317"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def spec(self, name, root=ROOT, mgmt=""):
+        return cpa.InstanceSpec(name=name, root=root, key_env="K", mgmt_key_env=mgmt)
+
+    def seed(self, name, **extra):
+        catalog = cpa.Catalog(
+            ids=["claude-opus-5-5", "gpt-5.6"],
+            meta={"claude-opus-5-5": {"context_window": 1000000}},
+            owners={"claude-opus-5-5": "anthropic", "gpt-5.6": "openai"},
+            fetched_at=12.5,
+            **extra,
+        )
+        cpa.save_cache(self.home, name, catalog)
+        return catalog
+
+    def test_new_instance_on_a_cached_root_borrows_the_catalog(self):
+        self.seed("a")
+        specs = [self.spec("a"), self.spec("b")]
+        loaded = cpa.load_instance_cache(self.home, specs[1], specs)
+        self.assertEqual(loaded.ids, ["claude-opus-5-5", "gpt-5.6"])
+        self.assertEqual(loaded.owners["claude-opus-5-5"], "anthropic")
+        self.assertEqual(loaded.meta["claude-opus-5-5"]["context_window"], 1000000)
+        self.assertEqual(set(cpa.compute_groups(loaded)), {"claude", "codex"})
+        # Reading is not a listing: nothing is written under the new name.
+        self.assertFalse(cpa.cache_path(self.home, "b").exists())
+
+    def test_borrowed_cache_drops_instance_and_key_state(self):
+        failed = cpa.management_fingerprint("other-key")
+        self.seed(
+            "a",
+            route_ids={"GW_A": ["gpt-5.6"]},
+            mgmt_groups={"devin": ["gpt-5.6"]},
+            mgmt_defs={"gpt-5.6": {"max_output_tokens": 128000}},
+            mgmt_checked_at=11.0,
+            mgmt_auth_failed=failed,
+        )
+        specs = [self.spec("a"), self.spec("b")]
+        loaded = cpa.load_instance_cache(self.home, specs[1], specs)
+        self.assertEqual(loaded.route_ids, {})  # per gateway key env of instance a
+        self.assertEqual(loaded.mgmt_auth_failed, "")  # a's key, not b's
+        self.assertEqual(loaded.mgmt_checked_at, 0.0)  # b checks its own key
+        # No management configured on b: public owners only, as b's own refresh would.
+        self.assertEqual((loaded.mgmt_groups, loaded.mgmt_defs), ({}, {}))
+        self.assertEqual(set(cpa.compute_groups(loaded)), {"claude", "codex"})
+
+    def test_borrowed_management_groups_kept_when_management_is_configured(self):
+        self.seed("a", mgmt_groups={"devin": ["gpt-5.6"]}, mgmt_checked_at=11.0)
+        specs = [self.spec("a"), self.spec("b", mgmt="B_MGMT")]
+        loaded = cpa.load_instance_cache(self.home, specs[1], specs)
+        self.assertEqual(loaded.mgmt_groups, {"devin": ["gpt-5.6"]})
+        self.assertEqual(loaded.mgmt_checked_at, 0.0)
+
+    def test_different_root_stays_empty(self):
+        self.seed("a")
+        specs = [self.spec("a"), self.spec("b", root="http://127.0.0.1:9")]
+        self.assertEqual(cpa.load_instance_cache(self.home, specs[1], specs).ids, [])
+
+    def test_own_cache_wins_over_a_borrowed_one(self):
+        self.seed("a")
+        cpa.save_cache(self.home, "b", cpa.Catalog(ids=["own"], route_ids={"GW_B": ["own"]}))
+        specs = [self.spec("a"), self.spec("b")]
+        loaded = cpa.load_instance_cache(self.home, specs[1], specs)
+        self.assertEqual(loaded.ids, ["own"])
+        self.assertEqual(loaded.route_ids, {"GW_B": ["own"]})
+
+    def test_unconfigured_or_empty_siblings_are_not_borrowed(self):
+        self.seed("gone")  # cache left by an instance no longer in config
+        cpa.save_cache(self.home, "a", cpa.Catalog())
+        specs = [self.spec("a"), self.spec("b")]
+        self.assertEqual(cpa.load_instance_cache(self.home, specs[1], specs).ids, [])
+
+
 class MatchTests(unittest.TestCase):
     def test_glob_filter_preserves_order_and_is_case_sensitive(self):
         ids = ["claude-a", "gpt-b", "Claude-c", "claude-d"]

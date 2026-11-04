@@ -32,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover - Windows
     fcntl = None  # type: ignore[assignment]
 
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 USER_AGENT = f"hermes-cliproxyapi-provider/{VERSION}"
 # CPA serves its richest public list (context window, reasoning levels) only to
 # Grok Shell clients: internal/client/grokbuild IsGrokShellUserAgent.
@@ -1289,3 +1289,36 @@ def load_cache(hermes_home: Path, instance: str) -> Catalog:
         if isinstance(v, list)
     }
     return catalog
+
+
+def load_instance_cache(
+    hermes_home: Path, spec: InstanceSpec, specs: Iterable[InstanceSpec]
+) -> Catalog:
+    """The instance's own cache, else a copy of another configured instance's on the same root.
+
+    A new instance on an already-cached CPA then registers its providers at
+    startup instead of after its first model listing. The borrowed copy is
+    never written under the new name; the first successful refresh does that.
+    Kept: what CPA serves (ids, owners, metadata), and management membership
+    only when this instance configures management (its own refresh would clear
+    it otherwise). Dropped: gateway lists (keyed by the other instance's
+    route key env and gateway), the other key's rejection fingerprint (the
+    shared latch and ``key_rejected`` over every instance on the root already
+    cover it) and the management check time (this instance's key gets its own
+    first pass).
+    """
+    if cache_path(hermes_home, spec.name).exists():
+        return load_cache(hermes_home, spec.name)
+    for other in specs:
+        if other.name == spec.name or other.root != spec.root:
+            continue
+        catalog = load_cache(hermes_home, other.name)
+        if not catalog.ids:
+            continue
+        catalog.route_ids = {}
+        catalog.mgmt_auth_failed = ""
+        catalog.mgmt_checked_at = 0.0
+        if not spec.mgmt_key_env:
+            catalog.mgmt_groups, catalog.mgmt_defs = {}, {}
+        return catalog
+    return Catalog()

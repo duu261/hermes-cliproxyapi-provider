@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.2
+
+- A new instance on the same CPA `base_url` as an instance already cached now
+  registers its providers at startup from that cache. Before, it started with
+  no models until its first listing, so a new routed instance's providers
+  (for example `cpa-<new>-claude`) were unknown and `model.provider` pointing
+  at one failed. The borrowed copy keeps what CPA serves (ids, owners,
+  metadata, and management groups only when the new instance sets
+  `mgmt_key_env`). It drops the other instance's gateway lists, management
+  check time and rejected-key fingerprint, and is never written under the new
+  name: the first successful listing writes the new instance's own cache.
+- README "Billing route": routed providers register at startup only from a
+  cache for that CPA; a routed instance on a CPA nothing has listed yet needs
+  one listing first.
+
 ## 0.7.1
 
 - `/cpa`: an account CPA marks `requires_sign_in` (CPA v8.0.5x, the refresh
