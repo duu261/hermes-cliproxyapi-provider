@@ -19,36 +19,28 @@ Devin、兼容 OpenAI 的上游，以及 Kiro 等 plugin provider），并自行
 
 ## 安装
 
-从 [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)安装（推荐）：
+从 [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)安装（推荐）provider
+及其配套的 [`/cpa`](#cpapool-状态配套-plugin)：
 
 ```bash
 hermes plugins install cliproxyapi-provider
+hermes plugins install cpa-status
 ```
 
 这会安装 catalog 维护者审核过的提交。只有在 catalog 中的 pin 更新后，
-`hermes plugins update cliproxyapi-provider` 才会升级到新的 release。
+`hermes plugins update <name>` 才会升级到新的 release。请同时升级两者：它们对每个
+CPA 共用一把锁。
 
 开发版（最新 `main`，未经 catalog 审核）：
 
 ```bash
 hermes plugins install duu261/hermes-cliproxyapi-provider
+hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
 ```
 
-需要 Hermes 0.21.7 或更新版本。model-provider plugin 安装后即生效，无需启用。请重启
-正在运行的 Hermes gateway，使其加载 plugin。
-
-用 pinned pack 一步安装两个 plugin（provider 和 `/cpa`）（需要交互式终端；会询问
-确认一次）：
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/duu261/hermes-cliproxyapi-provider/main/hermes-pack.yaml
-hermes plugins pack show ./hermes-pack.yaml
-hermes plugins pack install ./hermes-pack.yaml
-```
-
-pack 把两个 plugin 都 pin 到 release commit 并启用它们；pack 也会把 provider 加入
-`plugins.enabled`，这对 model-provider 没有任何影响。已经安装过（升级）？加上
-`--force`：`hermes plugins pack install --force ./hermes-pack.yaml`。
+需要 Hermes 0.21.7 或更新版本。model-provider plugin 安装后即生效，无需启用。
+`cpa-status` 需要启用（见 [/cpa](#cpapool-状态配套-plugin)）。请重启正在运行的
+Hermes gateway，使其加载 plugin。
 
 ## 配置
 
@@ -277,7 +269,7 @@ management 登录会把计数清零，重启 CPA 会清空所有计数，两小�
 account 健康状况。model-provider plugin 不能注册命令，所以它需要单独安装并启用：
 
 ```bash
-hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
+hermes plugins install cpa-status
 hermes plugins enable cpa-status
 ```
 

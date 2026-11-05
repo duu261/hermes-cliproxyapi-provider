@@ -25,39 +25,29 @@ Codex, xAI, Antigravity, Devin, Kimi, Kiro). Read-only and lockout-safe.
 ## Install
 
 From the [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)
-(recommended):
+(recommended), the provider and its [`/cpa`](#cpa-pool-status-companion-plugin)
+companion:
 
 ```bash
 hermes plugins install cliproxyapi-provider
+hermes plugins install cpa-status
 ```
 
-This installs the commit the catalog maintainers reviewed.
-`hermes plugins update cliproxyapi-provider` moves to a newer release only
-after its catalog pin is bumped.
+This installs the commits the catalog maintainers reviewed.
+`hermes plugins update <name>` moves to a newer release only after its
+catalog pin is bumped. Update both together: they share one lock per CPA.
 
 Development (latest `main`, not reviewed by the catalog):
 
 ```bash
 hermes plugins install duu261/hermes-cliproxyapi-provider
+hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
 ```
 
 Requires Hermes 0.21.7 or newer. Model-provider plugins are active once
-installed; there is nothing to enable. Restart running Hermes gateways so they
-load the plugin.
-
-Both plugins, provider and [`/cpa`](#cpa-pool-status-companion-plugin), in one
-step with the pinned pack (interactive terminal; it asks once to confirm):
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/duu261/hermes-cliproxyapi-provider/main/hermes-pack.yaml
-hermes plugins pack show ./hermes-pack.yaml
-hermes plugins pack install ./hermes-pack.yaml
-```
-
-The pack pins both plugins to the release commit and enables them; a pack
-also lists the provider under `plugins.enabled`, which changes nothing for a
-model-provider. Already installed (upgrading)? Add `--force`:
-`hermes plugins pack install --force ./hermes-pack.yaml`.
+installed; there is nothing to enable. `cpa-status` needs enabling (see
+[/cpa](#cpa-pool-status-companion-plugin)). Restart running Hermes gateways so
+they load the plugins.
 
 ## Configure
 
@@ -319,7 +309,7 @@ The repo also ships `cpa-status`, a second plugin with one slash command,
 plugins cannot register commands, so it installs and enables separately:
 
 ```bash
-hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
+hermes plugins install cpa-status
 hermes plugins enable cpa-status
 ```
 
