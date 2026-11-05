@@ -8,9 +8,13 @@ Companion to the
 model-provider plugin; it reads the same `cliproxyapi:` section.
 
 ```bash
-hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
+hermes plugins install cpa-status
 hermes plugins enable cpa-status
 ```
+
+From the [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins/cpa-status)
+(reviewed pin). Development install, latest `main`:
+`hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status`.
 
 Requires Hermes 0.21.7 or newer and `mgmt_key_env` on each instance you want
 to see (an instance without it on the same CPA `base_url` as one with it is

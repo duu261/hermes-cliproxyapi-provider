@@ -26,38 +26,29 @@ Codex, xAI, Antigravity, Devin, Kimi, Kiro). Chỉ đọc, an toàn với lockou
 ## Cài đặt
 
 Từ [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins/cliproxyapi-provider)
-(khuyến nghị):
+(khuyến nghị), cài provider và plugin đi kèm
+[`/cpa`](#cpa-trạng-thái-pool-plugin-đi-kèm):
 
 ```bash
 hermes plugins install cliproxyapi-provider
+hermes plugins install cpa-status
 ```
 
-Lệnh này cài đúng commit mà maintainer của catalog đã review.
-`hermes plugins update cliproxyapi-provider` chỉ lên release mới sau khi pin trong
-catalog được nâng.
+Lệnh này cài đúng các commit mà maintainer của catalog đã review.
+`hermes plugins update <name>` chỉ lên release mới sau khi pin trong catalog
+được nâng. Nâng cấp cả hai cùng lúc: chúng dùng chung một lock cho mỗi CPA.
 
 Bản phát triển (`main` mới nhất, chưa qua review của catalog):
 
 ```bash
 hermes plugins install duu261/hermes-cliproxyapi-provider
+hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
 ```
 
 Yêu cầu Hermes 0.21.7 trở lên. Plugin model-provider hoạt động ngay sau khi cài,
-không cần bật. Khởi động lại các Hermes gateway đang chạy để chúng nạp plugin.
-
-Cài cả hai plugin, provider và `/cpa`, trong một bước bằng pack đã pin
-(cần terminal tương tác; hỏi xác nhận một lần):
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/duu261/hermes-cliproxyapi-provider/main/hermes-pack.yaml
-hermes plugins pack show ./hermes-pack.yaml
-hermes plugins pack install ./hermes-pack.yaml
-```
-
-Pack pin cả hai plugin vào release commit và bật chúng; pack cũng thêm
-provider vào `plugins.enabled`, điều này không thay đổi gì với model-provider.
-Đã cài rồi (nâng cấp)? Thêm `--force`:
-`hermes plugins pack install --force ./hermes-pack.yaml`.
+không cần bật. `cpa-status` thì cần bật (xem
+[/cpa](#cpa-trạng-thái-pool-plugin-đi-kèm)). Khởi động lại các Hermes gateway
+đang chạy để chúng nạp plugin.
 
 ## Cấu hình
 
@@ -319,7 +310,7 @@ trạng account của mọi instance đã cấu hình. Plugin model-provider kh�
 ký được lệnh, nên plugin này cài và bật riêng:
 
 ```bash
-hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
+hermes plugins install cpa-status
 hermes plugins enable cpa-status
 ```
 
