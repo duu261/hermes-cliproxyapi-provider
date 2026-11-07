@@ -105,6 +105,26 @@ chứa nó, và CPA (kiểm tra ở v8.0.44) chỉ phát lại cached reasoning 
 Claude và Responses. Thiếu nó, Grok 4.7 ngừng reasoning sau vài vòng gọi công cụ,
 thường nói sẽ gọi công cụ rồi kết thúc lượt mà không gọi.
 
+### Dùng một profile làm fallback
+
+Hermes dựng một mục `fallback_providers` mà không hỏi profile của provider đó dùng
+wire nào ([hermes-agent#143933](https://github.com/NousResearch/hermes-agent/issues/143933)).
+Thiếu `api_mode`, mục đó rơi về `chat_completions`, nên fallback Claude sẽ gửi tới
+`<root>/chat/completions` và lỗi. Cho tới khi lỗi này được sửa, hãy đặt `api_mode`
+cho mọi mục trỏ tới các profile này, theo wire trong bảng trên:
+
+```yaml
+fallback_providers:
+  - provider: cpa-main-claude
+    model: claude-sonnet-4-6
+    api_mode: anthropic_messages
+delegation:
+  fallback_providers:
+    - provider: cpa-main-xai
+      model: grok-4.6
+      api_mode: codex_responses
+```
+
 ## Chế độ công khai hay chế độ management
 
 Chế độ công khai là mặc định và chỉ cần client key. Chế độ management thêm

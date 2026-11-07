@@ -104,6 +104,27 @@ and CPA (checked at v8.0.44) replays cached xAI reasoning only for Claude and
 Responses clients. Without it, Grok 4.7 stops reasoning after a few tool rounds
 and tends to say it will call a tool, then end the turn without calling it.
 
+### Using a profile as a fallback
+
+Hermes builds a `fallback_providers` entry without asking the provider's
+profile which wire it uses ([hermes-agent#143933](https://github.com/NousResearch/hermes-agent/issues/143933)).
+Without `api_mode` the entry lands on `chat_completions`, so a Claude fallback
+posts to `<root>/chat/completions` and fails. Until that is fixed, set
+`api_mode` on every entry that names one of these profiles, using the wire
+from the table above:
+
+```yaml
+fallback_providers:
+  - provider: cpa-main-claude
+    model: claude-sonnet-4-6
+    api_mode: anthropic_messages
+delegation:
+  fallback_providers:
+    - provider: cpa-main-xai
+      model: grok-4.6
+      api_mode: codex_responses
+```
+
 ## Public mode or management mode
 
 Public mode is the default and needs only a client key. Management mode adds
