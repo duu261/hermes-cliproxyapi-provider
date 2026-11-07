@@ -93,6 +93,26 @@ Hermes 在 Responses wire 上会这样做。Chat Completions 没有承载它的�
 （在 v8.0.44 核对）只为 Claude 和 Responses 客户端回放已 cache 的 xAI 推理。缺少这一步时，
 Grok 4.7 在几轮工具调用后就不再推理，常常说要调用工具，随后却直接结束本轮。
 
+### 把 profile 用作 fallback
+
+Hermes 构建 `fallback_providers` 条目时不会询问该 provider 的 profile 使用哪种
+wire（[hermes-agent#143933](https://github.com/NousResearch/hermes-agent/issues/143933)）。
+没有 `api_mode` 时，条目会落到 `chat_completions`，于是 Claude fallback 会请求
+`<root>/chat/completions` 并失败。在该问题修复之前，请为每个指向这些 profile 的条目
+设置 `api_mode`，取值见上表：
+
+```yaml
+fallback_providers:
+  - provider: cpa-main-claude
+    model: claude-sonnet-4-6
+    api_mode: anthropic_messages
+delegation:
+  fallback_providers:
+    - provider: cpa-main-xai
+      model: grok-4.6
+      api_mode: codex_responses
+```
+
 ## 公开模式与 management 模式
 
 公开模式是默认模式，只需要 client key。management 模式额外设置 `mgmt_key_env`，读取
