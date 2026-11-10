@@ -98,7 +98,7 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(lines[0], "pre / codex · 3 accounts")
         self.assertTrue(lines[1].startswith("codex-ca…@…  error: token for ca…@… expired"))
         self.assertTrue(lines[2].startswith("codex-bo…@…  cooling until "))
-        self.assertIn("(quota)", lines[2])
+        self.assertIn("(vendor limit reached)", lines[2])
         self.assertEqual(lines[3], "codex-al…@…  active · 1h 3/1 · 5h 63% (4m ago)")
 
     def provider_lines(self, *raw):
@@ -167,6 +167,33 @@ class ViewTests(unittest.TestCase):
     def test_unknown_provider_echo_masked(self):
         out = self.run_cpa("pre sk-" + "a" * 40)
         self.assertNotIn("a" * 24, out)
+
+    def test_cooling_reason_in_plain_words(self):
+        # Every reason code CPA can send (sdk/cliproxy/auth/cooldown_view.go).
+        until = "codex-bo…@…  cooling until " + status.clock(NOW + timedelta(minutes=20), NOW)
+        for code, words in (
+            ("quota", " (vendor limit reached)"),
+            ("credential_quota", " (vendor limit reached, all models)"),
+            ("cloudflare_challenge", " (Cloudflare challenge)"),
+            ("model_not_supported", " (model not supported)"),
+            ("invalid_grant", " (refresh token rejected)"),
+            ("payment_required", " (access refused or no credit)"),
+            ("transient_rate_limit", " (vendor rate limited)"),
+            ("unauthorized", " (token rejected by vendor)"),
+            ("not_found", " (vendor HTTP 404)"),
+            ("transient_error", " (temporary vendor error)"),
+            ("unknown", ""),
+        ):
+            cooldown = {"scope": "credential", "reason": code, "retry_at": iso(20)}
+            lines = self.provider_lines(dict(LISTING[1], cooldowns=[cooldown]))
+            self.assertEqual(lines[1], until + words, code)
+
+    def test_cooling_reason_that_is_not_a_code_is_shown_as_sent(self):
+        # An older CPA, or a code added later: shown as it came, through the masks.
+        for text in ("Quota", "quota exhausted today", "new_reason_code"):
+            cooldown = {"scope": "credential", "reason": text, "retry_at": iso(20)}
+            lines = self.provider_lines(dict(LISTING[1], cooldowns=[cooldown]))
+            self.assertTrue(lines[1].endswith(f" ({text})"), lines[1])
 
     def test_cooling_reason_masked(self):
         entry = dict(LISTING[1])

@@ -2,6 +2,15 @@
 
 ## 0.8.0
 
+- `/cpa <pool> <provider>`: a cooling account shows why in words, not as
+  CPA's code: `vendor limit reached` (`quota`), `vendor limit reached, all
+  models` (`credential_quota`), `vendor rate limited`
+  (`transient_rate_limit`), `token rejected by vendor` (`unauthorized`),
+  `refresh token rejected` (`invalid_grant`), `access refused or no credit`
+  (`payment_required`: a 402, a 403 or a low balance), `model not supported`,
+  `Cloudflare challenge`, `vendor HTTP 404` (`not_found`) and `temporary
+  vendor error` (`transient_error`). CPA's `unknown` shows no reason. Text
+  that is not one of these codes is shown as before, masked.
 - `/cpa quota` Codex: the day the subscription ends is shown after the plan
   (`pro until Nov 16`), with the year when it is not this year. It is read
   from CPA's account listing (the `chatgpt_subscription_active_until` claim of

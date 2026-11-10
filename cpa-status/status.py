@@ -82,6 +82,22 @@ _LOOKUP_RE = re.compile(r"\b(lookup\s)\S+?(?:(\son)(?:(\s)\S+?)?)?(?=:(?:\s|$)|$
 # with "<word> ... access token expired..." when the cut removed that phrase.
 _CPA_PHRASE_RE = re.compile(r" \.\.\. (access token expired)\Z", re.IGNORECASE)
 MESSAGE_LIMIT = 60
+# CPA's cooldown reason codes in words (sdk/cliproxy/auth/cooldown_view.go:
+# cooldownErrorReason, cooldownStatusReason). "unknown" is CPA's own "no
+# reason known", so nothing is shown for it.
+_COOLDOWN_WORDS = {
+    "quota": "vendor limit reached",  # a 429, or a usage limit
+    "credential_quota": "vendor limit reached, all models",
+    "cloudflare_challenge": "Cloudflare challenge",
+    "model_not_supported": "model not supported",
+    "invalid_grant": "refresh token rejected",
+    "payment_required": "access refused or no credit",  # 402, 403, low balance
+    "transient_rate_limit": "vendor rate limited",
+    "unauthorized": "token rejected by vendor",  # 401
+    "not_found": "vendor HTTP 404",
+    "transient_error": "temporary vendor error",  # 408, 5xx
+    "unknown": "",
+}
 # The masks cost quadratic time on one long word, and CPA can store a whole
 # vendor error page as a message. Nothing past this many characters is shown.
 _MASK_INPUT = 256
@@ -194,6 +210,18 @@ def short_message(text: Any) -> str:
         if phrase:
             text = f"{text} {phrase}"
     return text if len(text) <= MESSAGE_LIMIT else text[: MESSAGE_LIMIT - 1] + "…"
+
+
+def cooldown_reason(raw: Any) -> str:
+    """A cooldown ``reason`` for output: CPA's code in words, else the masked text.
+
+    Text that is not one of CPA's codes (an older CPA, or a code added later)
+    is shown as it came, through the same masks as any other message.
+    """
+    if not isinstance(raw, str):
+        return ""
+    words = _COOLDOWN_WORDS.get(raw.strip())
+    return short_message(raw) if words is None else words
 
 
 # ── Classification ──────────────────────────────────────────────────────────
@@ -1031,7 +1059,7 @@ def _state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> st
 def _plain_state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> str:
     if state.kind == "cooling":
         text = f"cooling until {clock(state.until, now)}" if state.until else "cooling"
-        reason = short_message(state.reason)
+        reason = cooldown_reason(state.reason)
         return text + (f" ({reason})" if reason else "")
     if state.kind == "error":
         message = state.reason or short_message(entry.get("status_message"))

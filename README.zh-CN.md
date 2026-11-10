@@ -312,7 +312,7 @@ pre · v8.0.51
 CPA v8.0.52 available (running v8.0.51)
 pre / codex · 4 accounts · total = since CPA start
 codex-al…@…  active · prio 1 · 1h 173/71 · total 2140/96 · 5h 22% · wk 0% (1m ago)
-codex-bo…@…  cooling until 17:20 (quota)
+codex-bo…@…  cooling until 17:20 (vendor limit reached)
 ```
 
 - 只读：每次运行对每个 instance 发送一次 `GET /v8/management/credentials`（只有在
