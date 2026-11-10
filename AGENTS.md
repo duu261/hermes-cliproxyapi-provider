@@ -164,7 +164,8 @@ must equal root `cpa.py`; CI runs `cmp`).
 - `api-call` (v8 `requests/api-call`; v0 `api-call` only after a v8 404) for
   one purpose: a request in `QUOTA_REQUESTS`, this closed table, values fixed
   in code, no override from config or input:
-  - claude: GET `https://api.anthropic.com/api/oauth/usage`
+  - claude: GET `https://api.anthropic.com/api/oauth/usage`, then GET
+    `https://api.anthropic.com/api/oauth/profile` with the same headers
   - codex: GET `https://chatgpt.com/backend-api/wham/usage`
   - xai: GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`,
     then GET `https://cli-chat-proxy.grok.com/v1/billing`
@@ -172,7 +173,11 @@ must equal root `cpa.py`; CI runs `cmp`).
     `https://daily-cloudcode-pa.googleapis.com/`, then (only after an inner
     non-2xx or an empty or unparseable reply; an outer CPA error ends the
     account) `https://daily-cloudcode-pa.sandbox.googleapis.com/`, then
-    `https://cloudcode-pa.googleapis.com/`; data `{"project":"<project_id>"}`
+    `https://cloudcode-pa.googleapis.com/`; data `{"project":"<project_id>"}`.
+    Then one POST
+    `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`
+    with the same headers and data `{"metadata":{"ideType":"ANTIGRAVITY"}}`;
+    no fallback URL
   - devin: POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus`
     with the fixed metadata data template (`apiKey` is `$TOKEN$`)
   - kimi: GET `https://api.kimi.com/coding/v1/usages`, or
@@ -184,10 +189,10 @@ must equal root `cpa.py`; CI runs `cmp`).
   for entries whose provider is not one of the above and that CPA lists with
   `supports_quota` and a `quota_plugin_id`. No v0 fallback.
 - Never: credentials download, any chat or completions call (no paid xAI
-  ping), `api.x.ai/v1/me`, `loadCodeAssist`, `onboardUser`, reset routes
-  (`DELETE`/`POST .../quota/reset`, `routing/cooldown/reset`), claim, profile,
-  subscription, refresh or any write. Meta is unsupported (it needs the raw
-  credential).
+  ping), `api.x.ai/v1/me`, `onboardUser`, reset routes
+  (`DELETE`/`POST .../quota/reset`, `routing/cooldown/reset`), claim,
+  subscription, any profile request other than the Claude one above,
+  refresh or any write. Meta is unsupported (it needs the raw credential).
 - Lockout: hold the guard once for the whole quota run (never nested). The
   probe is the first management request the run actually sends: it goes
   alone, and nothing else is sent until its status is known. Check the latch
@@ -196,12 +201,23 @@ must equal root `cpa.py`; CI runs `cmp`).
 - `auth_index`, the Codex `id_token.chatgpt_account_id` claim, antigravity
   `project_id` and `quota_plugin_id` may be read for the entries that need
   them and held in memory only to build that request; never shown, logged or
-  written to disk. Never read or show `email`, `account`, `path` or `id`, nor
-  any other `id_token` claim. Mask emails and token-like runs in names,
-  labels and `status_message`.
+  written to disk. The Codex `id_token.chatgpt_subscription_active_until`
+  claim may be read and shown as a date. Never read or show `email`,
+  `account`, `path` or `id`, nor any other `id_token` claim. Mask emails and
+  token-like runs in names, labels and `status_message`.
 - Vendor and plugin replies: allowlisted fields only; never print a raw body
   or headers.
-- At most 20 accounts and 3 requests per account per run, results cached
+- Tier requests (the Claude profile GET and `loadCodeAssist`) exist only to
+  show the plan. From the profile reply read only
+  `organization.organization_type`, `organization.subscription_status`,
+  `organization.rate_limit_tier`, `account.has_claude_max` and
+  `account.has_claude_pro`. From `loadCodeAssist` read only `paidTier.id` and
+  `currentTier.id`. Drop everything else at once: the replies also carry a
+  name, an email, an organization name and the project id. Show the tier as
+  a fixed word from a closed list, never a raw value. A failed tier request
+  leaves the tier out; it never fails the account's quota row and is never
+  retried.
+- At most 20 accounts and 4 requests per account per run, results cached
   60 s, only on command. The provider plugin keeps "Never api-call".
 - Errors show status and category only, as in the provider.
 
