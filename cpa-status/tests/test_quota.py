@@ -858,6 +858,80 @@ class RunControlTests(QuotaTestCase):
         self.assertFalse(cpa.key_rejected(self.home, self.root, KEY))
 
 
+# ── Codex subscription end date (listing claim, no request) ─────────────────
+
+
+class UntilTests(QuotaTestCase):
+    UNTIL = NOW + timedelta(days=20, hours=-2)  # 12:00 UTC: one date in most zones
+
+    def claim(self, value, **more):
+        return {
+            "chatgpt_account_id": "acct-0002",
+            "chatgpt_subscription_active_until": value,
+            **more,
+        }
+
+    def shown(self, moment):
+        return moment.astimezone().strftime("%b %d")
+
+    def test_until_claim_shapes(self):
+        # CPA types the claim as `any`: an ISO string or unix seconds, as sent.
+        seconds = int(self.UNTIL.timestamp())
+        for value in (
+            self.UNTIL.isoformat(),
+            self.UNTIL.isoformat().replace("+00:00", "Z"),
+            seconds,
+            float(seconds),
+            seconds * 1000,
+            str(seconds),
+        ):
+            files = status.files_of({"files": [account("codex", 2, id_token=self.claim(value))]})
+            self.assertEqual(files[0].get("_until"), self.UNTIL, repr(value))
+
+    def test_until_claim_junk_and_other_providers(self):
+        for value in (True, False, None, 0, "0", -5, "", "soon", [], {}, float("nan")):
+            files = status.files_of({"files": [account("codex", 2, id_token=self.claim(value))]})
+            self.assertNotIn("_until", files[0], repr(value))
+        other = account("claude", 1, id_token=self.claim(self.UNTIL.isoformat()))
+        self.assertNotIn("_until", status.files_of({"files": [other]})[0])
+        broken = account("codex", 2, id_token="not-a-dict")
+        self.assertNotIn("_until", status.files_of({"files": [broken]})[0])
+        # The start date is another claim; it is never read in place of the end.
+        start_only = {
+            "chatgpt_account_id": "acct-0002",
+            "chatgpt_subscription_active_start": self.UNTIL.isoformat(),
+        }
+        files = status.files_of({"files": [account("codex", 2, id_token=start_only)]})
+        self.assertNotIn("_until", files[0])
+
+    def test_until_shown_next_to_the_plan_without_a_request(self):
+        start = NOW - timedelta(days=10)
+        claims = self.claim(
+            self.UNTIL.isoformat(),
+            chatgpt_subscription_active_start=start.isoformat(),
+            plan_type="secret-plan-claim",
+        )
+        _CPA.files = [account("codex", 2, id_token=claims), account("codex", 3)]
+        out = self.run_quota("quota pre codex")
+        self.assertIn(f"pro until {self.shown(self.UNTIL)}  wk 40%", out)
+        self.assertEqual(out.count("until "), 1)  # the account with no claim shows none
+        self.assertNotIn("secret-plan-claim", out)
+        self.assertNotIn(self.shown(start), out)
+        self.assertEqual(len(_CPA.posts), 2)  # one usage request per account, as before
+
+    def test_until_in_the_past_or_another_year(self):
+        past = NOW - timedelta(days=24, hours=2)
+        far = datetime(2027, 1, 5, 12, 0, tzinfo=timezone.utc)
+        _CPA.files = [
+            account("codex", 2, id_token=self.claim(past.isoformat())),
+            account("codex", 3, id_token=self.claim(far.isoformat())),
+        ]
+        out = self.run_quota("quota pre codex")
+        self.assertIn(f"pro until {self.shown(past)} (past)  wk 40%", out)
+        self.assertIn(f"plus until {self.shown(far)} 2027  5h 100%", out)
+        self.assertNotIn("2027 (past)", out)
+
+
 # ── View and args (Task 10) ─────────────────────────────────────────────────
 
 

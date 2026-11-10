@@ -2,6 +2,12 @@
 
 ## 0.8.0
 
+- `/cpa quota` Codex: the day the subscription ends is shown after the plan
+  (`pro until Nov 16`), with the year when it is not this year. It is read
+  from CPA's account listing (the `chatgpt_subscription_active_until` claim of
+  the ID token CPA stores), so it costs no request and is as old as that
+  token; a date that has passed shows as `until Oct 03 (past)`. No other
+  claim of that token is read for display.
 - `/cpa <pool> <provider>`: each account line shows the account's priority
   when CPA lists one (`prio 1`) and its successful/failed requests since CPA
   started (`total 2140/96`), next to the last hour (`1h 173/71`). The header

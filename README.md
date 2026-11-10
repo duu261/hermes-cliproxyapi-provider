@@ -407,7 +407,7 @@ quota plugin when CPA lists one. Every request, and when it is sent:
 | Provider | Requests per account | What you see |
 |---|---|---|
 | Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; weekly model and app limits when sent (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage when on, with spend/limit; credit pools (`$ left`) |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan, credits when the account has them |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan, credits when the account has them; the day the subscription ends (`until Nov 16`) when CPA's listing has it, at no extra request |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk` (`wk no figure yet` until xAI reports a percent); monthly spend `mo` only when xAI reports a monthly limit |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota | per model group, `5h` and `wk` |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
@@ -438,6 +438,10 @@ shows as `out: fable` and the account keeps serving other models.
   `kiro`.
 - An expired account token shows `token rejected by vendor` and never counts
   against CPA's lockout. A rejected management key stops the run.
+- `until Nov 16` after a Codex plan is the day the subscription ends. It is
+  read from CPA's account listing (the `chatgpt_subscription_active_until`
+  claim of the ID token CPA stores), not asked from the vendor, so it is as
+  old as that token: a date that has passed shows as `until Oct 03 (past)`.
 - CPA's account index, the Codex account id, the Antigravity project id and
   the CPA plugin id are used only to build requests and are never shown,
   logged or cached. Vendor replies are read field by field; bodies and

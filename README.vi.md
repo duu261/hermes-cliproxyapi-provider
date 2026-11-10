@@ -407,7 +407,7 @@ quota plugin của nó khi CPA có liệt kê. Mọi request, và khi nào chún
 | Provider | Request cho mỗi account | Bạn thấy gì |
 |---|---|---|
 | Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; giới hạn tuần theo model và app khi được gửi (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage khi bật, kèm đã tiêu/hạn mức; credit pool (`$ left`) |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan, credits khi account có |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan, credits khi account có; ngày subscription kết thúc (`until Nov 16`) khi listing của CPA có, không tốn thêm request |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, rồi GET `https://cli-chat-proxy.grok.com/v1/billing` | credits tuần `wk` (`wk no figure yet` khi xAI chưa báo phần trăm); chi tiêu tháng `mo` chỉ khi xAI báo monthly limit |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` kèm `project_id` của account; host `daily-cloudcode-pa.sandbox` và `cloudcode-pa` chỉ khi host trước lỗi ở phía vendor hoặc không trả quota | theo từng nhóm model, `5h` và `wk` |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
@@ -438,6 +438,10 @@ và account vẫn phục vụ các model khác.
   `devin`, `kimi`, `plugin`, hoặc provider của một plugin như `kiro`.
 - Token account hết hạn hiện `token rejected by vendor` và không bao giờ bị tính
   vào lockout của CPA. Management key bị từ chối sẽ dừng lượt chạy.
+- `until Nov 16` sau plan của Codex là ngày subscription kết thúc. Nó được đọc
+  từ danh sách account của CPA (claim `chatgpt_subscription_active_until` của
+  ID token mà CPA lưu), không hỏi vendor, nên nó cũ bằng token đó: ngày đã qua
+  hiện là `until Oct 03 (past)`.
 - Account index của CPA, account id của Codex, project id của Antigravity và
   plugin id của CPA chỉ dùng để dựng request, không bao giờ được hiển thị, ghi
   log hay lưu cache. Phản hồi của vendor được đọc theo từng trường; body và

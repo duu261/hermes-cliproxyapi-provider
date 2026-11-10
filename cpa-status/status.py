@@ -7,7 +7,8 @@ Rules (see AGENTS.md, "/cpa status"):
   provider plugin's persisted latch of every instance on the same root.
 - Never read ``email``, ``account``, ``id_token``, ``project_id``, ``path``,
   ``id`` or ``auth_index`` for display. ``/cpa quota`` keeps a few call fields
-  in memory only (see ``files_of``). Names and messages are masked, and the
+  in memory only (see ``files_of``) and shows one ``id_token`` claim, the date
+  a Codex subscription ends. Names and messages are masked, and the
   account's project id is cut out of them on ingest.
 - Quota shown is CPA's last-seen observation from the same GET (claude, codex).
 """
@@ -326,7 +327,8 @@ class ProviderSummary:
 
 # Fields /cpa reads. Everything else in a CPA entry (email, account, id_token,
 # project_id, path, id, auth_index, ...) is dropped on ingest, so it is never
-# kept in the short result cache either.
+# kept in the short result cache either. ``files_of`` adds the few values
+# ``/cpa quota`` needs from those, under ``_`` names.
 _KEPT_FIELDS = frozenset(
     {
         "provider",
@@ -363,7 +365,11 @@ def files_of(listing: Any) -> list[dict[str, Any]]:
     (Antigravity ``project_id``), ``_plugin`` (CPA ``quota_plugin_id``, for
     non-built-in providers) and ``_kimi_ai`` (from the raw provider fields,
     before ``kimi-ai`` is normalized to ``kimi``). They stay in memory only and
-    are never rendered; everything else is dropped. ``project_id`` is also
+    are never rendered. ``_until`` (Codex
+    ``id_token.chatgpt_subscription_active_until``, as a time) is the one
+    field here that is shown, as a date. Everything else is dropped.
+
+    ``project_id`` is also
     used here to cut the id out of ``label``, ``name``, ``status_message`` and
     each cooldown ``reason``: CPA repeats it in the first two, and a vendor's
     error text can name it in the others. The listing itself is not changed.
@@ -397,6 +403,9 @@ def files_of(listing: Any) -> list[dict[str, Any]]:
                 entry["_target"] = target
             if account and provider == "codex":
                 entry["_acct"] = account
+            until = subscription_until(raw) if provider == "codex" else None
+            if until is not None:
+                entry["_until"] = until
             if provider == "antigravity" and _shaped(raw.get("project_id"), _TARGET_RE):
                 entry["_project"] = raw["project_id"]
             if provider == "kimi":
@@ -441,6 +450,19 @@ def call_target(entry: dict[str, Any]) -> tuple[str, str]:
         if isinstance(value, str) and _ACCOUNT_RE.match(value):
             account = value
     return target, account
+
+
+def subscription_until(entry: dict[str, Any]) -> datetime | None:
+    """When a Codex subscription ends, from a raw CPA listing entry.
+
+    The one ``id_token`` claim that may be shown (AGENTS.md). CPA passes it on
+    as the token has it (``any`` in internal/auth/codex/jwt_parser.go), so it
+    can be ISO text or unix seconds.
+    """
+    claims = entry.get("id_token")
+    if not isinstance(claims, dict):
+        return None
+    return instant(claims.get("chatgpt_subscription_active_until"))
 
 
 def summarize(files: Iterable[dict[str, Any]], now: datetime) -> dict[str, ProviderSummary]:
@@ -532,6 +554,21 @@ def _unix(raw: Any) -> datetime | None:
         return datetime.fromtimestamp(value, timezone.utc)
     except (OverflowError, OSError, ValueError):
         return None
+
+
+def instant(raw: Any) -> datetime | None:
+    """ISO time, or unix seconds (milliseconds when that large)."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not re.fullmatch(r"\d+(\.\d+)?", text):
+            return parse_time(text)
+        raw = text
+    value = _number(raw)
+    if value is None or value <= 0:
+        return None
+    return _unix(value / 1000 if value > 1e11 else value)
 
 
 def _minutes_label(minutes: int) -> str:

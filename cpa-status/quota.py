@@ -236,15 +236,7 @@ def _first(data: dict[str, Any], *keys: str) -> Any:
 
 def _instant(raw: Any) -> datetime | None:
     """ISO time, or unix seconds (milliseconds when that large)."""
-    if isinstance(raw, str):
-        text = raw.strip()
-        if not re.fullmatch(r"\d+(\.\d+)?", text):
-            return status.parse_time(text)
-        raw = text
-    value = _num(raw)
-    if value is None or value <= 0:
-        return None
-    return status._unix(value / 1000 if value > 1e11 else value)
+    return status.instant(raw)
 
 
 def _plan(raw: Any) -> str:
@@ -763,6 +755,8 @@ class AccountResult:
     provider: str
     usage: Usage | None = None
     error: str = ""
+    # When a Codex subscription ends, from CPA's listing; None when not listed.
+    until: datetime | None = None
 
     def out_until(self) -> tuple[bool, datetime | None]:
         """Whether the account is out of quota now, and when it frees.
@@ -1007,7 +1001,7 @@ class _Runner:
             return AccountResult(name, provider, error=str(exc))
         if not usage.windows and not usage.pending:
             return AccountResult(name, provider, error="no quota data")
-        return AccountResult(name, provider, usage=usage)
+        return AccountResult(name, provider, usage=usage, until=entry.get("_until"))
 
 
 def run(
@@ -1110,6 +1104,20 @@ def _pending_text(window: Window, now: datetime) -> str:
     return text
 
 
+def _until_text(until: datetime, now: datetime) -> str:
+    """``until Nov 16``: the day a subscription ends, as CPA's listing has it.
+
+    The date is a claim in the ID token CPA stores, fixed when that token was
+    issued, so it can be older than the vendor's (the web UI prefers a live
+    lookup this plugin does not send). One that has passed is marked, not hidden.
+    """
+    local, today = until.astimezone(), now.astimezone()
+    text = "until " + local.strftime("%b %d")
+    if local.year != today.year:
+        text += f" {local.year}"
+    return text + (" (past)" if until <= now else "")
+
+
 def _sort_key(item: AccountResult) -> tuple[int, float, str]:
     out, _ = item.out_until()
     if out:
@@ -1159,7 +1167,10 @@ def _provider_block(provider: str, items: list[AccountResult], now: datetime) ->
             + [_pending_text(w, now) for w in item.usage.pending]
             + ([item.usage.extra] if item.usage.extra else [])
         )
-        plan = f"  {item.usage.plan}" if item.usage.plan else ""
+        words = [item.usage.plan] if item.usage.plan else []
+        if isinstance(item.until, datetime):
+            words.append(_until_text(item.until, now))
+        plan = "  " + " ".join(words) if words else ""
         is_out, _ = item.out_until()
         groups = item.full_groups()
         suffix = "  OUT" if is_out else ""

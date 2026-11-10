@@ -359,7 +359,7 @@ quota 页面相同。对内置的厂商，CPA 的 `api-call` 路由带着该 acc
 | Provider | 每个 account 的请求 | 显示内容 |
 |---|---|---|
 | Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`；每周 model 和 app 限额在有发送时显示 (`fable`, `opus`, `sonnet`, `apps`, `cowork`)；extra usage 在开启时显示，含已用/上限；credit pool (`$ left`) |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan，account 有 credits 时显示 |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan，account 有 credits 时显示；CPA 的列表里有时显示 subscription 结束的日期 (`until Nov 16`)，不增加 request |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, 然后 GET `https://cli-chat-proxy.grok.com/v1/billing` | 每周 credits `wk`（xAI 还没报告百分比时显示 `wk no figure yet`）；只有 xAI 报告 monthly limit 时才显示每月花费 `mo` |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` ，带该 account 的 `project_id`；只有前一个 host 在厂商侧失败或没有返回 quota 时，才依次请求 `daily-cloudcode-pa.sandbox` 和 `cloudcode-pa` | 按 model 分组，`5h` 和 `wk` |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
@@ -384,6 +384,9 @@ model，所以只有每个 group 都满时 account 才显示 `OUT`；否则满�
   `devin`、`kimi`、`plugin`，或某个 plugin 的 provider（如 `kiro`）。
 - account token 过期时显示 `token rejected by vendor`，永远不计入 CPA 的封禁次数。
   management key 被拒绝时整个运行停止。
+- Codex plan 后面的 `until Nov 16` 是 subscription 结束的日期。它读自 CPA 的 account
+  列表（CPA 保存的 ID token 里的 `chatgpt_subscription_active_until` claim），不向厂商
+  查询，所以它和那个 token 一样旧：已经过去的日期显示为 `until Oct 03 (past)`。
 - CPA 的 account 索引、Codex 的 account id、Antigravity 的 project id 和 CPA 的
   plugin id 只用于构造请求，从不显示、记录日志或 cache。厂商回复按字段读取；从不显示
   body 和 header。
