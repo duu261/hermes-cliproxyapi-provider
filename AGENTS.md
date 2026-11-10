@@ -85,10 +85,9 @@ that the key is full-admin on CPA and that leaving it unset is recommended.
 Prior art (CPA Usage Keeper, AI-gateway, cpa-usage, oh-my-cpa) holds the same
 key; match their safety.
 - Read-only GET allowlist under /v8/management (v0 fallback on 404 only):
-  credentials, credentials/models, config/api-keys,
-  config/routing/force-model-prefix, routing/model-definitions/:channel,
-  plugins. Never api-call, usage queue, quota, download, config.yaml, auth
-  URLs or any write method.
+  credentials, credentials/models, routing/model-definitions/:channel.
+  Never config/api-keys (it returns client keys), api-call, usage queue,
+  quota, download, config.yaml, auth URLs or any write method.
 - Bounded: sample at most a few accounts per provider, never one call per
   account; cap total calls and concurrency per refresh; refresh-time only,
   cached with a TTL, never on the inference path.
