@@ -17,12 +17,13 @@ Fixes only. No new requests.
   shows `error: sign in again` as before.
 - `/cpa`: an account whose last-seen usage window is at 100% with no known
   reset time shows `limited`, not `active`.
-- `/cpa`: URLs, `host:port` pairs and file paths in account messages are
-  masked, and so are bare host names and IPv4 and IPv6 addresses. A host name
-  with no dot is masked only where an error gives it as an address
-  (`dial tcp myhost:8080`, `lookup myhost`). A message that CPA cut short
-  (it ends in `...`) loses the word at the cut, which could be half a host
-  name, an address or an email.
+- `/cpa`: URLs, `host:port` pairs, file paths, bare host names and IPv4 and
+  IPv6 addresses in account messages are masked, on a best effort: the
+  patterns cover the common forms, not every one. A host name with no dot is
+  masked only where an error gives it as an address (`dial tcp myhost:8080`,
+  `lookup myhost`). A message that CPA cut short (it ends in `...`) loses the
+  word at the cut, which could be half a host name, an address or an email.
+  Before, only emails and long token-like runs were masked.
 - `/cpa quota`: a run sends no new request after 60 seconds, and each
   request's timeout is cut to the time left. Accounts it did not reach show
   `not checked`, the second line says so, and that result is not kept in

@@ -325,12 +325,14 @@ codex-bo…@…  cooling until 17:20 (quota)
 - 最近一次的 quota（`5h` 和 `wk`）来自 CPA 在真实流量中为 Claude 和 Codex account
   记录的数据，其他 provider CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询 quota；
   `/cpa quota` 会。
-- account 名和消息里的邮箱会被遮盖，消息里的 URL、主机名、IP 地址和文件路径也一样。
-  不带点的主机名只有在错误把它写成地址时才会被遮盖（`dial tcp myhost:8080`、
-  `lookup myhost`）。从不显示 `email`、`account`、`project_id` 和 `path`
-  （`/cpa quota` 只用 Antigravity 的 `project_id` 来构造它的 request）；
+- account 名和消息里的邮箱会被遮盖。从不显示 `email`、`account`、`project_id` 和
+  `path`（`/cpa quota` 只用 Antigravity 的 `project_id` 来构造它的 request）；
   account 的 project id 在 CPA 把它重复写进 label 或文件名的地方、以及消息提到它的
   地方，都会被替换成 `…`。
+- 消息里的 URL、主机名、IP 地址和文件路径按 best effort（尽力而为，不作保证）遮盖：
+  这些 pattern 覆盖常见的写法，不是所有写法，所以地址的一部分仍可能显示出来。
+  不带点的主机名只有在错误把它写成地址时才会被遮盖（`dial tcp myhost:8080`、
+  `lookup myhost`）。在这些信息必须保密的对话里，不要依赖这种遮盖。
 - 在对话空闲时可用。agent 正在运行时发送，会像其他 plugin 命令一样交给 Hermes 的
   busy 处理（排队或转给 agent）。
 - IP 封禁：见 [避免被 CPA 封禁](#避免被-cpa-封禁)。

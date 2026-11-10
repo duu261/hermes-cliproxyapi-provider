@@ -41,12 +41,12 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   requests per account per run, first request alone, then 4 at a time;
   repeats within 60 seconds use memory. A run sends no new request after
   60 seconds.
-- Emails are masked, and so are URLs, host names, IP addresses and file paths
-  in messages. A host name with no dot is masked only where an error gives it
-  as an address (`dial tcp myhost:8080`, `lookup myhost`). `email`, `account`
-  and `path` are never read. The account's
-  project id is replaced by `…` where CPA repeats it in the label or file
-  name, and where a message names it. CPA's
+- Emails are masked. URLs, host names, IP addresses and file paths in
+  messages are masked on a best effort: the common forms, not every one, and
+  a host name with no dot only where an error gives it as an address
+  (`dial tcp myhost:8080`, `lookup myhost`). `email`, `account` and `path`
+  are never read. The account's project id is replaced by `…` where CPA
+  repeats it in the label or file name, and where a message names it. CPA's
   account index, the Codex account id, the Antigravity project id and the CPA
   plugin id are used only to build the quota requests, never shown or stored.
 - Idle chats only: sent during an agent turn it goes to Hermes' busy handling.
