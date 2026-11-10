@@ -243,6 +243,51 @@ class MaskTests(unittest.TestCase):
             self.assertNotIn("example", out, pad)
             self.assertTrue(out.startswith("Post"), (pad, out))
 
+    def test_message_cut_short_by_cpa_shows_no_fragment(self):
+        # CPA ends a message it cut with "...", after "<word> ... access token
+        # expired" when the cut removed that phrase. The word at the cut can be
+        # half a host, an address or an email, at any length of the message.
+        cases = (
+            ("dial tcp: lookup zqhost on 10.77.88.99:53: no such host", ("zqh", "10.7", "88.9")),
+            ("dial tcp zqhost:8080: connect: connection refused", ("zqh", "808")),
+            ("peer fd00::5: reset by peer", ("fd00",)),
+            ("refresh failed for carol@example.com: invalid_grant", ("car", "exa")),
+            ("open /home/bob/auths/codex-bob.json: denied", ("/h", "bob")),
+        )
+        for text, hidden in cases:
+            for end in range(1, len(text) + 1):
+                head = " ".join(text[:end].split())
+                for cut in (head + "...", head + " ... Access Token Expired..."):
+                    out = status.short_message(cut)
+                    for fragment in hidden:
+                        self.assertNotIn(fragment, out, cut)
+        # A cut message longer than the 256 characters that are masked: CPA's
+        # tail must be found before that cut, or the half word in front stays.
+        text = "dial tcp: lookup zqhost on 10.77.88.99:53: no such host"
+        for pad in range(190, 262, 6):
+            for end in range(1, len(text) + 1):
+                head = "id " + "p" * pad + " " + " ".join(text[:end].split())
+                for cut in (head + "...", head + " ... access token expired..."):
+                    out = status.short_message(cut)
+                    for fragment in ("zqh", "10.7", "88.9"):
+                        self.assertNotIn(fragment, out, (pad, end))
+        for text, want in (
+            ("dial tcp: lookup zqhost on...", "dial tcp: lookup …"),
+            ("upstream: dial tcp zqhost:...", "upstream: dial tcp …"),
+            ("refresh failed for carol@examp...", "refresh failed for …"),
+            ("read tcp 10.77.88....", "read tcp …"),
+            (
+                "dial tcp: lookup zqhost on 10.7 ... Access Token Expired...",
+                "dial tcp: lookup … on … Access Token Expired",
+            ),
+            ("please try again later...", "please try again …"),
+            ("retrying...", "…"),
+        ):
+            self.assertEqual(status.short_message(text), want)
+        # Not cut: nothing is dropped.
+        for text in ("unauthorized: access token expired", "wait... then retry", "a ... b"):
+            self.assertEqual(status.short_message(text), text)
+
     def test_plain_text_with_slashes_is_kept(self):
         for text in ("1h 3/1", "3 ok / 1 failed", "5h and/or wk", "HTTP 429 at 12:30"):
             self.assertEqual(status.mask_text(text), text)

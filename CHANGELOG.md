@@ -20,7 +20,9 @@ Fixes only. No new requests.
 - `/cpa`: URLs, `host:port` pairs and file paths in account messages are
   masked, and so are bare host names and IPv4 and IPv6 addresses. A host name
   with no dot is masked only where an error gives it as an address
-  (`dial tcp myhost:8080`, `lookup myhost`).
+  (`dial tcp myhost:8080`, `lookup myhost`). A message that CPA cut short
+  (it ends in `...`) loses the word at the cut, which could be half a host
+  name, an address or an email.
 - `/cpa quota`: a run sends no new request after 60 seconds, and each
   request's timeout is cut to the time left. Accounts it did not reach show
   `not checked`, the second line says so, and that result is not kept in

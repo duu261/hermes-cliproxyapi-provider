@@ -70,9 +70,12 @@ _NET_ADDR_RE = re.compile(
     r"\b((?:dial|read|write|proxyconnect)\s(?:tcp|udp|ip|unix)[46]?\s)(?=\S*(?::\d|[\[/]))(\S+)"
 )
 # Go's DNS error is "lookup <name>: <err>" or "lookup <name> on <server>:
-# <err>". CPA cuts long messages and so does ``_bounded``, so the text may
-# also end inside it ("... lookup myhost on").
+# <err>". A message cut short (by ``_bounded``, or by CPA once the word at its
+# cut is dropped) may also end inside it ("... lookup myhost on").
 _LOOKUP_RE = re.compile(r"\b(lookup\s)\S+?(?:(\son)(?:(\s)\S+?)?)?(?=:(?:\s|$)|$)")
+# CPA ends a message it cut with "..." (internal/logging/diagnostic.go), and
+# with "<word> ... access token expired..." when the cut removed that phrase.
+_CPA_PHRASE_RE = re.compile(r" \.\.\. (access token expired)\Z", re.IGNORECASE)
 MESSAGE_LIMIT = 60
 # The masks cost quadratic time on one long word, and CPA can store a whole
 # vendor error page as a message. Nothing past this many characters is shown.
@@ -152,14 +155,38 @@ def display_name(entry: dict[str, Any]) -> str:
     return mask_text(raw) or "?"
 
 
+def _cpa_cut(text: str) -> tuple[str, str | None]:
+    """``text`` without the tail of a message CPA cut short, and that tail's phrase.
+
+    The word in front of CPA's cut can be half a host, an address or an email,
+    too short for any mask to see, so it is dropped with the tail. The phrase
+    is ``None`` when ``text`` was not cut. ``text`` has single spaces only.
+    """
+    if not text.endswith("..."):
+        return text, None
+    head, phrase = text[:-3], ""
+    kept = _CPA_PHRASE_RE.search(head[-32:])
+    if kept:
+        phrase = kept.group(1)
+        head = head[: len(head) - len(kept.group(0))]
+    return head[: max(head.rfind(" "), 0)], phrase
+
+
 def short_message(text: Any) -> str:
     if not isinstance(text, str):
         return ""
-    text = _bounded(" ".join(text.split()))
+    # CPA's cut is found first: past ``_MASK_INPUT`` its tail would be lost.
+    text, phrase = _cpa_cut(" ".join(text.split()))
+    text = _bounded(text)
     text = _LOOKUP_RE.sub(_lookup, _NET_ADDR_RE.sub(_net_addr, text))
     text = mask_text(text)
     for pattern in (_HOST_RE, _IPV4_RE, _IPV6_RE):  # bare host names and addresses
         text = pattern.sub("…", text)
+    if phrase is not None:
+        if not text.endswith("…"):
+            text = f"{text} …".strip()
+        if phrase:
+            text = f"{text} {phrase}"
     return text if len(text) <= MESSAGE_LIMIT else text[: MESSAGE_LIMIT - 1] + "…"
 
 
