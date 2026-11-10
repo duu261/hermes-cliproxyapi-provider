@@ -57,9 +57,10 @@ _H = r"[0-9A-Fa-f]{1,4}"
 _IPV6_RE = re.compile(
     r"\[(?=[^\]\s]{0,45}::|(?:[^\]\s:]{0,15}:){3})"
     r"[0-9A-Fa-f:.]{2,45}(?:%[\w.-]{1,32})?\](?::\d{1,5})?"
-    rf"|(?<![\w:.])(?:{_H}(?::{_H}){{0,6}}::(?:{_H}(?::{_H}){{0,6}})?"
+    rf"|(?<![\w.])(?:{_H}(?::{_H}){{0,6}}::(?:{_H}(?::{_H}){{0,6}})?"
     rf"|::{_H}(?::{_H}){{0,6}}|(?:{_H}:){{7}}{_H})"
-    r"(?:%[\w.-]{1,32})?(?![\w:]|\.\d)"
+    # A colon may follow ("fd00::5: reset"), but not more of an address.
+    r"(?:%[\w.-]{1,32})?(?!\w|:[\w:]|\.\d)"
 )
 # Go's network errors name the address even when the host has no dot:
 # "dial tcp myhost:8080: ...", "read tcp a->b: ...", "lookup myhost: ...".
@@ -68,7 +69,10 @@ _IPV6_RE = re.compile(
 _NET_ADDR_RE = re.compile(
     r"\b((?:dial|read|write|proxyconnect)\s(?:tcp|udp|ip|unix)[46]?\s)(?=\S*(?::\d|[\[/]))(\S+)"
 )
-_LOOKUP_RE = re.compile(r"\b(lookup\s)\S+?(?=(?:\son\s\S+)?:(?:\s|$))")
+# Go's DNS error is "lookup <name>: <err>" or "lookup <name> on <server>:
+# <err>". CPA cuts long messages and so does ``_bounded``, so the text may
+# also end inside it ("... lookup myhost on").
+_LOOKUP_RE = re.compile(r"\b(lookup\s)\S+?(?:(\son)(?:(\s)\S+?)?)?(?=:(?:\s|$)|$)")
 MESSAGE_LIMIT = 60
 # The masks cost quadratic time on one long word, and CPA can store a whole
 # vendor error page as a message. Nothing past this many characters is shown.
@@ -102,6 +106,14 @@ def _net_addr(match: re.Match[str]) -> str:
     token = match.group(2)
     end = ":" if token.endswith(":") else ""
     return match.group(1) + "->".join("…" for _ in token.rstrip(":").split("->")) + end
+
+
+def _lookup(match: re.Match[str]) -> str:
+    """``lookup <name> on <server>`` with the name and the server replaced."""
+    out = match.group(1) + "…"
+    if match.group(2):
+        out += match.group(2) + (match.group(3) + "…" if match.group(3) else "")
+    return out
 
 
 def _without_project(text: Any, project: Any) -> Any:
@@ -144,7 +156,7 @@ def short_message(text: Any) -> str:
     if not isinstance(text, str):
         return ""
     text = _bounded(" ".join(text.split()))
-    text = _LOOKUP_RE.sub(r"\1…", _NET_ADDR_RE.sub(_net_addr, text))
+    text = _LOOKUP_RE.sub(_lookup, _NET_ADDR_RE.sub(_net_addr, text))
     text = mask_text(text)
     for pattern in (_HOST_RE, _IPV4_RE, _IPV6_RE):  # bare host names and addresses
         text = pattern.sub("…", text)

@@ -42,7 +42,9 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   repeats within 60 seconds use memory. A run sends no new request after
   60 seconds.
 - Emails are masked, and so are URLs, host names, IP addresses and file paths
-  in messages; `email`, `account` and `path` are never read. The account's
+  in messages. A host name with no dot is masked only where an error gives it
+  as an address (`dial tcp myhost:8080`, `lookup myhost`). `email`, `account`
+  and `path` are never read. The account's
   project id is replaced by `…` where CPA repeats it in the label or file
   name, and where a message names it. CPA's
   account index, the Codex account id, the Antigravity project id and the CPA

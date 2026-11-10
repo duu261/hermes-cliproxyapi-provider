@@ -190,11 +190,21 @@ class MaskTests(unittest.TestCase):
             ("read tcp [fd00::5%eth0]:5120->[fd00::9]:443: reset", "read tcp …->…: reset"),
             ("no route to fd00::5 today", "no route to … today"),
             ("route 2001:db8:0:1:2:3:4:5 down", "route … down"),
+            # Go's "<addr>: <error>" shape, and an address after a colon.
+            ("peer fd00::5: reset", "peer …: reset"),
+            ("address 2001:db8::1: too many colons", "address …: too many colons"),
+            ("addr 2001:db8:0:1:2:3:4:5: down", "addr …: down"),
+            ("fe80::1%eth0: down", "…: down"),
+            ("ip:2001:db8::1 blocked", "ip:… blocked"),
             ("dial tcp myhost:8080: refused", "dial tcp …: refused"),
             ("dial tcp localhost:8317: refused", "dial tcp …: refused"),
             ("localhost:8317 refused", "… refused"),
             ("lookup myhost: no such host", "lookup …: no such host"),
             ("lookup myhost on 10.1.2.3:53: no such host", "lookup … on …: no such host"),
+            # A message cut short (by CPA, or here) can end inside the error.
+            ("dial tcp: lookup myhost on", "dial tcp: lookup … on"),
+            ("dial tcp: lookup myhost on 10.1.2", "dial tcp: lookup … on …"),
+            ("dial tcp: lookup myhost", "dial tcp: lookup …"),
             (r"open C:\Users\x\auth\file.json: denied", "open …: denied"),
         ):
             self.assertEqual(status.short_message(text), want)
@@ -204,7 +214,11 @@ class MaskTests(unittest.TestCase):
             "window [17:20:05] closed",
             "status code:429 from vendor",
             "std::bad_alloc in worker",
+            "de::Error at line 3",
+            "face::book is not an address",
             "failed to read tcp stream early",
+            "dns lookup took 3s",
+            "lookup myhost on fire now",
             "5h 100% until 17:20",
         ):
             self.assertEqual(status.short_message(text), text)
@@ -218,6 +232,16 @@ class MaskTests(unittest.TestCase):
         self.assertEqual(status.mask_text(text), "…")
         self.assertEqual(status.mask_text("y" * 300), "…")
         self.assertEqual(status.display_name({"label": "team " + "b" * 300}), "team")
+
+    def test_lookup_host_stays_masked_wherever_the_cut_lands(self):
+        # The cut can land in the name, in "on" or in the server; none may show.
+        tail = '": dial tcp: lookup myhost on 10.1.2.3:53: no such host'
+        for pad in range(180, 232):
+            out = status.short_message('Post "https://example.com/' + "p" * pad + tail)
+            self.assertNotIn("myhost", out, pad)
+            self.assertNotIn("10.1", out, pad)
+            self.assertNotIn("example", out, pad)
+            self.assertTrue(out.startswith("Post"), (pad, out))
 
     def test_plain_text_with_slashes_is_kept(self):
         for text in ("1h 3/1", "3 ok / 1 failed", "5h and/or wk", "HTTP 429 at 12:30"):
