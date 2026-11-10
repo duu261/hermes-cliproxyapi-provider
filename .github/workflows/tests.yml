@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         # Oldest supported (plugin.yaml requires_hermes) and the latest release.
-        hermes: ["v0.21.7", "v0.22.5"]
+        hermes: ["v0.21.7", "v0.23.1"]
     name: hermes ${{ matrix.hermes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,8 +45,9 @@ jobs:
         with:
           version: "0.12.13"
       # Install from Hermes' own uv.lock, as Hermes CI does. Plain pip ignores
-      # [tool.uv] override-dependencies, which v0.22.5 needs (Pillow 13 vs
-      # browser-harness pinning pillow 12.3.0). Hermes needs Python >= 3.14.
+      # [tool.uv] override-dependencies, which Hermes releases rely on (v0.22.5:
+      # Pillow 13 vs browser-harness pinning pillow 12.3.0). Hermes needs
+      # Python >= 3.14.
       - working-directory: hermes-agent
         run: uv sync --locked --python 3.14
       - name: Integration tests

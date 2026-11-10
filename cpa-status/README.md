@@ -39,8 +39,10 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   no downloads, no resets; the full request list is in the
   [README](../README.md#cpa-quota-live-usage). At most 20 accounts and 3
   requests per account per run, first request alone, then 4 at a time;
-  repeats within 60 seconds use memory.
-- Emails are masked; `email`, `account` and `path` are never read. CPA's
+  repeats within 60 seconds use memory. A run stops after 60 seconds.
+- Emails are masked, and so are URLs, host names and file paths in messages;
+  `email`, `account` and `path` are never read. A project id that CPA repeats
+  in an account's label or file name is replaced by `…`. CPA's
   account index, the Codex account id, the Antigravity project id and the CPA
   plugin id are used only to build the quota requests, never shown or stored.
 - Idle chats only: sent during an agent turn it goes to Hermes' busy handling.

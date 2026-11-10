@@ -7,7 +7,8 @@ Rules (see AGENTS.md, "/cpa status"):
   provider plugin's persisted latch of every instance on the same root.
 - Never read ``email``, ``account``, ``id_token``, ``project_id``, ``path``,
   ``id`` or ``auth_index`` for display. ``/cpa quota`` keeps a few call fields
-  in memory only (see ``files_of``). Names and messages are masked.
+  in memory only (see ``files_of``). Names and messages are masked, and the
+  account's project id is cut out of them on ingest.
 - Quota shown is CPA's last-seen observation from the same GET (claude, codex).
 """
 
@@ -35,14 +36,48 @@ logger = logging.getLogger(__name__)
 # ── Masking ─────────────────────────────────────────────────────────────────
 
 _EMAIL_RE = re.compile(r"([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
+_HOST_PORT_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+:\d{2,5}\b")
+# An absolute path: "/dir/file" or "/file.ext". A slash inside a word ("i/o",
+# "3/1") or between spaces ("ok / failed") is not one.
+_PATH_RE = re.compile(
+    r"(?<![\w.])/(?:[\w.@%+-]+/)+[\w.@%+-]*|(?<![\w.])/[\w.@%+-]+\.[A-Za-z0-9]{1,8}\b"
+)
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_\-]{24,}")
+# Messages only: an account name may hold dots ("first.last"), so names keep them.
+# The last label is lower case, so Go's "Client.Timeout exceeded" stays readable.
+_HOST_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[a-z]{2,}\b")
+_IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 MESSAGE_LIMIT = 60
+_PROJECT_MIN = 6  # shortest Google Cloud project id
 
 
 def mask_text(text: str) -> str:
-    """Hide email addresses (keep two characters) and long token-like runs."""
+    """Hide emails (keep two characters), URLs, hosts, paths and token-like runs."""
     text = _EMAIL_RE.sub(lambda m: m.group(1)[:2] + "…@…", text)
+    for pattern in (_URL_RE, _HOST_PORT_RE, _PATH_RE):
+        text = pattern.sub("…", text)
     return _TOKEN_RE.sub("…", text)
+
+
+def _without_project(text: Any, project: Any) -> Any:
+    """``text`` with the account's project id replaced by ``…``.
+
+    CPA repeats the id in Vertex labels (``<project_id> (<email>)``), as the
+    label of a file that has neither label nor email, and in
+    ``vertex-<project_id>.json`` file names (there with ``/``, ``\\`` and
+    ``:`` as ``_`` and spaces as ``-``). No character of it is kept: the rule
+    for ``project_id`` is "never shown", not "masked".
+    """
+    if not isinstance(text, str) or not isinstance(project, str):
+        return text
+    project = project.strip()
+    if len(project) < _PROJECT_MIN:
+        return text
+    forms = {project, re.sub(r"[/\\:]", "_", project).replace(" ", "-")}
+    for form in sorted(forms, key=len, reverse=True):
+        text = text.replace(form, "…")
+    return text
 
 
 def display_name(entry: dict[str, Any]) -> str:
@@ -65,6 +100,8 @@ def short_message(text: Any) -> str:
     if not isinstance(text, str):
         return ""
     text = mask_text(" ".join(text.split()))
+    for pattern in (_HOST_RE, _IPV4_RE):  # bare host names and addresses
+        text = pattern.sub("…", text)
     return text if len(text) <= MESSAGE_LIMIT else text[: MESSAGE_LIMIT - 1] + "…"
 
 
@@ -92,6 +129,7 @@ class AccountState:
     until: datetime | None = None
     reason: str = ""
     models_cooling: int = 0
+    sign_in: bool = False  # usable now, but only a new sign-in renews its token
 
     @property
     def bucket(self) -> str:
@@ -111,10 +149,27 @@ def classify(entry: dict[str, Any], now: datetime) -> AccountState:
     status = raw_status.strip().lower() if isinstance(raw_status, str) else ""
     if entry.get("disabled") is True or status == "disabled":
         return AccountState("disabled")
-    if entry.get("requires_sign_in") is True:
-        # CPA v8.0.5x: the refresh token is gone; waiting will not fix it.
-        return AccountState("error", reason="sign in again")
+    sign_in = entry.get("requires_sign_in") is True
+    if sign_in:
+        # The refresh token is gone; waiting will not fix it. CPA still serves
+        # on the access token it holds until that expires, and its v8 listing
+        # says which case this is (sdk/cliproxy/auth/types.go RenewalStateAt).
+        renewal = entry.get("renewal_state")
+        if renewal != "sign_in_required":
+            expired = renewal == "expired_sign_in_required"
+            return AccountState("error", reason="sign in again" + (" (expired)" if expired else ""))
+        expires = parse_time(entry.get("access_token_expires_at"))
+        if expires is not None and expires <= now:
+            return AccountState("error", reason="sign in again (expired)")
+    state = _classify_usable(entry, status, now)
+    if sign_in:
+        if state.kind == "error":
+            return AccountState("error", reason="sign in again")
+        state.sign_in = True
+    return state
 
+
+def _classify_usable(entry: dict[str, Any], status: str, now: datetime) -> AccountState:
     credential_until, reason, models = None, "", 0
     for item in _cooldowns(entry):
         retry = parse_time(item.get("retry_at"))
@@ -140,9 +195,8 @@ def classify(entry: dict[str, Any], now: datetime) -> AccountState:
         return AccountState(status)
     if status == "active":
         # CPA has not cooled it, but its last-seen usage window is full.
-        full_until = quota_full(entry, now)
-        if full_until is not None:
-            return AccountState("limited", until=full_until, models_cooling=models)
+        if quota_is_full(entry, now):
+            return AccountState("limited", until=quota_full(entry, now), models_cooling=models)
         return AccountState("ready", models_cooling=models)
     return AccountState("unknown")
 
@@ -161,6 +215,7 @@ class ProviderSummary:
     error: int = 0
     disabled: int = 0
     other: int = 0
+    sign_in: int = 0  # counted in their own bucket too
     next_retry: datetime | None = None
     next_free: datetime | None = None
     success: int = 0
@@ -169,6 +224,7 @@ class ProviderSummary:
     def add(self, state: AccountState, recent: tuple[int, int]) -> None:
         self.total += 1
         setattr(self, state.bucket, getattr(self, state.bucket) + 1)
+        self.sign_in += state.sign_in
         if state.kind == "limited":
             if state.until and (self.next_free is None or state.until < self.next_free):
                 self.next_free = state.until
@@ -196,6 +252,8 @@ _KEPT_FIELDS = frozenset(
         "recent_requests",
         "quota",
         "requires_sign_in",
+        "renewal_state",
+        "access_token_expires_at",
     }
 )
 # Providers ``/cpa quota`` reads through CPA's api-call (see quota.py). Others
@@ -212,7 +270,8 @@ def files_of(listing: Any) -> list[dict[str, Any]]:
     (Antigravity ``project_id``), ``_plugin`` (CPA ``quota_plugin_id``, for
     non-built-in providers) and ``_kimi_ai`` (from the raw provider fields,
     before ``kimi-ai`` is normalized to ``kimi``). They stay in memory only and
-    are never rendered; everything else is dropped.
+    are never rendered; everything else is dropped. ``project_id`` is also
+    used here to cut the id out of ``label`` and ``name``, where CPA repeats it.
     """
     files = listing.get("files") if isinstance(listing, dict) else None
     if not isinstance(files, list):
@@ -222,6 +281,9 @@ def files_of(listing: Any) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         entry = {k: v for k, v in raw.items() if k in _KEPT_FIELDS}
+        for shown in ("label", "name"):
+            if shown in entry:
+                entry[shown] = _without_project(entry[shown], raw.get("project_id"))
         provider = provider_of(entry)
         plugin = _shaped(raw.get("quota_plugin_id"), _PLUGIN_RE)
         builtin = provider in QUOTA_BUILTINS
@@ -409,6 +471,18 @@ def quota_full(entry: dict[str, Any], now: datetime) -> datetime | None:
             if until is None or window.reset > until:
                 until = window.reset
     return until
+
+
+def quota_is_full(entry: dict[str, Any], now: datetime) -> bool:
+    """A last-seen window is used up and has not reset since.
+
+    A full window with no known reset time counts: nothing says it freed. One
+    whose reset time has passed does not.
+    """
+    return any(
+        window.used >= 100 and (window.reset is None or window.reset > now)
+        for window in quota_windows(entry)
+    )
 
 
 def age_text(seconds: float) -> str:
@@ -779,12 +853,26 @@ def _provider_line(name: str, summary: ProviderSummary, now: datetime, detail: b
         if count:
             parts.append(f"{count} {label}")
     line = f"  {name} {summary.total}: " + (" · ".join(parts) or "none")
+    if summary.sign_in:
+        verb = "needs" if summary.sign_in == 1 else "need"
+        line += f"; {summary.sign_in} {verb} sign-in"
     if detail and (summary.success or summary.failed):
         line += f" · 1h {summary.success} ok / {summary.failed} failed"
     return line
 
 
 def _state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> str:
+    text = _plain_state_text(entry, state, now)
+    if not state.sign_in:
+        return text
+    expires = parse_time(entry.get("access_token_expires_at"))
+    # "serving" only for an account CPA would pick now; a cooling one is not.
+    verb = "serving" if state.kind == "ready" else "token valid"
+    note = f"{verb} until {clock(expires, now)}" if expires else f"{verb}, no expiry known"
+    return f"{text} · sign in again ({note})"
+
+
+def _plain_state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> str:
     if state.kind == "cooling":
         text = f"cooling until {clock(state.until, now)}" if state.until else "cooling"
         reason = short_message(state.reason)

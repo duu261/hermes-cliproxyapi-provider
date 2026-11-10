@@ -77,6 +77,75 @@ class MaskTests(unittest.TestCase):
     def test_empty_name(self):
         self.assertEqual(status.display_name({}), "?")
 
+    def test_project_id_is_cut_from_label_and_name(self):
+        # CPA labels Vertex accounts "<project_id> (<email>)" and names the
+        # file "vertex-<project_id>.json"; a label can also be the bare id.
+        project = "acme-prod-482113"
+        listing = {
+            "files": [
+                {
+                    "provider": "vertex",
+                    "name": f"vertex-{project}.json",
+                    "label": f"{project} (alice@example.com)",
+                    "project_id": project,
+                },
+                {"provider": "vertex", "name": f"vertex-{project}.json", "project_id": project},
+                {
+                    "provider": "gemini",
+                    "name": "gemini-x.json",
+                    "label": project,
+                    "project_id": project,
+                },
+                {
+                    "provider": "vertex",
+                    "name": "vertex-example.com_my-proj.json",
+                    "project_id": "example.com:my-proj",
+                },
+            ]
+        }
+        names = [status.display_name(entry) for entry in status.files_of(listing)]
+        self.assertEqual(names, ["… (al…@…)", "vertex-…", "…", "vertex-…"])
+        for entry in status.files_of(listing):
+            self.assertNotIn("project_id", entry)
+            self.assertNotIn(project, str(entry))
+            self.assertNotIn("acme", str(entry))  # no part of the id survives
+
+    def test_short_project_id_does_not_eat_names(self):
+        listing = {"files": [{"provider": "codex", "label": "team-a1", "project_id": "a1"}]}
+        self.assertEqual(status.display_name(status.files_of(listing)[0]), "team-a1")
+
+    def test_urls_hosts_and_paths_are_masked(self):
+        out = status.short_message(
+            'refresh failed: Post "https://auth.internal.example:8443/oauth/token": '
+            "dial tcp 10.1.2.3:443: i/o timeout"
+        )
+        for leak in ("internal", "8443", "oauth", "10.1.2.3"):
+            self.assertNotIn(leak, out)
+        self.assertIn("refresh failed", out)
+        out = status.mask_text("open /CLIProxyAPI/config.yaml: read-only file system")
+        self.assertEqual(out, "open …: read-only file system")
+        out = status.mask_text("dial tcp relay.example.net:9443: connection refused")
+        self.assertEqual(out, "dial tcp …: connection refused")
+
+    def test_bare_hosts_and_addresses_are_masked_in_messages_only(self):
+        out = status.short_message("lookup auth.internal.example on 10.1.2.3: no such host")
+        self.assertEqual(out, "lookup … on …: no such host")
+        # Model ids, versions and Go's own error words are not host names.
+        for text in (
+            "gpt-5.2-codex is cooling",
+            "needs CPA v8.0.64",
+            "claude-3.5-sonnet",
+            "Client.Timeout exceeded while awaiting headers",
+        ):
+            self.assertEqual(status.short_message(text), text)
+        entry = {"provider": "kiro", "name": "kiro-first.last.json"}
+        self.assertEqual(status.display_name(entry), "kiro-first.last")
+
+    def test_plain_text_with_slashes_is_kept(self):
+        for text in ("1h 3/1", "3 ok / 1 failed", "5h and/or wk", "HTTP 429 at 12:30"):
+            self.assertEqual(status.mask_text(text), text)
+            self.assertEqual(status.short_message(text), text)
+
 
 class ClassifyTests(unittest.TestCase):
     def state(self, **entry):
@@ -133,6 +202,60 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(self.state(status="active", requires_sign_in=False).kind, "ready")
         kept = status.files_of({"files": [dict(entry, provider="codex")]})[0]
         self.assertIs(kept["requires_sign_in"], True)
+
+    def test_sign_in_required_but_still_serving(self):
+        # CPA keeps serving on the access token it has (renewal_state
+        # "sign_in_required") until that token expires.
+        entry = {
+            "provider": "codex",
+            "status": "active",
+            "requires_sign_in": True,
+            "renewal_state": "sign_in_required",
+            "access_token_expires_at": iso(90),
+        }
+        st = status.classify(entry, NOW)
+        self.assertEqual((st.kind, st.sign_in), ("ready", True))
+        until = status.clock(NOW + timedelta(minutes=90), NOW)
+        self.assertEqual(
+            status._state_text(entry, st, NOW), f"active · sign in again (serving until {until})"
+        )
+        no_expiry = dict(entry)
+        del no_expiry["access_token_expires_at"]
+        st = status.classify(no_expiry, NOW)
+        self.assertEqual(
+            status._state_text(no_expiry, st, NOW),
+            "active · sign in again (serving, no expiry known)",
+        )
+        cooling = dict(entry, cooldowns=[{"scope": "credential", "retry_at": iso(30)}])
+        st = status.classify(cooling, NOW)
+        self.assertEqual((st.kind, st.sign_in), ("cooling", True))
+        self.assertIn("sign in again (token valid until ", status._state_text(cooling, st, NOW))
+        kept = status.files_of({"files": [entry]})[0]
+        self.assertEqual(kept["renewal_state"], "sign_in_required")
+        self.assertEqual(kept["access_token_expires_at"], iso(90))
+
+    def test_sign_in_required_and_expired_is_error(self):
+        expired = self.state(
+            status="active", requires_sign_in=True, renewal_state="expired_sign_in_required"
+        )
+        self.assertEqual((expired.kind, expired.reason), ("error", "sign in again (expired)"))
+        late = self.state(
+            status="active",
+            requires_sign_in=True,
+            renewal_state="sign_in_required",
+            access_token_expires_at=iso(-5),
+        )
+        self.assertEqual((late.kind, late.reason), ("error", "sign in again (expired)"))
+
+    def test_sign_in_required_and_unavailable_is_error(self):
+        st = self.state(
+            status="error",
+            unavailable=True,
+            requires_sign_in=True,
+            renewal_state="sign_in_required",
+            access_token_expires_at=iso(90),
+        )
+        self.assertEqual((st.kind, st.reason, st.sign_in), ("error", "sign in again", False))
 
     def test_never_ready_unless_active(self):
         for value in ("pending", "refreshing", "unknown", "new-state", ""):
@@ -323,6 +446,34 @@ class QuotaTests(unittest.TestCase):
         }
         self.assertFalse(status.quota_full(entry, NOW))
         self.assertFalse(status.quota_full({"provider": "xai"}, NOW))
+
+    def test_full_window_without_reset_is_limited(self):
+        entry = {
+            "provider": "claude",
+            "status": "active",
+            "quota": {"signals": {"Anthropic-Ratelimit-Unified-5h-Utilization": "1.0"}},
+        }
+        st = status.classify(entry, NOW)
+        self.assertEqual((st.kind, st.until), ("limited", None))
+        self.assertEqual(status._state_text(entry, st, NOW), "limited")
+        self.assertIsNone(status.quota_full(entry, NOW))
+
+    def test_window_past_its_reset_is_not_full(self):
+        entry = {
+            "provider": "codex",
+            "status": "active",
+            "quota": {
+                "observed_at": iso(-200),
+                "signals": {
+                    "X-Codex-Primary-Used-Percent": "100",
+                    "X-Codex-Primary-Window-Minutes": "300",
+                    "X-Codex-Primary-Reset-At": str(int((NOW - timedelta(hours=1)).timestamp())),
+                    "X-Codex-Secondary-Used-Percent": "40",
+                    "X-Codex-Secondary-Window-Minutes": "10080",
+                },
+            },
+        }
+        self.assertEqual(status.classify(entry, NOW).kind, "ready")
 
     def test_claude_utilization(self):
         entry = {

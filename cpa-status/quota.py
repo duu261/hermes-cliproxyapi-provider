@@ -45,7 +45,8 @@ except ImportError:  # pragma: no cover - direct import in tests
 # ── Requests (closed table, copied from the Management Center) ──────────────
 # router-for-me/Cli-Proxy-API-Management-Center@64b4f5aed1
 # src/utils/quota/constants.ts, src/features/quota/providers/*/data.ts and
-# devin/requests.ts. CPA v8.0.46 fills TOKEN in header values and in data.
+# devin/requests.ts (the xAI client version is from @38990aec51). CPA v8.0.46
+# fills TOKEN in header values and in data.
 
 TOKEN = "$" + "TOKEN" + "$"
 BEARER = "Bearer " + TOKEN
@@ -71,7 +72,7 @@ DEVIN_URL = "https://server.codeium.com/exa.seat_management_pb.SeatManagementSer
 KIMI_COM_URL = "https://api.kimi.com/coding/v1/usages"
 KIMI_AI_URL = "https://api.kimi.ai/coding/v1/usages"
 
-_XAI_VERSION = "1.0.46"
+_XAI_VERSION = "1.0.70"
 _XAI_HEADER = {
     "Authorization": BEARER,
     "x-xai-token-auth": "xai-grok-cli",
@@ -152,11 +153,14 @@ V0_API_CALL = "/v0/management/api-call"
 MAX_ACCOUNTS = 20
 MAX_IN_FLIGHT = 4  # management requests, not accounts
 CALL_TIMEOUT = 15.0
+# One run holds the CPA's management guard, so it has a time limit: requests
+# that would start after it are not sent, and those in flight end by it.
+RUN_SECONDS = 60.0
 CACHE_SECONDS = 60.0
 MAX_OUTER_BYTES = 1024 * 1024
 MAX_INNER_BYTES = 256 * 1024
 
-_PLAN_RE = re.compile(r"^[a-z0-9_]{1,20}$")
+_PLAN_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _SELECTOR_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 
 
@@ -380,8 +384,11 @@ def parse_codex(payload: Any, now: datetime) -> Usage:
     if not isinstance(payload, dict):
         return usage
     plan = payload.get("plan_type")
-    if isinstance(plan, str) and _PLAN_RE.match(plan.strip().lower()):
-        usage.plan = plan.strip().lower()
+    if isinstance(plan, str):
+        # Codex also sends hyphenated plans ("pro-lite"); one spelling is shown.
+        value = plan.strip().lower().replace("-", "_")
+        if _PLAN_RE.match(value):
+            usage.plan = value
     usage.extra = _codex_credits(payload)
     limit = payload.get("rate_limit")
     if limit is None:
@@ -725,9 +732,11 @@ def _request_json(url: str, key: str, body: dict[str, Any] | None, timeout: floa
         raise cpa.GatewayError(200, "bad_response") from None
 
 
-def api_call(root: str, key: str, path: str, body: dict[str, Any]) -> Inner:
+def api_call(
+    root: str, key: str, path: str, body: dict[str, Any], timeout: float = CALL_TIMEOUT
+) -> Inner:
     """One CPA api-call. Raises GatewayError for CPA's own (outer) failures."""
-    reply = _request_json(root + path, key, body, CALL_TIMEOUT)
+    reply = _request_json(root + path, key, body, timeout)
     if not isinstance(reply, dict):
         raise cpa.GatewayError(200, "bad_response")
     code = reply.get("status_code")
@@ -737,13 +746,15 @@ def api_call(root: str, key: str, path: str, body: dict[str, Any]) -> Inner:
     return Inner(code, text if isinstance(text, str) else "")
 
 
-def plugin_quota(root: str, key: str, plugin: str, target: str) -> Any:
+def plugin_quota(
+    root: str, key: str, plugin: str, target: str, timeout: float = CALL_TIMEOUT
+) -> Any:
     """CPA's plugin quota GET: the reply is the plugin's own quota JSON."""
     url = (
         f"{root}/v8/management/plugins/{quote(plugin, safe='')}/quota"
         f"?auth_index={quote(target, safe='')}"
     )
-    return _request_json(url, key, None, CALL_TIMEOUT)
+    return _request_json(url, key, None, timeout)
 
 
 # ── Run ─────────────────────────────────────────────────────────────────────
@@ -807,6 +818,7 @@ class QuotaRun:
     detail: str = ""
     at: float = 0.0
     when: datetime | None = None
+    timed_out: bool = False  # stopped at RUN_SECONDS; never cached
 
 
 _CACHE: dict[tuple[str, str, str], QuotaRun] = {}
@@ -873,8 +885,12 @@ def _selected(entry: dict[str, Any], selector: str) -> bool:
 class _Runner:
     """Sends one run's requests; every request passes ``_gate`` first."""
 
-    def __init__(self, home: Path, root: str, key: str, rejected: Callable[[], bool]):
+    def __init__(
+        self, home: Path, root: str, key: str, rejected: Callable[[], bool], deadline: float
+    ):
         self.home, self.root, self.key, self.rejected = home, root, key, rejected
+        self.deadline = deadline  # time.monotonic() value
+        self.timed_out = False
         self.path = V8_API_CALL
         self.abort = threading.Event()
         self.fatal: list[str] = []
@@ -890,8 +906,16 @@ class _Runner:
     def _gate(self) -> None:
         if self.abort.is_set():
             raise _StopError
+        if time.monotonic() >= self.deadline:  # not fatal: what was read is still shown
+            self.timed_out = True
+            self.abort.set()
+            raise _StopError
         if self.rejected():  # e.g. another process latched it meanwhile
             self._stop("rejected")
+
+    def _timeout(self) -> float:
+        """This request's timeout: it must end by the run's deadline."""
+        return max(0.05, min(CALL_TIMEOUT, self.deadline - time.monotonic()))
 
     def _outer(self, exc: cpa.GatewayError) -> None:
         if exc.status == 401:
@@ -907,13 +931,13 @@ class _Runner:
         path = self.path  # this request's own path: workers share self.path
         try:
             try:
-                inner = api_call(self.root, self.key, path, body)
+                inner = api_call(self.root, self.key, path, body, timeout=self._timeout())
             except cpa.GatewayError as exc:
                 if exc.status != 404 or path == V0_API_CALL:
                     raise
                 path = self.path = V0_API_CALL  # only after a v8 404, never after a 401
                 self._gate()
-                inner = api_call(self.root, self.key, path, body)
+                inner = api_call(self.root, self.key, path, body, timeout=self._timeout())
         except cpa.GatewayError as exc:
             self._outer(exc)
             if exc.status == 404:
@@ -925,7 +949,7 @@ class _Runner:
     def plugin(self, plugin: str, target: str) -> Any:
         self._gate()
         try:
-            reply = plugin_quota(self.root, self.key, plugin, target)
+            reply = plugin_quota(self.root, self.key, plugin, target, timeout=self._timeout())
         except cpa.GatewayError as exc:
             self._outer(exc)
             if exc.status == 404:  # auth or plugin quota provider not found
@@ -1008,7 +1032,7 @@ def run(
             return QuotaRun("busy"), False
         result = _run_locked(home, specs, root, key, selector, now)
     result.at, result.when = time.monotonic(), now
-    if result.status == "ok":
+    if result.status == "ok" and not result.timed_out:
         with _CACHE_LOCK:
             _CACHE[job] = result
     return result, False
@@ -1036,11 +1060,13 @@ def _run_locked(
         if _selected(entry, selector) and status.classify(entry, now).kind != "disabled"
     ]
     checked, skipped = eligible[:MAX_ACCOUNTS], max(0, len(eligible) - MAX_ACCOUNTS)
-    runner = _Runner(home, root, key, rejected)
+    runner = _Runner(home, root, key, rejected, time.monotonic() + RUN_SECONDS)
     queue = list(checked)
     results: list[AccountResult] = []
     # The probe: one account and one request at a time until a reply proves the
     # key. Accounts that send nothing do not count. A bad key costs CPA one try.
+    # A timeout proves nothing, so the run's deadline is what ends a probe that
+    # never gets an answer.
     while queue and not runner.proven and not runner.abort.is_set():
         results.append(runner.account(queue.pop(0), now))
     if queue and not runner.abort.is_set():
@@ -1052,7 +1078,7 @@ def _run_locked(
         if runner.fatal[0] == "no_route":
             return QuotaRun("unavailable", detail="this CPA has no api-call route")
         return QuotaRun(runner.fatal[0])
-    return QuotaRun("ok", accounts=results, skipped=skipped)
+    return QuotaRun("ok", accounts=results, skipped=skipped, timed_out=runner.timed_out)
 
 
 # ── View ────────────────────────────────────────────────────────────────────
@@ -1152,12 +1178,14 @@ def render(pool: str, result: QuotaRun, cached: bool, selector: str, now: dateti
     when = result.when or now
     stamp = f"cached {int(time.monotonic() - result.at)}s" if cached else "live"
     lines = [f"{pool} quota · {stamp} {when.astimezone().strftime('%H:%M')}"]
+    if result.timed_out:  # second line, so the size cap can never hide it
+        lines.append(f"stopped after {RUN_SECONDS:g} s (slow replies); the rest is not checked")
     seen = {a.provider for a in result.accounts}
     order = [p for p in BUILTINS if p in seen] + sorted(seen - set(BUILTINS))
     for provider in order:
         items = [a for a in result.accounts if a.provider == provider]
         lines.extend(_provider_block(provider, items, now))
-    if len(lines) == 1:
+    if len(lines) == 1 + result.timed_out:
         lines.append(f"no {selector + ' ' if selector else ''}accounts with live quota")
     if result.skipped:
         lines.append(f"+{result.skipped} more not checked (at most {MAX_ACCOUNTS} per run)")

@@ -325,8 +325,10 @@ codex-bo…@…  cooling until 17:20 (quota)
 - 最近一次的 quota（`5h` 和 `wk`）来自 CPA 在真实流量中为 Claude 和 Codex account
   记录的数据，其他 provider CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询 quota；
   `/cpa quota` 会。
-- account 名和消息里的邮箱会被遮盖；从不显示 `email`、`account`、`project_id` 和
-  `path`（`/cpa quota` 只用 Antigravity 的 `project_id` 来构造它的 request）。
+- account 名和消息里的邮箱会被遮盖，消息里的 URL、主机名、IP 地址和文件路径也一样。
+  从不显示 `email`、`account`、`project_id` 和 `path`（`/cpa quota` 只用
+  Antigravity 的 `project_id` 来构造它的 request）；CPA 在 account 的 label
+  或文件名里重复的 project id 会被替换成 `…`。
 - 在对话空闲时可用。agent 正在运行时发送，会像其他 plugin 命令一样交给 Hermes 的
   busy 处理（排队或转给 agent）。
 - IP 封禁：见 [避免被 CPA 封禁](#避免被-cpa-封禁)。
@@ -370,6 +372,7 @@ model，所以只有每个 group 都满时 account 才显示 `OUT`；否则满�
 
 - 只在你输入时运行。每次最多 20 个 account，每个 account 最多 3 个请求。第一个请求
   单独发送，之后最多 4 个并发；60 秒内重复输入直接用内存结果。跳过已禁用的 account。
+  一次运行在 60 秒后停止；没轮到的 account 显示 `not checked`。
 - `/cpa quota <pool> <provider>` 接受 `claude`、`codex`、`xai`、`antigravity`、
   `devin`、`kimi`、`plugin`，或某个 plugin 的 provider（如 `kiro`）。
 - account token 过期时显示 `token rejected by vendor`，永远不计入 CPA 的封禁次数。

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.7.4
+
+Fixes only. No new requests.
+
+- `/cpa`: a Google Cloud project id that CPA repeats in an account's label
+  (`<project_id> (<email>)` on Vertex accounts) or file name
+  (`vertex-<project_id>.json`) is replaced by `…`. Before, it was shown in
+  full.
+- `/cpa`: an account that needs a new sign-in but still serves on its current
+  access token shows `active · sign in again (serving until 17:20)` and
+  counts as active, with `1 needs sign-in` on the pool line. Once that token
+  has expired it shows `error: sign in again (expired)`. Before, both showed
+  as an error. Needs CPA's `renewal_state` field; without it the account
+  shows `error: sign in again` as before.
+- `/cpa`: an account whose last-seen usage window is at 100% with no known
+  reset time shows `limited`, not `active`.
+- `/cpa`: URLs, `host:port` pairs and file paths in account messages are
+  masked, and so are bare host names and IP addresses.
+- `/cpa quota`: a run stops after 60 seconds. Accounts it did not reach show
+  `not checked`, the second line says so, and that result is not kept in
+  memory. Before, when no reply came back, the run tried every account one
+  at a time and could hold the CPA's management lock for 5 minutes, during
+  which other `/cpa` commands answered busy.
+- `/cpa quota` xAI: client version `1.0.70`, as in CPA's web UI.
+- `/cpa quota` Codex: hyphenated plans (`pro-lite`, `pro-max`) show their
+  plan (`pro_lite`). Before, the plan was left out.
+- CI tests Hermes v0.23.1 instead of v0.22.5.
+
 ## 0.7.3
 
 - `/cpa`: an instance without `mgmt_key_env` on the same CPA `base_url` as
