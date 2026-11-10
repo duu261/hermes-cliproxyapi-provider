@@ -2,6 +2,12 @@
 
 ## 0.8.0
 
+- `/cpa <pool> <provider>`: each account line shows the account's priority
+  when CPA lists one (`prio 1`) and its successful/failed requests since CPA
+  started (`total 2140/96`), next to the last hour (`1h 173/71`). The header
+  says `total = since CPA start` when a total is shown: CPA keeps these counts
+  in memory only, so they start again at zero when CPA restarts. No new
+  request: the fields come with the listing `/cpa` already reads.
 - `/cpa quota` xAI: no plan name is shown. Before, a monthly limit equal to
   one of two fixed amounts was shown as `supergrok` or `supergrok_heavy`.
   xAI sends no plan name and has changed its plans, so that was a guess.

@@ -352,8 +352,8 @@ pre · v8.0.51
   codex 4: 3 active · 1 cooling (next 17:20)
   xai 2: 2 active
 CPA v8.0.52 available (running v8.0.51)
-pre / codex · 4 accounts
-codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
+pre / codex · 4 accounts · total = since CPA start
+codex-al…@…  active · prio 1 · 1h 173/71 · total 2140/96 · 5h 22% · wk 0% (1m ago)
 codex-bo…@…  cooling until 17:20 (quota)
 ```
 
@@ -368,6 +368,10 @@ codex-bo…@…  cooling until 17:20 (quota)
 - Last-seen quota (5h and weekly) comes from what CPA recorded on real traffic
   for Claude and Codex accounts. CPA records none for other providers. Plain
   `/cpa` never asks CPA to check quota upstream; `/cpa quota` does.
+- `/cpa pre codex` also shows each account's priority when CPA lists one
+  (`prio 1`) and its successful/failed requests: `1h` is the last hour,
+  `total` is since CPA started. CPA keeps the totals in memory only, so they
+  start again at zero when CPA restarts.
 - Emails in account names and messages are masked. `email`, `account`,
   `project_id` and `path` are never shown (`/cpa quota` uses the Antigravity
   `project_id` only to build its request); the account's project id is

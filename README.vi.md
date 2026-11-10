@@ -352,8 +352,8 @@ pre · v8.0.51
   codex 4: 3 active · 1 cooling (next 17:20)
   xai 2: 2 active
 CPA v8.0.52 available (running v8.0.51)
-pre / codex · 4 accounts
-codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
+pre / codex · 4 accounts · total = since CPA start
+codex-al…@…  active · prio 1 · 1h 173/71 · total 2140/96 · 5h 22% · wk 0% (1m ago)
 codex-bo…@…  cooling until 17:20 (quota)
 ```
 
@@ -368,6 +368,10 @@ codex-bo…@…  cooling until 17:20 (quota)
 - Quota gần nhất (5h và tuần) là số CPA ghi lại từ traffic thật của account
   Claude và Codex. CPA không ghi cho provider khác. `/cpa` (không có `quota`)
   không bao giờ bảo CPA kiểm tra quota với upstream; `/cpa quota` thì có.
+- `/cpa pre codex` còn hiện priority của từng account khi CPA có liệt kê
+  (`prio 1`) và số request thành công/thất bại: `1h` là 1 giờ qua, `total` là
+  từ lúc CPA khởi động. CPA chỉ giữ các số total trong bộ nhớ, nên chúng đếm
+  lại từ 0 khi CPA khởi động lại.
 - Email trong tên account và thông báo được che. `email`, `account`,
   `project_id` và `path` không bao giờ được hiển thị (`/cpa quota` chỉ dùng
   `project_id` của Antigravity để dựng request); project id của account được

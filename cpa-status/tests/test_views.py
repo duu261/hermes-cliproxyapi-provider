@@ -101,6 +101,46 @@ class ViewTests(unittest.TestCase):
         self.assertIn("(quota)", lines[2])
         self.assertEqual(lines[3], "codex-al…@…  active · 1h 3/1 · 5h 63% (4m ago)")
 
+    def provider_lines(self, *raw):
+        # Through files_of, as a real listing goes: a field it drops is not shown.
+        files = status.files_of({"files": [dict(entry) for entry in raw]})
+        self.fetch.return_value = (status.Fetched("ok", files=files), False)
+        return self.run_cpa("pre codex").splitlines()
+
+    def test_provider_view_shows_totals_and_priority(self):
+        counted = dict(LISTING[0], success=250, failed=8, priority=3)
+        lines = self.provider_lines(counted, LISTING[1])
+        self.assertEqual(lines[0], "pre / codex · 2 accounts · total = since CPA start")
+        self.assertTrue(lines[1].startswith("codex-bo…@…  cooling until "))
+        self.assertNotIn("total", lines[1])
+        self.assertNotIn("prio", lines[1])
+        self.assertEqual(
+            lines[2], "codex-al…@…  active · prio 3 · 1h 3/1 · total 250/8 · 5h 63% (4m ago)"
+        )
+
+    def test_priority_an_operator_can_set(self):
+        for value in (0, -5):
+            lines = self.provider_lines(dict(LISTING[0], priority=value))
+            self.assertEqual(lines[0], "pre / codex · 1 account")
+            self.assertIn(f"active · prio {value} · 1h 3/1", lines[1])
+
+    def test_totals_and_priority_ignore_junk(self):
+        for junk in (
+            {"success": True, "failed": "9", "priority": True},
+            {"success": -3, "failed": None, "priority": "1"},
+            {"success": 0, "failed": 0},
+            {"success": 1.5, "priority": 1.5},
+        ):
+            lines = self.provider_lines(dict(LISTING[0], **junk))
+            self.assertEqual(lines[0], "pre / codex · 1 account", junk)
+            self.assertEqual(lines[1], "codex-al…@…  active · 1h 3/1 · 5h 63% (4m ago)", junk)
+
+    def test_total_note_only_when_the_shown_provider_has_totals(self):
+        other = dict(LISTING[3], success=7, failed=2)
+        lines = self.provider_lines(LISTING[0], other)
+        self.assertEqual(lines[0], "pre / codex · 1 account")
+        self.assertNotIn("total", "\n".join(lines))
+
     def test_no_email_anywhere(self):
         for args in ("", "pre", "pre codex", "pre xai"):
             out = self.run_cpa(args)

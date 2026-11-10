@@ -310,8 +310,8 @@ pre · v8.0.51
   codex 4: 3 active · 1 cooling (next 17:20)
   xai 2: 2 active
 CPA v8.0.52 available (running v8.0.51)
-pre / codex · 4 accounts
-codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
+pre / codex · 4 accounts · total = since CPA start
+codex-al…@…  active · prio 1 · 1h 173/71 · total 2140/96 · 5h 22% · wk 0% (1m ago)
 codex-bo…@…  cooling until 17:20 (quota)
 ```
 
@@ -325,6 +325,9 @@ codex-bo…@…  cooling until 17:20 (quota)
 - 最近一次的 quota（`5h` 和 `wk`）来自 CPA 在真实流量中为 Claude 和 Codex account
   记录的数据，其他 provider CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询 quota；
   `/cpa quota` 会。
+- `/cpa pre codex` 还会显示每个 account 的 priority（只在 CPA 列出时显示，`prio 1`）
+  以及成功/失败的 request 数：`1h` 是最近一小时，`total` 是自 CPA 启动以来。
+  CPA 只把这些 total 保存在内存里，所以 CPA 重启后会从 0 重新计数。
 - account 名和消息里的邮箱会被遮盖。从不显示 `email`、`account`、`project_id` 和
   `path`（`/cpa quota` 只用 Antigravity 的 `project_id` 来构造它的 request）；
   account 的 project id 在 CPA 把它重复写进 label 或文件名的地方、以及消息提到它的

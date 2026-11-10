@@ -344,6 +344,9 @@ _KEPT_FIELDS = frozenset(
         "requires_sign_in",
         "renewal_state",
         "access_token_expires_at",
+        "success",
+        "failed",
+        "priority",
     }
 )
 # Providers ``/cpa quota`` reads through CPA's api-call (see quota.py). Others
@@ -462,6 +465,21 @@ def recent_hour(entry: dict[str, Any]) -> tuple[int, int]:
     return sum(_count(b.get("success")) for b in newest), sum(
         _count(b.get("failed")) for b in newest
     )
+
+
+def totals(entry: dict[str, Any]) -> tuple[int, int]:
+    """Successes and failures CPA has counted for the account.
+
+    CPA keeps both in memory only (sdk/cliproxy/auth/types.go, ``json:"-"``),
+    so they start at zero when CPA starts and when an account is added.
+    """
+    return _count(entry.get("success")), _count(entry.get("failed"))
+
+
+def priority_of(entry: dict[str, Any]) -> int | None:
+    """The account's priority, when its file sets one; CPA omits it otherwise."""
+    value = entry.get("priority")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 # ── Last-seen quota ─────────────────────────────────────────────────────────
@@ -996,9 +1014,15 @@ def _account_lines(files: list[dict[str, Any]], provider: str, now: datetime) ->
             continue
         state = classify(entry, now)
         line = f"{display_name(entry)}  {_state_text(entry, state, now)}"
+        priority = priority_of(entry)
+        if priority is not None:
+            line += f" · prio {priority}"
         ok, failed = recent_hour(entry)
         if ok or failed:
             line += f" · 1h {ok}/{failed}"
+        ok, failed = totals(entry)
+        if ok or failed:
+            line += f" · total {ok}/{failed}"
         quota = quota_text(entry, now)
         if quota:
             line += f" · {quota}"
@@ -1137,4 +1161,7 @@ def _provider_view(row: _Row, provider: str, now: datetime) -> str:
         return f"No provider '{shown}' in {row.spec.name}. Providers: {names}"
     count = len(lines)
     noun = "account" if count == 1 else "accounts"
-    return _cap([f"{row.spec.name} / {provider} · {count} {noun}", *lines])
+    head = f"{row.spec.name} / {provider} · {count} {noun}"
+    if any(sum(totals(e)) for e in result.files if provider_of(e) == provider):
+        head += " · total = since CPA start"
+    return _cap([head, *lines])
