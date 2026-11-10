@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+- `/cpa quota` xAI: no plan name is shown. Before, a monthly limit equal to
+  one of two fixed amounts was shown as `supergrok` or `supergrok_heavy`.
+  xAI sends no plan name and has changed its plans, so that was a guess.
+
 ## 0.7.4
 
 Fixes only. No new requests.

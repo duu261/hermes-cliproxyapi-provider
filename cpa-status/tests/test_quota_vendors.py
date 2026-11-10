@@ -138,11 +138,16 @@ class ParserTests(unittest.TestCase):
             [(w.label, round(w.used, 1)) for w in usage.windows], [("wk", 42.5), ("mo", 20.0)]
         )
         self.assertEqual(usage.windows[0].resets_at, NOW + timedelta(days=3))
-        self.assertEqual(usage.plan, "supergrok")
 
-    def test_xai_heavy_plan_and_one_half_missing(self):
-        heavy = {"config": {"monthlyLimit": 150000, "used": 0}}
-        self.assertEqual(quota.parse_xai(None, heavy).plan, "supergrok_heavy")
+    def test_xai_plan_is_never_guessed_from_the_monthly_limit(self):
+        # xAI sends no plan name. The amounts once matched two plans; xAI
+        # changed its plans, so an amount says nothing about the plan.
+        self.assertEqual(quota.parse_xai(XAI_WEEKLY, XAI_MONTHLY).plan, "")
+        for cents in (15000, 150000):
+            monthly = {"config": {"monthlyLimit": cents, "used": 0}}
+            self.assertEqual(quota.parse_xai(None, monthly).plan, "")
+
+    def test_xai_one_half_missing(self):
         self.assertEqual([w.label for w in quota.parse_xai(XAI_WEEKLY, None).windows], ["wk"])
         self.assertEqual([w.label for w in quota.parse_xai(None, XAI_MONTHLY).windows], ["mo"])
 
@@ -354,7 +359,8 @@ class RequestTests(QuotaTestCase):
                     "user-agent": "grok-pager/1.0.70 grok-shell/1.0.70 (macos; aarch64)",
                 },
             )
-        self.assertIn("supergrok  wk 42% → ", out)
+        self.assertIn("  wk 42% → ", out)
+        self.assertNotIn("supergrok", out)
         self.assertIn("mo 20%", out)
 
     def test_antigravity_post_with_project_and_fallback(self):

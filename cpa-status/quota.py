@@ -443,9 +443,6 @@ def _codex_credits(payload: dict[str, Any]) -> str:
     return f"credits {value:,.2f}".removesuffix(".00") if value else ""
 
 
-_XAI_PLANS = {15000: "supergrok", 150000: "supergrok_heavy"}  # monthly limit, cents
-
-
 def _xai_config(payload: Any) -> dict[str, Any] | None:
     config = payload.get("config") if isinstance(payload, dict) else None
     return config if isinstance(config, dict) else None
@@ -480,8 +477,6 @@ def parse_xai(weekly: Any, monthly: Any) -> Usage:
         (v for c in configs if (v := _first(c, "billingPeriodEnd", "billing_period_end"))),
         None,
     )
-    if limit is not None and limit == int(limit):
-        usage.plan = _XAI_PLANS.get(int(limit), "")
     if limit and limit > 0 and spent is not None and spent >= 0:
         if "mo" not in {w.label for w in usage.windows}:
             usage.windows.append(Window("mo", min(spent, limit) / limit * 100, _instant(end)))
