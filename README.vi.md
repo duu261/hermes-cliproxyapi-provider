@@ -368,9 +368,17 @@ codex-bo…@…  cooling until 17:20 (quota)
 - Quota gần nhất (5h và tuần) là số CPA ghi lại từ traffic thật của account
   Claude và Codex. CPA không ghi cho provider khác. `/cpa` (không có `quota`)
   không bao giờ bảo CPA kiểm tra quota với upstream; `/cpa quota` thì có.
-- Email trong tên account và thông báo được che; `email`, `account`,
+- Email trong tên account và thông báo được che. `email`, `account`,
   `project_id` và `path` không bao giờ được hiển thị (`/cpa quota` chỉ dùng
-  `project_id` của Antigravity để dựng request).
+  `project_id` của Antigravity để dựng request); project id của account được
+  thay bằng `…` ở chỗ CPA lặp lại nó trong label hoặc tên file, và ở chỗ
+  thông báo nhắc tới nó.
+- URL, tên host, địa chỉ IP và đường dẫn file trong thông báo được che theo
+  kiểu best effort (cố gắng hết mức, không bảo đảm): các pattern bắt được
+  những dạng thường gặp, không phải mọi dạng, nên một phần địa chỉ vẫn có thể
+  hiện ra. Tên host không có dấu chấm chỉ được che khi lỗi ghi nó ở dạng địa
+  chỉ (`dial tcp myhost:8080`, `lookup myhost`). Đừng dựa vào việc che này
+  trong chat mà các thông tin đó phải được giữ kín.
 - Chạy khi chat đang rảnh. Gửi lúc agent đang chạy thì Hermes xử lý như mọi
   lệnh plugin khác, theo busy handling của Hermes (xếp hàng hoặc chuyển cho agent).
 - Lockout: xem [Không bao giờ bị CPA khóa](#không-bao-giờ-bị-cpa-khóa).
@@ -419,7 +427,9 @@ và account vẫn phục vụ các model khác.
 
 - Chỉ khi bạn gõ lệnh. Mỗi lần chạy tối đa 20 account và 3 request cho mỗi
   account. Request đầu gửi một mình, sau đó tối đa 4 request cùng lúc; gõ lại
-  trong 60 giây sẽ trả từ bộ nhớ. Bỏ qua account đã tắt.
+  trong 60 giây sẽ trả từ bộ nhớ. Bỏ qua account đã tắt. Sau 60 giây, một lượt
+  chạy không gửi request mới nào nữa; account chưa tới lượt hiện
+  `not checked`.
 - `/cpa quota <pool> <provider>` nhận `claude`, `codex`, `xai`, `antigravity`,
   `devin`, `kimi`, `plugin`, hoặc provider của một plugin như `kiro`.
 - Token account hết hạn hiện `token rejected by vendor` và không bao giờ bị tính

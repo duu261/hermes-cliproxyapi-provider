@@ -176,6 +176,25 @@ class ViewTests(unittest.TestCase):
         self.assertTrue(lines[2].startswith("codex-al…@…  active"), lines)
         self.assertTrue(lines[3].startswith("codex-ol…@…  active"), lines)
 
+    def test_sign_in_note_on_pool_lines(self):
+        serving = {
+            "provider": "codex",
+            "name": "codex-sam@example.com.json",
+            "status": "active",
+            "requires_sign_in": True,
+            "renewal_state": "sign_in_required",
+            "access_token_expires_at": iso(90),
+        }
+        self.fetch.return_value = (
+            status.Fetched("ok", files=[dict(LISTING[0]), serving]),
+            False,
+        )
+        self.assertIn("  codex 2: 2 active; 1 needs sign-in", self.run_cpa())
+        lines = self.run_cpa("pre codex").splitlines()
+        self.assertTrue(
+            lines[2].startswith("codex-sa…@…  active · sign in again (serving until "), lines
+        )
+
     def test_help_and_too_many_args(self):
         self.assertEqual(self.run_cpa("help"), status.USAGE)
         self.assertEqual(self.run_cpa("a b c"), status.USAGE)

@@ -349,9 +349,9 @@ class RequestTests(QuotaTestCase):
                 {
                     "Authorization": "Bearer " + TOKEN,
                     "x-xai-token-auth": "xai-grok-cli",
-                    "x-grok-client-version": "1.0.46",
+                    "x-grok-client-version": "1.0.70",
                     "accept": "*/*",
-                    "user-agent": "grok-pager/1.0.46 grok-shell/1.0.46 (macos; aarch64)",
+                    "user-agent": "grok-pager/1.0.70 grok-shell/1.0.70 (macos; aarch64)",
                 },
             )
         self.assertIn("supergrok  wk 42% → ", out)

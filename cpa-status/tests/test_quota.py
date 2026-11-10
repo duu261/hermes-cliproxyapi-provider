@@ -458,8 +458,11 @@ class ParserTests(unittest.TestCase):
         for raw, expected in (
             ("PRO", "pro"),
             ("team_2", "team_2"),
+            ("pro-lite", "pro_lite"),  # the web UI's planTier.ts accepts these spellings
+            ("Pro-Max", "pro_max"),
+            ("self_serve_business_prolite", "self_serve_business_prolite"),
             ("<b>x</b>", ""),
-            ("a" * 30, ""),
+            ("a" * 40, ""),
             (5, ""),
         ):
             body = dict(CODEX_PRO, plan_type=raw)
@@ -541,12 +544,13 @@ class RequestShapeTests(QuotaTestCase):
         runner_paths = []
         real = quota.api_call
 
-        def spy(root, key, path, body):
+        def spy(root, key, path, body, **kwargs):
             runner_paths.append(path)
             if path == quota.V8_API_CALL and len(runner_paths) > 1:
                 time.sleep(0.05)  # let a second worker read the v8 path too
                 raise cpa.GatewayError(404, "not_found")
-            return real(root, key, quota.V0_API_CALL if path == quota.V8_API_CALL else path, body)
+            path = quota.V0_API_CALL if path == quota.V8_API_CALL else path
+            return real(root, key, path, body, **kwargs)
 
         with mock.patch.object(quota, "api_call", spy):
             out = self.run_quota()
@@ -766,6 +770,52 @@ class RunControlTests(QuotaTestCase):
         self.assertIn("+5 more not checked", out)
         self.assertLessEqual(_CPA.peak, quota.MAX_IN_FLIGHT)
         self.assertGreater(_CPA.peak, 1)
+
+    def test_run_stops_at_its_time_limit(self):
+        # A timeout never proves the key, so the probe used to try all 20
+        # accounts one at a time while holding the guard (up to 5 minutes).
+        _CPA.files = [account("codex", n) for n in range(2, 22)]
+        calls = []
+
+        def slow(*args, **kwargs):
+            calls.append(kwargs.get("timeout"))
+            time.sleep(0.05)
+            raise cpa.GatewayError(0, "timeout")
+
+        with (
+            mock.patch.object(quota, "api_call", slow),
+            mock.patch.object(quota, "RUN_SECONDS", 0.12),
+        ):
+            out = self.run_quota()
+            again = self.run_quota()
+        self.assertLessEqual(len(calls), 8)  # 2 runs, about 3 calls each
+        # Each request's timeout is what is left of the run, never the full 15 s.
+        self.assertTrue(all(t is not None and t <= 0.12 for t in calls), calls)
+        self.assertIn("codex · 20 accounts: 0 have room", out)
+        self.assertIn("timeout", out)
+        self.assertIn("not checked", out)
+        self.assertTrue(out.splitlines()[1].startswith("stopped after 0.12 s"), out)
+        self.assertNotIn("cached", again)  # a cut-short run is never served from memory
+        self.assertFalse(cpa.key_rejected(self.home, self.root, KEY))
+
+    def test_one_slow_account_does_not_stop_the_run(self):
+        _CPA.files = [account("codex", n) for n in range(2, 8)]
+        _CPA.inner = {f"{n:016x}": (200, CODEX_PRO) for n in range(2, 8)}
+        real = quota.api_call
+        calls = []
+
+        def first_times_out(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise cpa.GatewayError(0, "timeout")
+            return real(*args, **kwargs)
+
+        with mock.patch.object(quota, "api_call", first_times_out):
+            out = self.run_quota()
+        self.assertEqual(len(calls), 6)
+        self.assertIn("1 failed", out)
+        self.assertNotIn("stopped after", out)
+        self.assertNotIn("not checked", out)
 
     def test_disabled_and_uncovered_providers_not_called(self):
         _CPA.files = [

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.7.4
+
+Fixes only. No new requests.
+
+- `/cpa`: a Google Cloud project id that CPA repeats in an account's label
+  (`<project_id> (<email>)` on Vertex accounts) or file name
+  (`vertex-<project_id>.json`) is replaced by `…`, and so is the account's
+  project id in an error message or a cooldown reason. Before, it was shown
+  in full.
+- `/cpa`: an account that needs a new sign-in but still serves on its current
+  access token shows `active · sign in again (serving until 17:20)` and
+  counts as active, with `1 needs sign-in` on the pool line. Once that token
+  has expired it shows `error: sign in again (expired)`. Before, both showed
+  as an error. Needs CPA's `renewal_state` field; without it the account
+  shows `error: sign in again` as before.
+- `/cpa`: an account whose last-seen usage window is at 100% with no known
+  reset time shows `limited`, not `active`.
+- `/cpa`: URLs, `host:port` pairs, file paths, bare host names and IPv4 and
+  IPv6 addresses in account messages are masked, on a best effort: the
+  patterns cover the common forms, not every one. A host name with no dot is
+  masked only where an error gives it as an address (`dial tcp myhost:8080`,
+  `lookup myhost`). A message that CPA cut short (it ends in `...`) loses the
+  word at the cut, which could be half a host name, an address or an email.
+  Before, only emails and long token-like runs were masked.
+- `/cpa`: an email address that is cut off after the `@` (`carol@exam`), as
+  CPA can leave it in a shortened error, is masked like a whole one. Before,
+  it was shown. Any other name in front of an `@` is masked the same way.
+- `/cpa quota`: a run sends no new request after 60 seconds, and each
+  request's timeout is cut to the time left. Accounts it did not reach show
+  `not checked`, the second line says so, and that result is not kept in
+  memory. Before, when no reply came back, the run tried every account one
+  at a time and could hold the CPA's management lock for 5 minutes, during
+  which other `/cpa` commands answered busy.
+- `/cpa quota` xAI: client version `1.0.70`, as in CPA's web UI.
+- `/cpa quota` Codex: hyphenated plans (`pro-lite`, `pro-max`) show their
+  plan (`pro_lite`). Before, the plan was left out.
+- CI tests Hermes v0.23.1 instead of v0.22.5.
+
 ## 0.7.3
 
 - `/cpa`: an instance without `mgmt_key_env` on the same CPA `base_url` as
