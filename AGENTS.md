@@ -166,6 +166,7 @@ must equal root `cpa.py`; CI runs `cmp`).
   in code, no override from config or input:
   - claude: GET `https://api.anthropic.com/api/oauth/usage`, then GET
     `https://api.anthropic.com/api/oauth/profile` with the same headers
+    except `Accept`, which is not sent
   - codex: GET `https://chatgpt.com/backend-api/wham/usage`
   - xai: GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`,
     then GET `https://cli-chat-proxy.grok.com/v1/billing`
