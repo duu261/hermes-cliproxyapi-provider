@@ -141,6 +141,84 @@ class MaskTests(unittest.TestCase):
         entry = {"provider": "kiro", "name": "kiro-first.last.json"}
         self.assertEqual(status.display_name(entry), "kiro-first.last")
 
+    def test_project_id_is_cut_from_messages(self):
+        # CPA stores the vendor's error text, and Google names the project in it.
+        project = "acme-prod-482113"
+        raw = {
+            "provider": "vertex",
+            "name": "vertex-x.json",
+            "status": "error",
+            "unavailable": True,
+            "project_id": project,
+            "status_message": f"Permission denied on resource project {project}.",
+            "cooldowns": [
+                {"scope": "credential", "retry_at": iso(30), "reason": f"quota for {project}"}
+            ],
+        }
+        entry = status.files_of({"files": [raw]})[0]
+        self.assertNotIn("acme", str(entry))
+        state = status.classify(entry, NOW)
+        self.assertEqual(state.kind, "cooling")
+        self.assertTrue(status._state_text(entry, state, NOW).endswith("(quota for …)"))
+        del entry["cooldowns"]
+        state = status.classify(entry, NOW)
+        self.assertEqual(
+            status._state_text(entry, state, NOW),
+            "error: Permission denied on resource project ….",
+        )
+        self.assertEqual(raw["cooldowns"][0]["reason"], f"quota for {project}")  # input kept
+
+    def test_project_id_cut_leaves_the_cooldown_scope_alone(self):
+        # "credential" is a valid project id; the scope must still be read.
+        raw = {
+            "provider": "vertex",
+            "name": "vertex-x.json",
+            "status": "active",
+            "project_id": "credential",
+            "cooldowns": [
+                {"scope": "credential", "retry_at": iso(30), "reason": "credential cooling"}
+            ],
+        }
+        entry = status.files_of({"files": [raw]})[0]
+        state = status.classify(entry, NOW)
+        self.assertEqual(state.kind, "cooling")
+        self.assertEqual(state.reason, "… cooling")
+
+    def test_ipv6_and_dial_addresses_are_masked_in_messages(self):
+        for text, want in (
+            ("dial tcp [2001:db8::1]:443: connect refused", "dial tcp …: connect refused"),
+            ("read tcp [fd00::5%eth0]:5120->[fd00::9]:443: reset", "read tcp …->…: reset"),
+            ("no route to fd00::5 today", "no route to … today"),
+            ("route 2001:db8:0:1:2:3:4:5 down", "route … down"),
+            ("dial tcp myhost:8080: refused", "dial tcp …: refused"),
+            ("dial tcp localhost:8317: refused", "dial tcp …: refused"),
+            ("localhost:8317 refused", "… refused"),
+            ("lookup myhost: no such host", "lookup …: no such host"),
+            ("lookup myhost on 10.1.2.3:53: no such host", "lookup … on …: no such host"),
+            (r"open C:\Users\x\auth\file.json: denied", "open …: denied"),
+        ):
+            self.assertEqual(status.short_message(text), want)
+        # Times, status codes and C++ names are not addresses.
+        for text in (
+            "retry at 17:20:05",
+            "window [17:20:05] closed",
+            "status code:429 from vendor",
+            "std::bad_alloc in worker",
+            "failed to read tcp stream early",
+            "5h 100% until 17:20",
+        ):
+            self.assertEqual(status.short_message(text), text)
+
+    def test_long_text_is_cut_at_a_space_before_masking(self):
+        # The masks cost quadratic time on a long run, and CPA can store a
+        # whole vendor error page as the message.
+        self.assertEqual(status.short_message("gateway error " + "a." * 1500), "gateway error")
+        # A word cut in half could be half a token: it is dropped, not shown.
+        text = "x" * 240 + " sk-" + "A" * 40
+        self.assertEqual(status.mask_text(text), "…")
+        self.assertEqual(status.mask_text("y" * 300), "…")
+        self.assertEqual(status.display_name({"label": "team " + "b" * 300}), "team")
+
     def test_plain_text_with_slashes_is_kept(self):
         for text in ("1h 3/1", "3 ok / 1 failed", "5h and/or wk", "HTTP 429 at 12:30"):
             self.assertEqual(status.mask_text(text), text)

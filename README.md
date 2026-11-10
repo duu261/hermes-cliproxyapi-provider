@@ -369,10 +369,12 @@ codex-bo…@…  cooling until 17:20 (quota)
   for Claude and Codex accounts. CPA records none for other providers. Plain
   `/cpa` never asks CPA to check quota upstream; `/cpa quota` does.
 - Emails in account names and messages are masked, and so are URLs, host
-  names, IP addresses and file paths in messages. `email`, `account`,
-  `project_id` and `path` are never shown (`/cpa quota` uses the Antigravity
-  `project_id` only to build its request); a project id that CPA repeats in
-  an account's label or file name is replaced by `…`.
+  names, IP addresses and file paths in messages. A host name with no dot is
+  masked only where an error gives it as an address (`dial tcp myhost:8080`,
+  `lookup myhost`). `email`, `account`, `project_id` and `path` are never
+  shown (`/cpa quota` uses the Antigravity `project_id` only to build its
+  request); the account's project id is replaced by `…` where CPA repeats it
+  in the label or file name, and where a message names it.
 - Works when the chat is idle. Sent while an agent turn is running, it goes to
   Hermes' busy handling (queued or sent to the agent) like any other plugin
   command.
@@ -421,8 +423,9 @@ shows as `out: fable` and the account keeps serving other models.
 
 - Only when you type it. At most 20 accounts and 3 requests per account per
   run. The first request goes alone, then at most 4 at a time; a repeat within
-  60 seconds answers from memory. Disabled accounts are skipped. A run stops
-  after 60 seconds; accounts it did not reach show `not checked`.
+  60 seconds answers from memory. Disabled accounts are skipped. A run sends
+  no new request after 60 seconds; accounts it did not reach show
+  `not checked`.
 - `/cpa quota <pool> <provider>` takes `claude`, `codex`, `xai`,
   `antigravity`, `devin`, `kimi`, `plugin`, or a plugin's provider such as
   `kiro`.

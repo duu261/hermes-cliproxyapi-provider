@@ -6,8 +6,9 @@ Fixes only. No new requests.
 
 - `/cpa`: a Google Cloud project id that CPA repeats in an account's label
   (`<project_id> (<email>)` on Vertex accounts) or file name
-  (`vertex-<project_id>.json`) is replaced by `…`. Before, it was shown in
-  full.
+  (`vertex-<project_id>.json`) is replaced by `…`, and so is the account's
+  project id in an error message or a cooldown reason. Before, it was shown
+  in full.
 - `/cpa`: an account that needs a new sign-in but still serves on its current
   access token shows `active · sign in again (serving until 17:20)` and
   counts as active, with `1 needs sign-in` on the pool line. Once that token
@@ -17,8 +18,11 @@ Fixes only. No new requests.
 - `/cpa`: an account whose last-seen usage window is at 100% with no known
   reset time shows `limited`, not `active`.
 - `/cpa`: URLs, `host:port` pairs and file paths in account messages are
-  masked, and so are bare host names and IP addresses.
-- `/cpa quota`: a run stops after 60 seconds. Accounts it did not reach show
+  masked, and so are bare host names and IPv4 and IPv6 addresses. A host name
+  with no dot is masked only where an error gives it as an address
+  (`dial tcp myhost:8080`, `lookup myhost`).
+- `/cpa quota`: a run sends no new request after 60 seconds, and each
+  request's timeout is cut to the time left. Accounts it did not reach show
   `not checked`, the second line says so, and that result is not kept in
   memory. Before, when no reply came back, the run tried every account one
   at a time and could hold the CPA's management lock for 5 minutes, during

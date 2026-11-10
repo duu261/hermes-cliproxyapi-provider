@@ -37,27 +37,71 @@ logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
-_HOST_PORT_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+:\d{2,5}\b")
+_HOST_PORT_RE = re.compile(r"\b(?:localhost|(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+):\d{2,5}\b")
 # An absolute path: "/dir/file" or "/file.ext". A slash inside a word ("i/o",
 # "3/1") or between spaces ("ok / failed") is not one.
 _PATH_RE = re.compile(
     r"(?<![\w.])/(?:[\w.@%+-]+/)+[\w.@%+-]*|(?<![\w.])/[\w.@%+-]+\.[A-Za-z0-9]{1,8}\b"
 )
+# A Windows path ("C:\dir\file") or a network share ("\\host\share").
+_WIN_PATH_RE = re.compile(r"(?<![\w.])(?:[A-Za-z]:\\|\\\\)[^\s:\"'<>]*")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_\-]{24,}")
 # Messages only: an account name may hold dots ("first.last"), so names keep them.
 # The last label is lower case, so Go's "Client.Timeout exceeded" stays readable.
 _HOST_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[a-z]{2,}\b")
 _IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+# "[addr]:port" as Go prints it, or a bare address: one with "::" or all eight
+# groups. A time ("17:20:05", "[17:20:05]") and a C++ name ("std::bad_alloc")
+# are neither.
+_H = r"[0-9A-Fa-f]{1,4}"
+_IPV6_RE = re.compile(
+    r"\[(?=[^\]\s]{0,45}::|(?:[^\]\s:]{0,15}:){3})"
+    r"[0-9A-Fa-f:.]{2,45}(?:%[\w.-]{1,32})?\](?::\d{1,5})?"
+    rf"|(?<![\w:.])(?:{_H}(?::{_H}){{0,6}}::(?:{_H}(?::{_H}){{0,6}})?"
+    rf"|::{_H}(?::{_H}){{0,6}}|(?:{_H}:){{7}}{_H})"
+    r"(?:%[\w.-]{1,32})?(?![\w:]|\.\d)"
+)
+# Go's network errors name the address even when the host has no dot:
+# "dial tcp myhost:8080: ...", "read tcp a->b: ...", "lookup myhost: ...".
+# A dial address always has a port, a bracket or a path, so plain words after
+# "read tcp" stay.
+_NET_ADDR_RE = re.compile(
+    r"\b((?:dial|read|write|proxyconnect)\s(?:tcp|udp|ip|unix)[46]?\s)(?=\S*(?::\d|[\[/]))(\S+)"
+)
+_LOOKUP_RE = re.compile(r"\b(lookup\s)\S+?(?=(?:\son\s\S+)?:(?:\s|$))")
 MESSAGE_LIMIT = 60
+# The masks cost quadratic time on one long word, and CPA can store a whole
+# vendor error page as a message. Nothing past this many characters is shown.
+_MASK_INPUT = 256
 _PROJECT_MIN = 6  # shortest Google Cloud project id
+
+
+def _bounded(text: str) -> str:
+    """``text`` cut to ``_MASK_INPUT`` characters, at a space.
+
+    The word the cut lands in is dropped whole: half of it could be half a
+    token, too short for ``_TOKEN_RE`` to see.
+    """
+    if len(text) <= _MASK_INPUT:
+        return text
+    cut = text[:_MASK_INPUT]
+    last = re.search(r"\s\S*\Z", cut)
+    return cut[: last.start()].rstrip() if last else "…"
 
 
 def mask_text(text: str) -> str:
     """Hide emails (keep two characters), URLs, hosts, paths and token-like runs."""
-    text = _EMAIL_RE.sub(lambda m: m.group(1)[:2] + "…@…", text)
-    for pattern in (_URL_RE, _HOST_PORT_RE, _PATH_RE):
+    text = _EMAIL_RE.sub(lambda m: m.group(1)[:2] + "…@…", _bounded(text))
+    for pattern in (_URL_RE, _HOST_PORT_RE, _PATH_RE, _WIN_PATH_RE):
         text = pattern.sub("…", text)
     return _TOKEN_RE.sub("…", text)
+
+
+def _net_addr(match: re.Match[str]) -> str:
+    """``dial tcp <addr>:`` with every address in it replaced."""
+    token = match.group(2)
+    end = ":" if token.endswith(":") else ""
+    return match.group(1) + "->".join("…" for _ in token.rstrip(":").split("->")) + end
 
 
 def _without_project(text: Any, project: Any) -> Any:
@@ -99,8 +143,10 @@ def display_name(entry: dict[str, Any]) -> str:
 def short_message(text: Any) -> str:
     if not isinstance(text, str):
         return ""
-    text = mask_text(" ".join(text.split()))
-    for pattern in (_HOST_RE, _IPV4_RE):  # bare host names and addresses
+    text = _bounded(" ".join(text.split()))
+    text = _LOOKUP_RE.sub(r"\1…", _NET_ADDR_RE.sub(_net_addr, text))
+    text = mask_text(text)
+    for pattern in (_HOST_RE, _IPV4_RE, _IPV6_RE):  # bare host names and addresses
         text = pattern.sub("…", text)
     return text if len(text) <= MESSAGE_LIMIT else text[: MESSAGE_LIMIT - 1] + "…"
 
@@ -271,7 +317,9 @@ def files_of(listing: Any) -> list[dict[str, Any]]:
     non-built-in providers) and ``_kimi_ai`` (from the raw provider fields,
     before ``kimi-ai`` is normalized to ``kimi``). They stay in memory only and
     are never rendered; everything else is dropped. ``project_id`` is also
-    used here to cut the id out of ``label`` and ``name``, where CPA repeats it.
+    used here to cut the id out of ``label``, ``name``, ``status_message`` and
+    each cooldown ``reason``: CPA repeats it in the first two, and a vendor's
+    error text can name it in the others. The listing itself is not changed.
     """
     files = listing.get("files") if isinstance(listing, dict) else None
     if not isinstance(files, list):
@@ -281,9 +329,18 @@ def files_of(listing: Any) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         entry = {k: v for k, v in raw.items() if k in _KEPT_FIELDS}
-        for shown in ("label", "name"):
+        project = raw.get("project_id")
+        for shown in ("label", "name", "status_message"):
             if shown in entry:
-                entry[shown] = _without_project(entry[shown], raw.get("project_id"))
+                entry[shown] = _without_project(entry[shown], project)
+        if isinstance(entry.get("cooldowns"), list):
+            # Only the reason is text; "scope" must stay as CPA sent it.
+            entry["cooldowns"] = [
+                {**item, "reason": _without_project(item["reason"], project)}
+                if isinstance(item, dict) and "reason" in item
+                else item
+                for item in entry["cooldowns"]
+            ]
         provider = provider_of(entry)
         plugin = _shaped(raw.get("quota_plugin_id"), _PLUGIN_RE)
         builtin = provider in QUOTA_BUILTINS

@@ -789,7 +789,8 @@ class RunControlTests(QuotaTestCase):
             out = self.run_quota()
             again = self.run_quota()
         self.assertLessEqual(len(calls), 8)  # 2 runs, about 3 calls each
-        self.assertTrue(all(t is not None and t <= quota.CALL_TIMEOUT for t in calls), calls)
+        # Each request's timeout is what is left of the run, never the full 15 s.
+        self.assertTrue(all(t is not None and t <= 0.12 for t in calls), calls)
         self.assertIn("codex · 20 accounts: 0 have room", out)
         self.assertIn("timeout", out)
         self.assertIn("not checked", out)
@@ -813,7 +814,7 @@ class RunControlTests(QuotaTestCase):
             out = self.run_quota()
         self.assertEqual(len(calls), 6)
         self.assertIn("1 failed", out)
-        self.assertNotIn("stopped:", out)
+        self.assertNotIn("stopped after", out)
         self.assertNotIn("not checked", out)
 
     def test_disabled_and_uncovered_providers_not_called(self):

@@ -154,7 +154,9 @@ MAX_ACCOUNTS = 20
 MAX_IN_FLIGHT = 4  # management requests, not accounts
 CALL_TIMEOUT = 15.0
 # One run holds the CPA's management guard, so it has a time limit: requests
-# that would start after it are not sent, and those in flight end by it.
+# that would start after it are not sent, and the timeout of each request is
+# clipped to what is left. That timeout is per socket read, so a reply that
+# trickles in can end a little after the limit.
 RUN_SECONDS = 60.0
 CACHE_SECONDS = 60.0
 MAX_OUTER_BYTES = 1024 * 1024
@@ -914,7 +916,7 @@ class _Runner:
             self._stop("rejected")
 
     def _timeout(self) -> float:
-        """This request's timeout: it must end by the run's deadline."""
+        """This request's timeout, clipped to what is left of the run."""
         return max(0.05, min(CALL_TIMEOUT, self.deadline - time.monotonic()))
 
     def _outer(self, exc: cpa.GatewayError) -> None:
