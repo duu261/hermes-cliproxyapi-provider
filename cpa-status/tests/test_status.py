@@ -74,6 +74,33 @@ class MaskTests(unittest.TestCase):
         self.assertNotIn("carol@example.com", out)
         self.assertLessEqual(len(out), 60)
 
+    def test_email_cut_off_after_the_at_is_masked(self):
+        # CPA can cut a vendor error in the middle of an address and add no
+        # "...". Whatever is left of the domain, the name in front is masked.
+        address = "carol@example.com"
+        for end in range(len("carol@"), len(address) + 1):
+            part = address[:end]
+            for text in (
+                f"http 403: denied for {part}",
+                f"http 403: denied for {part} and more text",
+                f'http 403: {{"email":"{part}',
+            ):
+                out = status.short_message(text)
+                self.assertNotIn("carol", out, text)
+                self.assertNotIn("exa", out, text)
+                self.assertIn("ca…@…", out, text)
+        self.assertEqual(status.short_message("denied for carol@"), "denied for ca…@…")
+        self.assertEqual(status.short_message("ssh root@buildhost failed"), "ssh ro…@… failed")
+        self.assertEqual(
+            status.display_name({"provider": "codex", "name": "codex-alice@exam"}), "codex-al…@…"
+        )
+        # A whole address is masked as before: what follows its domain stays.
+        entry = {"provider": "xai", "name": "xai-carol@example.com-0123456789abcdef.json"}
+        self.assertEqual(status.display_name(entry), "xai-ca…@…-0123456789abcdef")
+        # An "@" with no name in front is not an address.
+        for text in ("limit @ 5 per minute", "@here try again"):
+            self.assertEqual(status.short_message(text), text)
+
     def test_empty_name(self):
         self.assertEqual(status.display_name({}), "?")
 

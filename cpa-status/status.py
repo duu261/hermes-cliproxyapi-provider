@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 # ── Masking ─────────────────────────────────────────────────────────────────
 
 _EMAIL_RE = re.compile(r"([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# What the pattern above leaves: an address whose domain is cut off or has no
+# dot ("carol@exam", "carol@", "root@host"). CPA can cut a vendor error in the
+# middle of an address and add no "..." (internal/auth/antigravity/auth.go).
+_EMAIL_CUT_RE = re.compile(r"([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]*")
 _URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
 _HOST_PORT_RE = re.compile(r"\b(?:localhost|(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+):\d{2,5}\b")
 # An absolute path: "/dir/file" or "/file.ext". A slash inside a word ("i/o",
@@ -99,6 +103,7 @@ def _bounded(text: str) -> str:
 def mask_text(text: str) -> str:
     """Hide emails (keep two characters), URLs, hosts, paths and token-like runs."""
     text = _EMAIL_RE.sub(lambda m: m.group(1)[:2] + "…@…", _bounded(text))
+    text = _EMAIL_CUT_RE.sub(lambda m: m.group(1)[:2] + "…@…", text)
     for pattern in (_URL_RE, _HOST_PORT_RE, _PATH_RE, _WIN_PATH_RE):
         text = pattern.sub("…", text)
     return _TOKEN_RE.sub("…", text)

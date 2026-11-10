@@ -24,6 +24,9 @@ Fixes only. No new requests.
   `lookup myhost`). A message that CPA cut short (it ends in `...`) loses the
   word at the cut, which could be half a host name, an address or an email.
   Before, only emails and long token-like runs were masked.
+- `/cpa`: an email address that is cut off after the `@` (`carol@exam`), as
+  CPA can leave it in a shortened error, is masked like a whole one. Before,
+  it was shown. Any other name in front of an `@` is masked the same way.
 - `/cpa quota`: a run sends no new request after 60 seconds, and each
   request's timeout is cut to the time left. Accounts it did not reach show
   `not checked`, the second line says so, and that result is not kept in
