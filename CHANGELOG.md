@@ -127,6 +127,11 @@ Ideas that are parked. None of them is in any release, and none is promised.
 - `/cpa quota` xAI: no plan name is shown. Before, a monthly limit equal to
   one of two fixed amounts was shown as `supergrok` or `supergrok_heavy`.
   xAI sends no plan name and has changed its plans, so that was a guess.
+- Fix, `/cpa` and `/cpa quota`: a retry or reset time at the edge of the
+  calendar (year 9999 with a time zone behind UTC, for example) made the
+  command answer `internal error`. It is now shown as the date as sent
+  (`until 9999-12-31`). A reset given as a number of seconds too large to
+  add to a time is left out.
 
 ## 0.7.4
 

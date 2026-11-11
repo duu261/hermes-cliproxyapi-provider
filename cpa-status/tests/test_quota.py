@@ -1125,6 +1125,96 @@ class UntilTests(QuotaTestCase):
         self.assertNotIn("internal error", out)
 
 
+# ── Times the calendar cannot hold (CPA and the vendors can send any value) ──
+
+
+class CalendarEdgeTests(QuotaTestCase):
+    EDGE = "9999-12-31T23:59:59-12:00"  # turning it into local time raises
+    HUGE = 1e18  # seconds: adding it to a time raises
+
+    def handled(self, args):
+        """The reply's lines, through handle() as Hermes calls it.
+
+        handle() turns an exception into "internal error", which is the whole
+        reply then: the views below would be gone.
+        """
+        real = status.report
+
+        def report(raw_args, **_):
+            return real(
+                raw_args, config=self.config(), home=self.home, secret=self.env.get, now=NOW
+            )
+
+        with (
+            mock.patch.object(status, "_hermes_home", return_value=self.home),
+            mock.patch.object(status, "report", side_effect=report),
+        ):
+            out = status.handle(args)
+        self.assertNotIn("internal error", out)
+        return out.splitlines()
+
+    def test_a_retry_or_last_seen_reset_at_the_edge_shows_as_a_date(self):
+        cooldown = {"scope": "credential", "reason": "quota", "retry_at": self.EDGE}
+        signals = {"daily_quota_remaining_percent": "0%", "daily_quota_reset_at": self.EDGE}
+        _CPA.files = [
+            account("codex", 2, status="error", unavailable=True, cooldowns=[cooldown]),
+            account("devin", 5, quota={"observed_at": iso(-4), "signals": signals}),
+        ]
+        self.assertEqual(
+            self.handled("")[2:],
+            ["  codex 1: 1 cooling (next 9999-12-31)", "  devin 1: 1 limited (next 9999-12-31)"],
+        )
+        self.assertEqual(
+            self.handled("pre codex")[1:],
+            ["codex-us…@…  cooling until 9999-12-31 (vendor limit reached)"],
+        )
+        self.assertEqual(
+            self.handled("pre devin")[1:],
+            ["devin-us…@…  limited until 9999-12-31 · day 100% until 9999-12-31 (4m ago)"],
+        )
+
+    def test_a_live_reset_at_the_edge_shows_as_a_date(self):
+        _CPA.files = [account("claude", 1)]
+        full = {"five_hour": {"utilization": 100, "resets_at": self.EDGE}}
+        _CPA.inner = {f"{1:016x}": (200, full)}
+        self.assertEqual(
+            self.handled("quota pre")[2:],
+            [
+                "claude · 1 account: 0 have room · 1 out (next free 9999-12-31)",
+                "OUT claude-us…@…  5h 100% → 9999-12-31",
+            ],
+        )
+
+    def test_a_reset_too_far_to_add_is_left_out(self):
+        signals = {
+            "X-Codex-Primary-Used-Percent": "100",
+            "X-Codex-Primary-Reset-After-Seconds": str(self.HUGE),
+        }
+        window = {
+            "used_percent": 100,
+            "limit_window_seconds": 604800,
+            "reset_after_seconds": self.HUGE,
+        }
+        _CPA.files = [
+            account("codex", 2, quota={"observed_at": iso(-4), "signals": signals}),
+            account("kimi", 8),
+        ]
+        _CPA.inner = {
+            f"{2:016x}": (200, dict(CODEX_PRO, rate_limit={"primary_window": window})),
+            f"{8:016x}": (200, {"usage": {"limit": 10, "used": 10, "reset_in": self.HUGE}}),
+        }
+        # Last seen by CPA: full, and nothing says when it frees.
+        self.assertEqual(self.handled("pre codex")[1:], ["codex-us…@…  limited · 5h 100% (4m ago)"])
+        self.assertEqual(
+            self.handled("quota pre codex")[2:],
+            ["codex · 1 account: 0 have room · 1 out", "OUT codex-us…@… pro  wk 100%"],
+        )
+        self.assertEqual(
+            self.handled("quota pre kimi")[2:],
+            ["kimi · 1 account: 0 have room · 1 out", "OUT kimi-us…@…  wk 100%"],
+        )
+
+
 # ── View and args (Task 10) ─────────────────────────────────────────────────
 
 

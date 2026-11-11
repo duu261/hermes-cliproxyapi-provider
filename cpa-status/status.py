@@ -600,6 +600,22 @@ def _unix(raw: Any) -> datetime | None:
         return None
 
 
+def _later(start: datetime, seconds: float) -> datetime | None:
+    """*start* plus *seconds*; None when the calendar cannot hold the result."""
+    try:
+        return start + timedelta(seconds=seconds)
+    except OverflowError:
+        return None
+
+
+def _local(moment: datetime) -> datetime | None:
+    """*moment* in local time; None at the edge of the calendar, where there is none."""
+    try:
+        return moment.astimezone()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def instant(raw: Any) -> datetime | None:
     """ISO time, or unix seconds (milliseconds when that large)."""
     if isinstance(raw, bool):
@@ -661,7 +677,7 @@ def quota_windows(entry: dict[str, Any]) -> list[Window]:
             reset = _unix(lower.get(prefix + "reset-at"))
             after = _number(lower.get(prefix + "reset-after-seconds"))
             if reset is None and after is not None and after >= 0 and seen is not None:
-                reset = seen + timedelta(seconds=after)
+                reset = _later(seen, after)
             out.append(Window(label, used, reset))
     elif provider == "claude":
         for name, label in _CLAUDE_WINDOWS:
@@ -1058,7 +1074,9 @@ class _Row:
 
 
 def clock(when: datetime, now: datetime) -> str:
-    local = when.astimezone()
+    local = _local(when)
+    if local is None:
+        return when.date().isoformat()  # CPA can send any time: show the date as sent
     if (when - now).total_seconds() > 20 * 3600:
         return local.strftime("%b %d %H:%M")
     return local.strftime("%H:%M")

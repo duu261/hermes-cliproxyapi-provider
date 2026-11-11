@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, NoReturn
 from urllib.parse import quote
@@ -519,7 +519,7 @@ def _codex_windows(limit: Any, now: datetime, name: str = "") -> tuple[list[Wind
         if resets is None:
             after = _num(window.get("reset_after_seconds", window.get("resetAfterSeconds")))
             if after is not None and after >= 0:
-                resets = now + timedelta(seconds=after)
+                resets = status._later(now, after)
         used = _used(window.get("used_percent", window.get("usedPercent")))
         if used is None:
             if not (reached and resets is not None):
@@ -825,7 +825,7 @@ def _kimi_reset(data: dict[str, Any], now: datetime) -> datetime | None:
     for key in ("reset_in", "resetIn", "ttl"):
         seconds = _num(data.get(key))
         if seconds is not None and seconds > 0:
-            return now + timedelta(seconds=seconds)
+            return status._later(now, seconds)
     return None
 
 
@@ -1332,7 +1332,9 @@ _FENCE_PLATFORMS = frozenset({"telegram", "discord", "slack", "matrix", "matterm
 
 
 def _when(moment: datetime, now: datetime) -> str:
-    local = moment.astimezone()
+    local = status._local(moment)
+    if local is None:
+        return moment.date().isoformat()  # a vendor can send any time: the date as sent
     if (moment - now).total_seconds() > 20 * 3600:
         return local.strftime("%b %d")
     return local.strftime("%H:%M")
