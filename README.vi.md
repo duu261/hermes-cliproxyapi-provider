@@ -72,12 +72,12 @@ Sau đó chạy `hermes model` (hoặc bất kỳ lệnh nào liệt kê model) 
 các lần chạy sau đăng ký chúng ngay lúc khởi động mà không cần gọi mạng:
 
 - `cpa-main`: mọi model trên instance, mỗi model đi trên wire của provider
-  phục vụ nó (Hermes 0.23.0 trở lên; Hermes cũ hơn giữ mọi model trên chat
+  phục vụ nó (Hermes 0.22.6 trở lên; Hermes cũ hơn giữ mọi model trên chat
   wire).
 - `cpa-main-<provider>`: một provider cho mỗi provider CPA, ví dụ
   `cpa-main-claude`, `cpa-main-codex`, `cpa-main-xai`, `cpa-main-kimi`.
 
-Trên Hermes 0.23.0 trở lên:
+Trên Hermes 0.22.6 trở lên:
 
 - Provider picker của `hermes model` và Telegram `/model` hiện một dòng cho
   mỗi instance, mang tên của instance (`display_name`, nếu không có thì
@@ -116,7 +116,7 @@ phục vụ cùng một model id, id đó xuất hiện ở cả hai và CPA ch�
 wire là lựa chọn phù hợp nhất.
 
 Provider toàn instance (`cpa-main`) dùng cùng bảng này cho từng model trên
-Hermes 0.23.0 trở lên: model Claude, Kimi hoặc Kiro đi trên
+Hermes 0.22.6 trở lên: model Claude, Kimi hoặc Kiro đi trên
 `anthropic_messages`, model Codex, xAI hoặc Meta đi trên `codex_responses`,
 phần còn lại trên `chat_completions`. Model
 được các provider trên hai wire khác nhau phục vụ, và model mà plugin chưa liệt

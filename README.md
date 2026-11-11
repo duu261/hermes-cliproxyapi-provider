@@ -71,12 +71,12 @@ the instance's model lists, registers the providers it finds, and caches them,
 so later runs register them at startup with no network calls:
 
 - `cpa-main`: every model on the instance, each on the wire of the provider
-  that serves it (Hermes 0.23.0 or later; older Hermes keeps every model on
+  that serves it (Hermes 0.22.6 or later; older Hermes keeps every model on
   the chat wire).
 - `cpa-main-<provider>`: one per CPA provider, for example `cpa-main-claude`,
   `cpa-main-codex`, `cpa-main-xai`, `cpa-main-kimi`.
 
-On Hermes 0.23.0 or later:
+On Hermes 0.22.6 or later:
 
 - The provider pickers of `hermes model` and Telegram `/model` show one row
   per instance, named after it (`display_name`, else `CLIProxyAPI main`), with
@@ -115,7 +115,7 @@ same model id, it appears in both and CPA picks the account; the wire is then a
 best match.
 
 The instance-wide provider (`cpa-main`) uses the same table per model on
-Hermes 0.23.0 or later: a Claude, Kimi or Kiro model goes out on
+Hermes 0.22.6 or later: a Claude, Kimi or Kiro model goes out on
 `anthropic_messages`, a Codex, xAI or Meta model on `codex_responses`, the
 rest on `chat_completions`. A
 model that providers on two different wires serve, and a model the plugin has

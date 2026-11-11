@@ -240,7 +240,7 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(picks.display_name, "Picks")
         self.assertEqual(picks.api_mode, "chat_completions")
 
-    # ── Wire per model on the instance-wide provider (Hermes 0.23.0 and later) ──
+    # ── Wire per model on the instance-wide provider (Hermes 0.22.6 and later) ──
 
     def test_instance_wide_provider_names_each_models_wire(self):
         _, profiles = self.load()
@@ -303,7 +303,7 @@ class PluginTests(unittest.TestCase):
         # gemini serves it on chat, mine on Messages: no single wire, so chat.
         self.assertEqual(wide.api_mode_for_model("gemini-3.8-flash-high"), "chat_completions")
 
-    # ── Picker row, key hint and refresh (Hermes 0.23.0 and later) ──
+    # ── Picker row, key hint and refresh (Hermes 0.22.6 and later) ──
 
     def test_profiles_of_one_instance_share_one_picker_group(self):
         self.write_config(

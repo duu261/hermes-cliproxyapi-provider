@@ -15,9 +15,21 @@ Ideas that are parked. None of them is in any release, and none is promised.
 - Address masking in `/cpa` (hosts, IPs, paths in error text): drop it, or
   make it a setting. Emails, tokens and project ids stay masked either way.
 
+## 0.8.1
+
+Docs and comments only. No behavior change, no new request.
+
+- The provider features of 0.8.0 (a wire per model on `cpa-<instance>`, one
+  picker row per instance, the `--refresh` hook and the key hint) work on
+  Hermes 0.22.6 or later. The README and the 0.8.0 entry said 0.23.0 and
+  "older Hermes is unchanged". That was wrong for Hermes 0.22.6 and 0.22.7:
+  there too `cpa-<instance>` sends each model on the wire of its provider.
+  Hermes 0.22.5 and older are unchanged. The key hiding of `cpa-status`
+  still needs Hermes 0.23.1.
+
 ## 0.8.0
 
-- Provider: on Hermes 0.23.0 or later the instance-wide provider
+- Provider: on Hermes 0.22.6 or later the instance-wide provider
   (`cpa-<instance>`) sends each model on the wire of the CPA provider that
   serves it, from the wire table: Claude, Kimi and Kiro models on
   `anthropic_messages`, Codex, xAI and Meta models on `codex_responses`, the
@@ -31,7 +43,7 @@ Ideas that are parked. None of them is in any release, and none is promised.
   you pick. To start sessions on the wire of the model, run
   `hermes config unset model.api_mode`, or pick the model in a chat with
   `/model <id> --global`. Older Hermes is unchanged.
-- Provider, on Hermes 0.23.0 or later (older Hermes is unchanged):
+- Provider, on Hermes 0.22.6 or later (older Hermes is unchanged):
   - The provider pickers of `hermes model` and Telegram `/model` show one row
     per instance, with `cpa-<instance>` and its providers inside, instead of
     one row per provider. Display only: typed provider names and saved
