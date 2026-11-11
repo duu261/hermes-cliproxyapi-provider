@@ -30,14 +30,25 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
 
 - `/cpa`: one read-only `GET /v8/management/credentials` per instance, only
   when you type it. No timers, no retries; repeats within 20 seconds use
-  memory. Last-seen 5h and weekly quota for Claude and Codex accounts, as CPA
-  recorded it on real traffic.
+  memory. Last-seen quota as CPA recorded it: 5h and weekly for Claude and
+  Codex accounts (on real traffic), day and week for Devin accounts (at
+  sign-in and at CPA's status refresh). `/cpa <pool> <provider>` also shows each
+  account's priority when CPA lists one (`prio 1`) and its successful/failed
+  requests since CPA started (`total 2140/96`).
 - `/cpa quota`: like CPA's web UI quota page, for Claude, Codex, xAI,
   Antigravity, Devin and Kimi accounts through CPA's `api-call` route with the
   web UI's fixed requests (the account's token filled in by CPA), and for
-  other providers through their CPA quota plugin (e.g. Kiro). Nothing paid,
+  other providers through their CPA quota plugin (e.g. Kiro). A Codex line
+  also shows the day the subscription ends (`until Nov 16`) when CPA's
+  listing has it, at no extra request. A Claude or Antigravity line shows
+  the plan (`max20`, `pro`), from one more request per account. When the
+  vendor sends them, an xAI line shows usage by product, pay as you go and
+  a prepaid balance, and a Codex line shows limits on one feature or model
+  and banked limit resets, all from replies the run already fetches. On
+  Telegram, Discord, Slack, Matrix and Mattermost the reply is a code block
+  (Hermes 0.22.3 or later). Nothing paid,
   no downloads, no resets; the full request list is in the
-  [README](../README.md#cpa-quota-live-usage). At most 20 accounts and 3
+  [README](../README.md#cpa-quota-live-usage). At most 20 accounts and 4
   requests per account per run, first request alone, then 4 at a time;
   repeats within 60 seconds use memory. A run sends no new request after
   60 seconds.
@@ -50,8 +61,18 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   account index, the Codex account id, the Antigravity project id and the CPA
   plugin id are used only to build the quota requests, never shown or stored.
 - Idle chats only: sent during an agent turn it goes to Hermes' busy handling.
-- The management key is full admin on CPA, and Hermes does not strip it from
-  agent shells. CPA bans an IP after five failed management keys in a row; a
+- The management key is full admin on CPA. On Hermes 0.23.1 or later this
+  plugin removes each `mgmt_key_env`, and the CPA `key_env` of an instance
+  with `route_via`, from the environment of the terminal commands a chat
+  session runs (checked on the local terminal backend only). It does not
+  protect the file the keys are loaded from, and shell hooks, cron job
+  scripts and any process Hermes starts with no session bound can still see
+  them. Setting `hide_keys_from_shells`, on by default and read when
+  the plugin loads; turn it off with
+  `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`.
+  On older Hermes nothing is hidden. Details and limits:
+  [Security](../README.md#security).
+- CPA bans an IP after five failed management keys in a row; a
   rejected key is never sent again (salted HMAC in
   `$HERMES_HOME/cache/cliproxyapi/locks/rejected.json`). Read
   [Never get locked out of CPA](../README.md#never-get-locked-out-of-cpa).

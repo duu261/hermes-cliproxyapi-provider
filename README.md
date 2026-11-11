@@ -70,9 +70,27 @@ Then run `hermes model` (or anything that lists models) once. The plugin reads
 the instance's model lists, registers the providers it finds, and caches them,
 so later runs register them at startup with no network calls:
 
-- `cpa-main`: every model on the instance, on the chat wire.
+- `cpa-main`: every model on the instance, each on the wire of the provider
+  that serves it (Hermes 0.23.0 or later; older Hermes keeps every model on
+  the chat wire).
 - `cpa-main-<provider>`: one per CPA provider, for example `cpa-main-claude`,
   `cpa-main-codex`, `cpa-main-xai`, `cpa-main-kimi`.
+
+On Hermes 0.23.0 or later:
+
+- The provider pickers of `hermes model` and Telegram `/model` show one row
+  per instance, named after it (`display_name`, else `CLIProxyAPI main`), with
+  `cpa-main` and its providers inside. Before the first listing an instance
+  has only `cpa-main`, which stays a plain row. Typed provider names are
+  unchanged.
+- `hermes model --refresh` and `/model --refresh` also drop the plugin's own
+  memo of the model list, so the next listing reads CPA again. Without it,
+  one listing serves every provider of the instance for 30 seconds. The
+  management pass keeps its 15 minute pace.
+- When the key variable is empty, Hermes' "No usable credentials" message
+  also says which key it takes: a CPA client key, not the management key.
+  With a billing route (`route_via`) it names the gateway key variable and the
+  CPA one.
 
 `hermes doctor` and multi-process setups (`plugins.isolation: host`) see
 providers that appeared after startup only after a restart.
@@ -95,6 +113,23 @@ listing. It writes its own cache after its first successful listing.
 Override per provider with `api_mode` (see below). When two providers serve the
 same model id, it appears in both and CPA picks the account; the wire is then a
 best match.
+
+The instance-wide provider (`cpa-main`) uses the same table per model on
+Hermes 0.23.0 or later: a Claude, Kimi or Kiro model goes out on
+`anthropic_messages`, a Codex, xAI or Meta model on `codex_responses`, the
+rest on `chat_completions`. A
+model that providers on two different wires serve, and a model the plugin has
+not listed yet, stay on `chat_completions`. An `api_mode` override on a
+provider applies here too. A group built from `models` patterns decides a
+model's wire only when the group sets `api_mode`, or has the name of a
+provider with a non-chat wire in the table. Older Hermes sends every model of
+`cpa-main` on `chat_completions`.
+
+Hermes saves a wire with the default model (`model.api_mode`) and uses a saved
+wire when it starts a session. `hermes model` saves `chat_completions` for
+`cpa-main`, whatever model you pick. To get the wire of the model at session
+start, run `hermes config unset model.api_mode`, or pick the model in a chat
+with `/model <id> --global`, which saves the wire of that model.
 
 Keep `xai` on `codex_responses`. Grok 4.7 returns its reasoning as an
 encrypted item that the client must send back on the next turn
@@ -147,8 +182,8 @@ Public mode is enough when each model has one provider and CPA's vendor labels
 match its providers. Management mode is the precise one; its cost is the key.
 A CPA management key can change config and add or remove accounts. The plugin
 only sends the reads below, but Hermes does not strip `mgmt_key_env` from agent
-shells (see Security), so any agent tool that can read your environment can
-read it too.
+shells, so any agent tool that can read your environment can read it too,
+unless the `cpa-status` plugin hides it (Hermes 0.23.1 or later, see Security).
 
 What management mode sends:
 
@@ -227,10 +262,12 @@ cliproxyapi:
   channel, pricing or billing APIs.
 - Known limit: Hermes strips from agent subprocesses only the key names a
   registered provider declares. Routed providers declare the gateway key, so
-  the CPA `key_env` (needed for discovery) stays visible to agent shells on a
-  routed instance. `mgmt_key_env` is never declared on a provider, so it is
-  not stripped on routed or unrouted instances. Hermes has no plugin hook to
-  declare a secret without making it an inference credential yet.
+  Hermes leaves the CPA `key_env` (needed for discovery) visible to agent
+  shells on a routed instance. `mgmt_key_env` is never declared on a provider,
+  so Hermes does not strip it on routed or unrouted instances. The
+  `cpa-status` plugin hides both from the commands of a chat session on
+  Hermes 0.23.1 or later; Security says what that covers and what it does
+  not.
 
 ## Metadata
 
@@ -259,8 +296,30 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
 - Keys are referenced by environment variable name and resolved by Hermes.
 - Hermes strips from agent subprocesses only the env names a registered
   provider declares. Every profile declares its inference key (`key_env`, or
-  the gateway key on a routed instance), so `mgmt_key_env`, and on a routed
-  instance the CPA `key_env`, stay readable by agent shells.
+  the gateway key on a routed instance), so Hermes leaves `mgmt_key_env`, and
+  on a routed instance the CPA `key_env`, readable by agent shells.
+- The `cpa-status` plugin hides those variables on Hermes 0.23.1 or later. It
+  removes them from the environment of the commands a chat session runs:
+  terminal commands in the foreground and background, the ones `execute_code`
+  starts included, and the helper processes Hermes starts from its cleaned
+  environment (language servers, lint, text to speech and similar). It does
+  not cover shell hooks, cron job scripts, processes Hermes starts with the
+  profile's credentials (a `key_cmd` helper, for example), or any process
+  started with no session bound: those can still see the variables. Checked
+  on the local terminal backend with one profile only. Remote backends
+  (docker, ssh and others) do not apply the hiding: a variable that is
+  forwarded to one is not hidden there. It hides environment variables and
+  nothing else: a command that can read the file Hermes loads keys from
+  (`~/.hermes/.env`) can still read them. A variable whose name starts with
+  `HERMES_`, or that another plugin already manages, stays visible, and a log
+  warning names it. The names are read when the plugin loads, so a
+  `mgmt_key_env` or `route_via` added later is hidden only after the next
+  Hermes restart. On older Hermes, or without `cpa-status` enabled, nothing
+  is hidden.
+- Hiding is on by default. A script you run through the agent that reads one
+  of these variables stops finding it. To turn hiding off, run
+  `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
+  and restart Hermes.
 - Plain `http://` is allowed only when every address the host resolves to is
   loopback, RFC 1918, 100.64/10 or IPv6 ULA. Anything else needs `https://`.
 - No redirects, capped responses, and failures reported as an HTTP status and
@@ -352,9 +411,9 @@ pre · v8.0.51
   codex 4: 3 active · 1 cooling (next 17:20)
   xai 2: 2 active
 CPA v8.0.52 available (running v8.0.51)
-pre / codex · 4 accounts
-codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
-codex-bo…@…  cooling until 17:20 (quota)
+pre / codex · 4 accounts · total = since CPA start
+codex-al…@…  active · prio 1 · 1h 173/71 · total 2140/96 · 5h 22% · wk 0% (1m ago)
+codex-bo…@…  cooling until 17:20 (vendor limit reached)
 ```
 
 - Read-only: one `GET /v8/management/credentials` per instance per run (v0
@@ -365,9 +424,16 @@ codex-bo…@…  cooling until 17:20 (quota)
   from CPA's own update route (`GET /v8/management/server/latest-version`,
   which asks GitHub): one request per Hermes process every 6 hours, 10
   minutes after a failure. A failure only hides the line.
-- Last-seen quota (5h and weekly) comes from what CPA recorded on real traffic
-  for Claude and Codex accounts. CPA records none for other providers. Plain
-  `/cpa` never asks CPA to check quota upstream; `/cpa quota` does.
+- Last-seen quota comes from what CPA recorded. For Claude and Codex accounts
+  (5h and weekly) CPA records it on real traffic. For Devin accounts (day and
+  week) CPA records it when the account signs in and when CPA refreshes the
+  account's status, so a Devin figure can be old; the line shows its age. CPA
+  records none for other providers. Plain `/cpa` never asks CPA to check quota
+  upstream; `/cpa quota` does.
+- `/cpa pre codex` also shows each account's priority when CPA lists one
+  (`prio 1`) and its successful/failed requests: `1h` is the last hour,
+  `total` is since CPA started. CPA keeps the totals in memory only, so they
+  start again at zero when CPA restarts.
 - Emails in account names and messages are masked. `email`, `account`,
   `project_id` and `path` are never shown (`/cpa quota` uses the Antigravity
   `project_id` only to build its request); the account's project id is
@@ -387,11 +453,17 @@ codex-bo…@…  cooling until 17:20 (quota)
 
 ```
 pre quota · live 21:40
+
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-codex-xy…@…  plus  5h 100% → 22:10 · wk 60% → Nov 02  OUT
-codex-bd…@…  pro  wk 31% → Oct 30
-codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
-codex-cu…@…  pro  wk 40% → Nov 01
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+    codex-cu…@… pro   wk 40%
+    codex-bd…@… pro   wk 31%
+
+antigravity · 1 account: 1 have room
+antigravity-01…@… pro  out: claude and gpt
+  gemini          5h 0% · wk 12%
+  claude and gpt  5h 100% → 23:10 · wk 64%
 ```
 
 `/cpa quota <pool>` asks each vendor how much of each account is used, the way
@@ -402,29 +474,45 @@ quota plugin when CPA lists one. Every request, and when it is sent:
 
 | Provider | Requests per account | What you see |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; weekly model and app limits when sent (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage when on, with spend/limit; credit pools (`$ left`) |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan, credits when the account has them |
-| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk` (`wk no figure yet` until xAI reports a percent); monthly spend `mo` and plan (`supergrok` / `supergrok_heavy`) only when xAI reports a monthly limit |
-| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota | per model group, `5h` and `wk` |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage`, then GET `https://api.anthropic.com/api/oauth/profile` for the plan | `5h`, `wk`; weekly model and app limits when sent (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage when on, with spend/limit; credit pools (`$ left`); plan (`team`, `max20`, `max5`, `max`, `pro`, `free`) |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan, credits when the account has them; limits on one feature or model when sent (`<name> wk`); banked limit resets as a count (`2 resets banked`); the day the subscription ends (`until Nov 16`) when CPA's listing has it, at no extra request |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk` (`wk no figure yet` until xAI reports a percent); monthly spend `mo` only when xAI reports a monthly limit; when xAI sends them, the share of the weekly credits each product used (`grokbuild 30%, api 6%`), pay as you go (`payg off`, or spend/cap as `payg $3.00/$50.00`) and a prepaid balance (`prepaid $25.00`) |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota; then POST `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` for the plan | per model group, `5h` and `wk`; plan (`free`, `pro`, `ultra`, `ultra-lite`) |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` when CPA lists the account as `kimi-ai`) | each limit window, weekly, `mo` |
 | CPA plugin quota (e.g. Kiro) | GET `/v8/management/plugins/<id>/quota` on CPA; the plugin asks its vendor | the plugin's meters and plan |
 
-None of these cost money or use up quota: they are the same usage reads the
-web UI makes. Left out on purpose: xAI's paid 1-token chat check (the web UI's
-fallback for paid API-key accounts, which then show the billing error),
-identity and plan lookups, downloading account files, and every reset.
+None of these cost money or use up quota: they are the same reads the web UI
+makes for its quota page. Left out on purpose: xAI's paid 1-token chat check
+(the web UI's fallback for paid API-key accounts, which then show the billing
+error), every other identity or plan lookup, downloading account files, and
+every reset.
 
 The headers, including each vendor's CLI `User-Agent`, are the web UI's. The
 percent is what is used (vendors that report what is left are converted);
-there are no totals across plans. An account is `OUT` when a window is at 100%
-or the vendor says it is blocked. Antigravity is per model group: CPA holds back
-only the models that ran out, so an account is `OUT` only when every group is
-full; otherwise the full groups show as `out: <group>`. Claude's model-scoped
-weekly limits (Fable, Opus, Sonnet, apps, Cowork) work the same way: a full one
-shows as `out: fable` and the account keeps serving other models.
+there are no totals across plans. A window shows when it resets (`→ 22:10`)
+only at 80% used or more. An account is `OUT`, at the start of its line, when
+a window is at 100% or the vendor says it is blocked. Antigravity is per model
+group, one line per group under the account (`gemini`, `claude and gpt`): CPA
+holds back only the models that ran out, so an account is `OUT` only when
+every group is full; otherwise the full groups show as `out: <group>`.
+Claude's model-scoped weekly limits (Fable, Opus, Sonnet, apps, Cowork) work
+the same way: a full one shows as `out: fable` and the account keeps serving
+other models. So do Codex limits on one feature or model.
 
-- Only when you type it. At most 20 accounts and 3 requests per account per
+- On Telegram, Discord, Slack, Matrix and Mattermost the reply is sent as a
+  code block, so the columns line up. This needs Hermes 0.22.3 or later, which
+  tells the command the platform; elsewhere, and on older Hermes, the reply is
+  plain text.
+- The plan of a Claude or Antigravity account costs one more request per
+  account (the profile and `loadCodeAssist` requests in the table), sent only
+  after that account's usage was read. Only the plan fields of the reply are
+  read, and the plan is shown as one of the fixed words in the table; a value
+  that is not on the list shows no plan. The replies also carry a name, an
+  email, an organization name and the project id: none of them is read, shown
+  or kept. When the request fails, the line has no plan and nothing else
+  changes; it is not retried.
+- Only when you type it. At most 20 accounts and 4 requests per account per
   run. The first request goes alone, then at most 4 at a time; a repeat within
   60 seconds answers from memory. Disabled accounts are skipped. A run sends
   no new request after 60 seconds; accounts it did not reach show
@@ -434,6 +522,10 @@ shows as `out: fable` and the account keeps serving other models.
   `kiro`.
 - An expired account token shows `token rejected by vendor` and never counts
   against CPA's lockout. A rejected management key stops the run.
+- `until Nov 16` after a Codex plan is the day the subscription ends. It is
+  read from CPA's account listing (the `chatgpt_subscription_active_until`
+  claim of the ID token CPA stores), not asked from the vendor, so it is as
+  old as that token: a date that has passed shows as `until Oct 03 (past)`.
 - CPA's account index, the Codex account id, the Antigravity project id and
   the CPA plugin id are used only to build requests and are never shown,
   logged or cached. Vendor replies are read field by field; bodies and
@@ -455,6 +547,7 @@ newer CPA:
 | Model definitions for plugin providers (Kiro and others) | v8.0.34+ |
 | `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
 | `/cpa` last-seen quota | v7.2.142+ |
+| `/cpa` last-seen quota for Devin | v7.3.0+ |
 | `/cpa` CPA version | v6.3.36+ |
 | `/cpa` update hint | v6.5.42+ |
 | `/cpa quota` built-in vendors (`api-call` with `$TOKEN$`) | v6.6.63+ |

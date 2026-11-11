@@ -8,7 +8,10 @@ quota plugin serves quota (e.g. Kiro) are read with CPA's plugin quota GET.
 Rules (see AGENTS.md, "/cpa status"):
 
 - Only on command. Requests are fixed in code; nothing from the user or config
-  reaches one. No paid, identity, download or reset calls.
+  reaches one. No paid, download or reset calls. Besides usage, the only
+  lookups are the two tier requests (the Claude profile and Antigravity
+  ``loadCodeAssist``), sent after an account's usage was read and used for
+  the plan word alone.
 - The whole run holds the shared management guard for its CPA once. Accounts
   are tried one at a time, one request at a time, until a reply proves CPA
   accepted the key; an outer 401 latches the key and stops the run. After that
@@ -30,7 +33,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, NoReturn
 from urllib.parse import quote
@@ -46,7 +49,8 @@ except ImportError:  # pragma: no cover - direct import in tests
 # router-for-me/Cli-Proxy-API-Management-Center@64b4f5aed1
 # src/utils/quota/constants.ts, src/features/quota/providers/*/data.ts and
 # devin/requests.ts (the xAI client version is from @38990aec51). CPA v8.0.46
-# fills TOKEN in header values and in data.
+# fills TOKEN in header values and in data. The two tier requests are from
+# @953fb24443: providers/claude/data.ts and services/api/antigravitySubscription.ts.
 
 TOKEN = "$" + "TOKEN" + "$"
 BEARER = "Bearer " + TOKEN
@@ -57,9 +61,13 @@ class Probe(NamedTuple):
     url: str
     header: dict[str, str]
     data: str = ""
+    # A tier request: sent once, after the account's usage was read, to show
+    # the plan. It never fails the account's row (see ``_Runner._tier``).
+    tier: bool = False
 
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 XAI_WEEKLY_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 XAI_MONTHLY_URL = "https://cli-chat-proxy.grok.com/v1/billing"
@@ -68,10 +76,20 @@ ANTIGRAVITY_URLS = (
     "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
 )
+ANTIGRAVITY_TIER_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+ANTIGRAVITY_TIER_DATA = '{"metadata":{"ideType":"ANTIGRAVITY"}}'
 DEVIN_URL = "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"
 KIMI_COM_URL = "https://api.kimi.com/coding/v1/usages"
 KIMI_AI_URL = "https://api.kimi.ai/coding/v1/usages"
 
+# The Management Center sends these on both Claude requests, plus ``Accept``
+# on the usage request only.
+_CLAUDE_HEADER = {
+    "Authorization": BEARER,
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.280 (external, cli)",
+    "anthropic-beta": "oauth-2025-04-20",
+}
 _XAI_VERSION = "1.0.70"
 _XAI_HEADER = {
     "Authorization": BEARER,
@@ -103,17 +121,8 @@ _PROJECT = "<project>"  # becomes {"project":"<project_id>"} for the account
 
 QUOTA_REQUESTS: dict[str, tuple[Probe, ...]] = {
     "claude": (
-        Probe(
-            "GET",
-            CLAUDE_USAGE_URL,
-            {
-                "Authorization": BEARER,
-                "Content-Type": "application/json",
-                "User-Agent": "claude-cli/2.1.280 (external, cli)",
-                "anthropic-beta": "oauth-2025-04-20",
-                "Accept": "application/json",
-            },
-        ),
+        Probe("GET", CLAUDE_USAGE_URL, {**_CLAUDE_HEADER, "Accept": "application/json"}),
+        Probe("GET", CLAUDE_PROFILE_URL, _CLAUDE_HEADER, tier=True),
     ),
     "codex": (
         Probe(
@@ -132,8 +141,9 @@ QUOTA_REQUESTS: dict[str, tuple[Probe, ...]] = {
         Probe("GET", XAI_WEEKLY_URL, _XAI_HEADER),
         Probe("GET", XAI_MONTHLY_URL, _XAI_HEADER),
     ),
-    "antigravity": tuple(
-        Probe("POST", url, _ANTIGRAVITY_HEADER, _PROJECT) for url in ANTIGRAVITY_URLS
+    "antigravity": (
+        *(Probe("POST", url, _ANTIGRAVITY_HEADER, _PROJECT) for url in ANTIGRAVITY_URLS),
+        Probe("POST", ANTIGRAVITY_TIER_URL, _ANTIGRAVITY_HEADER, ANTIGRAVITY_TIER_DATA, tier=True),
     ),
     "devin": (
         Probe(
@@ -166,27 +176,40 @@ _PLAN_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _SELECTOR_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 
 
+def _body(probe: Probe, provider: str, entry: dict[str, Any], target: str) -> dict[str, Any]:
+    url, header = probe.url, dict(probe.header)
+    if provider == "codex" and entry.get("_acct"):
+        header["Chatgpt-Account-Id"] = entry["_acct"]
+    if provider == "kimi" and entry.get("_kimi_ai") is True:
+        url = KIMI_AI_URL
+    body: dict[str, Any] = {
+        "auth_index": target,
+        "method": probe.method,
+        "url": url,
+        "header": header,
+    }
+    if probe.data == _PROJECT:
+        body["data"] = json.dumps({"project": entry["_project"]}, separators=(",", ":"))
+    elif probe.data:
+        body["data"] = probe.data
+    return body
+
+
 def request_bodies(provider: str, entry: dict[str, Any], target: str) -> list[dict[str, Any]]:
-    """The exact JSON CPA receives for one account, in send order."""
-    bodies = []
-    for probe in QUOTA_REQUESTS[provider]:
-        url, header = probe.url, dict(probe.header)
-        if provider == "codex" and entry.get("_acct"):
-            header["Chatgpt-Account-Id"] = entry["_acct"]
-        if provider == "kimi" and entry.get("_kimi_ai") is True:
-            url = KIMI_AI_URL
-        body: dict[str, Any] = {
-            "auth_index": target,
-            "method": probe.method,
-            "url": url,
-            "header": header,
-        }
-        if probe.data == _PROJECT:
-            body["data"] = json.dumps({"project": entry["_project"]}, separators=(",", ":"))
-        elif probe.data:
-            body["data"] = probe.data
-        bodies.append(body)
-    return bodies
+    """The exact JSON CPA receives for one account's usage, in send order."""
+    return [
+        _body(probe, provider, entry, target)
+        for probe in QUOTA_REQUESTS[provider]
+        if not probe.tier
+    ]
+
+
+def tier_body(provider: str, entry: dict[str, Any], target: str) -> dict[str, Any] | None:
+    """The exact JSON of the provider's tier request, or None when it has none."""
+    for probe in QUOTA_REQUESTS.get(provider, ()):
+        if probe.tier:
+            return _body(probe, provider, entry, target)
+    return None
 
 
 # ── Parsing vendor replies ──────────────────────────────────────────────────
@@ -211,7 +234,10 @@ class Usage:
     # The vendor confirmed a running window but sent no figure for it (xAI
     # leaves the percent out until an account has used enough). Never a 0.
     pending: list[Window] = field(default_factory=list)
-    extra: str = ""  # Claude extra usage and credit pools, Codex credits; only when present
+    # Shown after the windows, only when present: Claude extra usage and credit
+    # pools; Codex credits and banked resets; xAI usage by product, pay as you
+    # go and prepaid balance.
+    extra: str = ""
 
 
 def _num(raw: Any) -> float | None:
@@ -236,15 +262,7 @@ def _first(data: dict[str, Any], *keys: str) -> Any:
 
 def _instant(raw: Any) -> datetime | None:
     """ISO time, or unix seconds (milliseconds when that large)."""
-    if isinstance(raw, str):
-        text = raw.strip()
-        if not re.fullmatch(r"\d+(\.\d+)?", text):
-            return status.parse_time(text)
-        raw = text
-    value = _num(raw)
-    if value is None or value <= 0:
-        return None
-    return status._unix(value / 1000 if value > 1e11 else value)
+    return status.instant(raw)
 
 
 def _plan(raw: Any) -> str:
@@ -361,6 +379,90 @@ def parse_claude(payload: Any) -> Usage:
     return usage
 
 
+# ── Subscription tier (the two tier requests) ───────────────────────────────
+# Only the fields named here are read; the replies also carry a name, an
+# email, an organization name and the project id. The result is one of the
+# fixed words below or "", never a value from the reply.
+
+
+def _word(raw: Any) -> str:
+    """A reply field as trimmed text, like the Management Center reads it."""
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw):
+        return str(raw)
+    return ""
+
+
+def _flag(raw: Any) -> bool | None:
+    """A yes/no reply field; None when it is missing or not a yes or a no."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    if isinstance(raw, str):
+        word = raw.strip().lower()
+        if word in ("true", "1", "yes", "y", "on"):
+            return True
+        if word in ("false", "0", "no", "n", "off"):
+            return False
+    return None
+
+
+# Only the organization's rate-limit tier tells Max 5x from Max 20x.
+_CLAUDE_MAX = (("claude_max_20x", "max20"), ("claude_max_5x", "max5"))
+
+
+def parse_claude_tier(payload: Any) -> str:
+    """``team``, ``max20``, ``max5``, ``max``, ``pro``, ``free`` or ``""``."""
+    if not isinstance(payload, dict):
+        return ""
+    org, acct = payload.get("organization"), payload.get("account")
+    org = org if isinstance(org, dict) else {}
+    acct = acct if isinstance(acct, dict) else {}
+    kind = _word(org.get("organization_type")).lower()
+    if kind == "claude_team" and _word(org.get("subscription_status")).lower() == "active":
+        return "team"
+    rate = _word(org.get("rate_limit_tier")).lower()
+    for ending, word in _CLAUDE_MAX:
+        if rate.endswith(ending):
+            return word
+    has_max, has_pro = _flag(acct.get("has_claude_max")), _flag(acct.get("has_claude_pro"))
+    if has_max:
+        return "max"
+    if has_pro:
+        return "pro"
+    if has_max is False and has_pro is False:
+        return "free"
+    return ""
+
+
+_ANTIGRAVITY_TIERS = {
+    "free-tier": "free",
+    "g1-pro-tier": "pro",
+    "g1-ultra-tier": "ultra",
+    "g1-ultra-lite-tier": "ultra-lite",
+}
+
+
+def parse_antigravity_tier(payload: Any) -> str:
+    """``free``, ``pro``, ``ultra``, ``ultra-lite`` or ``""``: the paid tier, else the current."""
+    if not isinstance(payload, dict):
+        return ""
+
+    def tier_id(key: str) -> str:
+        tier = payload.get(key)
+        return _word(tier.get("id")) if isinstance(tier, dict) else ""
+
+    return _ANTIGRAVITY_TIERS.get(tier_id("paidTier") or tier_id("currentTier"), "")
+
+
+_TIER_PARSERS: dict[str, Callable[[Any], str]] = {
+    "claude": parse_claude_tier,
+    "antigravity": parse_antigravity_tier,
+}
+
+
 _FIVE_HOURS = 18000
 _WEEK = 604800
 _MONTH = (28 * 86400, 31 * 86400)
@@ -381,24 +483,26 @@ def _codex_label(seconds: float | None, position: str) -> str | None:
     return status._minutes_label(int(seconds // 60))
 
 
-def parse_codex(payload: Any, now: datetime) -> Usage:
-    usage = Usage()
-    if not isinstance(payload, dict):
-        return usage
-    plan = payload.get("plan_type")
-    if isinstance(plan, str):
-        # Codex also sends hyphenated plans ("pro-lite"); one spelling is shown.
-        value = plan.strip().lower().replace("-", "_")
-        if _PLAN_RE.match(value):
-            usage.plan = value
-    usage.extra = _codex_credits(payload)
-    limit = payload.get("rate_limit")
-    if limit is None:
-        limit = payload.get("rateLimit")
+def _name(raw: Any, limit: int) -> str:
+    """A vendor's name for a product or a limit: masked, bounded, lower case.
+
+    Empty when nothing readable is left (not text, blank, or all masked).
+    """
+    text = _label(raw, limit).lower().strip()
+    return text if any(ch.isalnum() for ch in text) else ""
+
+
+def _codex_windows(limit: Any, now: datetime, name: str = "") -> tuple[list[Window], bool]:
+    """The windows of one Codex rate limit, and whether the vendor says it is reached.
+
+    ``name`` marks an additional limit, on one feature or model: its windows
+    carry the name and are scoped, so a full one never makes the account OUT.
+    """
     if not isinstance(limit, dict):
-        return usage
+        return [], False
     reached_flag = limit.get("limit_reached", limit.get("limitReached"))
-    usage.reached = reached_flag is True or limit.get("allowed") is False
+    reached = reached_flag is True or limit.get("allowed") is False
+    windows: list[Window] = []
     taken: set[str] = set()
     for keys, position in (
         (("primary_window", "primaryWindow"), "5h"),
@@ -415,15 +519,73 @@ def parse_codex(payload: Any, now: datetime) -> Usage:
         if resets is None:
             after = _num(window.get("reset_after_seconds", window.get("resetAfterSeconds")))
             if after is not None and after >= 0:
-                resets = now + timedelta(seconds=after)
+                resets = status._later(now, after)
         used = _used(window.get("used_percent", window.get("usedPercent")))
         if used is None:
-            if not (usage.reached and resets is not None):
+            if not (reached and resets is not None):
                 continue
             used = 100.0  # as the Management Center does
         taken.add(label)
-        usage.windows.append(Window(label, used, resets))
+        shown = f"{name} {label}" if name else label
+        windows.append(Window(shown, used, resets, scoped=bool(name)))
+    return windows, reached
+
+
+# Additional limits shown per account.
+_CODEX_EXTRA_LIMITS = 4
+
+
+def _codex_additional(payload: dict[str, Any], now: datetime) -> list[Window]:
+    """``additional_rate_limits``: a limit on one feature or model (e.g. Codex Spark)."""
+    items = _first(payload, "additional_rate_limits", "additionalRateLimits")
+    found: list[Window] = []
+    limits = 0
+    for index, item in enumerate(items if isinstance(items, list) else []):
+        if not isinstance(item, dict) or limits >= _CODEX_EXTRA_LIMITS:
+            continue
+        name = (
+            _name(_first(item, "limit_name", "limitName"), 24)
+            or _name(_first(item, "metered_feature", "meteredFeature"), 24)
+            or f"limit {index + 1}"
+        )
+        seen = {w.label for w in found}
+        windows, _ = _codex_windows(_first(item, "rate_limit", "rateLimit"), now, name)
+        windows = [w for w in windows if w.label not in seen]
+        if windows:
+            limits += 1
+            found += windows
+    return found
+
+
+def parse_codex(payload: Any, now: datetime) -> Usage:
+    usage = Usage()
+    if not isinstance(payload, dict):
+        return usage
+    plan = payload.get("plan_type")
+    if isinstance(plan, str):
+        # Codex also sends hyphenated plans ("pro-lite"); one spelling is shown.
+        value = plan.strip().lower().replace("-", "_")
+        if _PLAN_RE.match(value):
+            usage.plan = value
+    usage.extra = " · ".join(filter(None, [_codex_credits(payload), _codex_banked(payload)]))
+    usage.windows, usage.reached = _codex_windows(_first(payload, "rate_limit", "rateLimit"), now)
+    usage.windows += _codex_additional(payload, now)
     return usage
+
+
+def _codex_banked(payload: dict[str, Any]) -> str:
+    """Banked limit resets, from the count the usage reply carries.
+
+    The Management Center asks a second URL for each one's expiry; that request
+    is not sent here, so only the count is shown.
+    """
+    banked = _first(payload, "rate_limit_reset_credits", "rateLimitResetCredits")
+    if not isinstance(banked, dict):
+        return ""
+    count = _num(_first(banked, "available_count", "availableCount"))
+    if count is None or count != int(count) or not 1 <= count <= 999:
+        return ""
+    return f"{int(count)} reset{'' if count == 1 else 's'} banked"
 
 
 def _codex_credits(payload: dict[str, Any]) -> str:
@@ -441,9 +603,6 @@ def _codex_credits(payload: dict[str, Any]) -> str:
         return ""
     value = float(text)
     return f"credits {value:,.2f}".removesuffix(".00") if value else ""
-
-
-_XAI_PLANS = {15000: "supergrok", 150000: "supergrok_heavy"}  # monthly limit, cents
 
 
 def _xai_config(payload: Any) -> dict[str, Any] | None:
@@ -480,12 +639,59 @@ def parse_xai(weekly: Any, monthly: Any) -> Usage:
         (v for c in configs if (v := _first(c, "billingPeriodEnd", "billing_period_end"))),
         None,
     )
-    if limit is not None and limit == int(limit):
-        usage.plan = _XAI_PLANS.get(int(limit), "")
     if limit and limit > 0 and spent is not None and spent >= 0:
         if "mo" not in {w.label for w in usage.windows}:
             usage.windows.append(Window("mo", min(spent, limit) / limit * 100, _instant(end)))
+    usage.extra = _xai_extra(configs)
     return usage
+
+
+_XAI_PRODUCTS = 6
+_CENTS_MAX = 10**11  # a billion dollars; anything larger is not an amount
+
+
+def _xai_products(config: dict[str, Any]) -> str:
+    """``grokbuild 30%, api 6%``: the share of the weekly credits each product used."""
+    items = _first(config, "productUsage", "product_usage")
+    parts: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or len(parts) >= _XAI_PRODUCTS:
+            continue
+        name = _name(item.get("product"), 16)
+        used = _used(_first(item, "usagePercent", "usage_percent"))
+        if name and used is not None:  # no figure is left out, never shown as 0%
+            parts.append(f"{name} {int(used)}%")
+    return ", ".join(parts)
+
+
+def _xai_amount(configs: list[dict[str, Any]], *keys: str) -> float | None:
+    """The first reply's value for a cents field, when it is a plausible amount."""
+    for config in configs:
+        value = _cents(_first(config, *keys))
+        if value is not None and 0 <= value <= _CENTS_MAX:
+            return value
+    return None
+
+
+def _xai_extra(configs: list[dict[str, Any]]) -> str:
+    """Usage by product, pay as you go and prepaid balance, from the billing replies.
+
+    Each part is shown only when xAI sent it: a missing cap is not ``off``.
+    """
+    products = next((text for config in configs if (text := _xai_products(config))), "")
+    cap = _xai_amount(configs, "onDemandCap", "on_demand_cap")
+    spent = _xai_amount(configs, "onDemandUsed", "on_demand_used")
+    if cap is None:
+        payg = ""
+    elif cap == 0:
+        payg = "payg off"
+    elif spent is None:
+        payg = f"payg cap {_money(cap, 'USD')}"
+    else:
+        payg = f"payg {_money(spent, 'USD')}/{_money(cap, 'USD')}"
+    balance = _xai_amount(configs, "prepaidBalance", "prepaid_balance")
+    prepaid = f"prepaid {_money(balance, 'USD')}" if balance else ""
+    return " · ".join(filter(None, [products, payg, prepaid]))
 
 
 _WINDOW_LABELS = {"5h": "5h", "five-hour": "5h", "five_hour": "5h", "weekly": "wk", "week": "wk"}
@@ -619,7 +825,7 @@ def _kimi_reset(data: dict[str, Any], now: datetime) -> datetime | None:
     for key in ("reset_in", "resetIn", "ttl"):
         seconds = _num(data.get(key))
         if seconds is not None and seconds > 0:
-            return now + timedelta(seconds=seconds)
+            return status._later(now, seconds)
     return None
 
 
@@ -768,6 +974,8 @@ class AccountResult:
     provider: str
     usage: Usage | None = None
     error: str = ""
+    # When a Codex subscription ends, from CPA's listing; None when not listed.
+    until: datetime | None = None
 
     def out_until(self) -> tuple[bool, datetime | None]:
         """Whether the account is out of quota now, and when it frees.
@@ -997,6 +1205,23 @@ class _Runner:
             return usage
         return parse_usage(provider, _payload(self.api(bodies[0])), now)
 
+    def _tier(self, entry: dict[str, Any], provider: str, target: str) -> str:
+        """The plan word from the provider's tier request, or ``""``.
+
+        Sent once, and only after the account's usage was read, so it is never
+        the run's first request. Any failure leaves the plan out: the account
+        keeps its usage row. An outer 401 still latches the key and stops the
+        run, like every other request.
+        """
+        body = tier_body(provider, entry, target)
+        if body is None:
+            return ""
+        try:
+            payload = _payload(self.api(body))
+        except (_AccountError, _StopError):
+            return ""
+        return _TIER_PARSERS[provider](payload)
+
     def account(self, entry: dict[str, Any], now: datetime) -> AccountResult:
         name, provider = status.display_name(entry), status.provider_of(entry)
         target = entry.get("_target")
@@ -1012,7 +1237,8 @@ class _Runner:
             return AccountResult(name, provider, error=str(exc))
         if not usage.windows and not usage.pending:
             return AccountResult(name, provider, error="no quota data")
-        return AccountResult(name, provider, usage=usage)
+        usage.plan = self._tier(entry, provider, target) or usage.plan
+        return AccountResult(name, provider, usage=usage, until=entry.get("_until"))
 
 
 def run(
@@ -1090,20 +1316,34 @@ USAGE = (
     "/cpa quota <pool> <provider> - claude, codex, xai, antigravity, devin, kimi,\n"
     "  or plugin (or a plugin's provider, e.g. kiro) for CPA plugin quota\n"
     "Asks each vendor through CPA, like CPA's web UI quota page: at most 20\n"
-    "accounts and 3 requests per account, cached 60 s. Percent = used."
+    "accounts and 4 requests per account, cached 60 s. Percent = used."
 )
 
 
+RESET_FROM = 80.0  # percent used from which a window shows its reset time
+# The account and plan columns are as wide as the longest value in a provider
+# block, up to these widths; a longer value is shown whole and breaks the column.
+_NAME_PAD = 40
+_PLAN_PAD = 28
+# Chat platforms whose Hermes adapter renders a Markdown code block. The view
+# is a table, so it is sent as one there. Anywhere else it stays plain text:
+# the CLI and the TUI print a command's reply as it is.
+_FENCE_PLATFORMS = frozenset({"telegram", "discord", "slack", "matrix", "mattermost"})
+
+
 def _when(moment: datetime, now: datetime) -> str:
-    local = moment.astimezone()
+    local = status._local(moment)
+    if local is None:
+        return moment.date().isoformat()  # a vendor can send any time: the date as sent
     if (moment - now).total_seconds() > 20 * 3600:
         return local.strftime("%b %d")
     return local.strftime("%H:%M")
 
 
-def _window_text(window: Window, now: datetime) -> str:
-    text = f"{window.label} {int(window.used)}%"
-    if window.resets_at is not None and window.resets_at > now:
+def _window_text(window: Window, now: datetime, label: str = "") -> str:
+    """``wk 85% → Nov 02``. The reset time is shown only on a nearly full window."""
+    text = f"{label or window.label} {int(window.used)}%"
+    if window.used >= RESET_FROM and window.resets_at is not None and window.resets_at > now:
         text += f" → {_when(window.resets_at, now)}"
     return text
 
@@ -1113,6 +1353,20 @@ def _pending_text(window: Window, now: datetime) -> str:
     if window.resets_at is not None and window.resets_at > now:
         text += f" → {_when(window.resets_at, now)}"
     return text
+
+
+def _until_text(until: datetime, now: datetime) -> str:
+    """``until Nov 16``: the day a subscription ends, as CPA's listing has it.
+
+    The date is a claim in the ID token CPA stores, fixed when that token was
+    issued, so it can be older than the vendor's (the web UI prefers a live
+    lookup this plugin does not send). One that has passed is marked, not hidden.
+    """
+    local, today = until.astimezone(), now.astimezone()
+    text = "until " + local.strftime("%b %d")
+    if local.year != today.year:
+        text += f" {local.year}"
+    return text + (" (past)" if until <= now else "")
 
 
 def _sort_key(item: AccountResult) -> tuple[int, float, str]:
@@ -1155,43 +1409,106 @@ def _provider_block(provider: str, items: list[AccountResult], now: datetime) ->
     if not_checked:
         parts.append(f"{not_checked} not checked")
     lines = [f"{provider} · {len(items)} {noun}: " + " · ".join(parts)]
-    for item in sorted(items, key=_sort_key):
+    rows = sorted(items, key=_sort_key)
+    any_out = out > 0
+    name_width = min(max((len(item.name) for item in rows), default=0), _NAME_PAD)
+    plans = {
+        id(item): _plan_words(item, now)
+        for item in rows
+        if not item.error and item.usage is not None
+    }
+    plan_width = min(max((len(text) for text in plans.values()), default=0), _PLAN_PAD)
+    for item in rows:
+        is_out, _ = item.out_until()
+        # OUT leads the line; the other accounts of the block are indented to match.
+        lead = "OUT " if is_out else "    " if any_out else ""
         if item.error or item.usage is None:
-            lines.append(f"{item.name}  {item.error}")
+            lines.append(f"{lead}{item.name.ljust(name_width)}  {item.error}".rstrip())
             continue
-        text = " · ".join(
-            [_window_text(w, now) for w in item.usage.windows]
+        plan = plans[id(item)]
+        groups = item.full_groups()
+        suffix = ""
+        if not is_out and groups:
+            suffix = "  out: " + ", ".join(sorted(_short_group(key) for key in groups))
+        elif not is_out and item.scoped_full():
+            suffix = "  out: " + ", ".join(item.scoped_full())
+        grouped = [w for w in item.usage.windows if w.group]
+        rest = (
+            [_window_text(w, now) for w in item.usage.windows if not w.group]
             + [_pending_text(w, now) for w in item.usage.pending]
             + ([item.usage.extra] if item.usage.extra else [])
         )
-        plan = f"  {item.usage.plan}" if item.usage.plan else ""
-        is_out, _ = item.out_until()
-        groups = item.full_groups()
-        suffix = "  OUT" if is_out else ""
-        if not is_out and groups:
-            suffix = "  out: " + ", ".join(sorted(g.split(":", 1)[-1] for g in groups))
-        elif not is_out and item.scoped_full():
-            suffix = "  out: " + ", ".join(item.scoped_full())
-        lines.append(f"{item.name}{plan}  {text}{suffix}")
+        if grouped:
+            # One line per model group under the account: CPA cools per group.
+            head = item.name + (f" {plan}" if plan else "")
+            lines.append(lead + "  ".join(x for x in (head, " · ".join(rest)) if x) + suffix)
+            keys = list(dict.fromkeys(w.group for w in grouped))
+            width = max(len(_short_group(key)) for key in keys)
+            for key in keys:
+                name = key.split(":", 1)[-1]
+                texts = [
+                    _window_text(w, now, w.label.removeprefix(name).strip())
+                    for w in grouped
+                    if w.group == key
+                ]
+                label = _short_group(key).ljust(width)
+                lines.append(f"{' ' * len(lead)}  {label}  {' · '.join(texts)}")
+            continue
+        head = item.name.ljust(name_width)
+        if plan_width:
+            head += " " + plan.ljust(plan_width)
+        lines.append((lead + "  ".join(x for x in (head, " · ".join(rest)) if x) + suffix).rstrip())
     return lines
 
 
-def render(pool: str, result: QuotaRun, cached: bool, selector: str, now: datetime) -> str:
+def _plan_words(item: AccountResult, now: datetime) -> str:
+    """``pro until Nov 16``: the plan and, for Codex, the day the subscription ends."""
+    words = [item.usage.plan] if item.usage is not None and item.usage.plan else []
+    if isinstance(item.until, datetime):
+        words.append(_until_text(item.until, now))
+    return " ".join(words)
+
+
+def _short_group(key: str) -> str:
+    """``0:Gemini Models`` -> ``gemini``: a model group's label in the view."""
+    name = key.split(":", 1)[-1]
+    return name.lower().removesuffix(" models").strip() or name
+
+
+def _fenced(text: str, platform: str | None) -> str:
+    """The view as a Markdown code block where the chat renders one, so columns line up."""
+    if not isinstance(platform, str) or platform.strip().lower() not in _FENCE_PLATFORMS:
+        return text
+    return "```\n" + text.replace("`", "'") + "\n```"
+
+
+def render(
+    pool: str,
+    result: QuotaRun,
+    cached: bool,
+    selector: str,
+    now: datetime,
+    platform: str | None = None,
+) -> str:
     when = result.when or now
     stamp = f"cached {int(time.monotonic() - result.at)}s" if cached else "live"
     lines = [f"{pool} quota · {stamp} {when.astimezone().strftime('%H:%M')}"]
     if result.timed_out:  # second line, so the size cap can never hide it
         lines.append(f"stopped after {RUN_SECONDS:g} s (slow replies); the rest is not checked")
+    head = len(lines)
     seen = {a.provider for a in result.accounts}
     order = [p for p in BUILTINS if p in seen] + sorted(seen - set(BUILTINS))
     for provider in order:
         items = [a for a in result.accounts if a.provider == provider]
+        lines.append("")  # a blank line in front of every provider block
         lines.extend(_provider_block(provider, items, now))
-    if len(lines) == 1 + result.timed_out:
+    if len(lines) == head:
         lines.append(f"no {selector + ' ' if selector else ''}accounts with live quota")
     if result.skipped:
+        if len(lines) > head + 1:
+            lines.append("")
         lines.append(f"+{result.skipped} more not checked (at most {MAX_ACCOUNTS} per run)")
-    return status._cap(lines)
+    return _fenced(status._cap(lines), platform)
 
 
 def report(
@@ -1201,6 +1518,7 @@ def report(
     home: Path,
     secret: Callable[[str], str | None],
     now: datetime | None = None,
+    platform: str | None = None,
 ) -> str:
     if not args or len(args) > 2 or args[0] in ("help", "-h", "--help"):
         return USAGE
@@ -1237,4 +1555,4 @@ def report(
             f" ({result.detail})" if result.detail else ""
         )
         return f"{spec.name}: {text}"
-    return render(spec.name, result, cached, selector, now)
+    return render(spec.name, result, cached, selector, now, platform)

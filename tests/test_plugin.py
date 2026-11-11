@@ -240,6 +240,123 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(picks.display_name, "Picks")
         self.assertEqual(picks.api_mode, "chat_completions")
 
+    # ── Wire per model on the instance-wide provider (Hermes 0.23.0 and later) ──
+
+    def test_instance_wide_provider_names_each_models_wire(self):
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        # Nothing listed yet: every model stays on the chat wire.
+        self.assertEqual(wide.api_mode_for_model("claude-opus-5-5"), "chat_completions")
+        wide.fetch_models(api_key=API_KEY)
+        self.assertEqual(wide.api_mode, "chat_completions")
+        self.assertEqual(wide.base_url, self.root + "/v1")
+        for model, mode in (
+            ("claude-opus-5-5", "anthropic_messages"),
+            ("gpt-5.6", "codex_responses"),
+            ("grok-4.6", "codex_responses"),
+            ("gemini-3.8-flash-high", "chat_completions"),
+            ("glm-5.3", "chat_completions"),
+            # Never None: Hermes keeps a saved wire when a profile gives none.
+            ("not-served", "chat_completions"),
+            ("", "chat_completions"),
+        ):
+            self.assertEqual(wide.api_mode_for_model(model), mode, model)
+            self.assertEqual(wide.api_mode_for_model(model, api_key=API_KEY), mode, model)
+
+    def test_only_the_instance_wide_provider_picks_a_wire_per_model(self):
+        from providers.base import ProviderProfile
+
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=API_KEY)
+        # Hermes treats a profile that overrides the hook as one that serves
+        # several wires; a provider profile has one wire and must not.
+        base = getattr(ProviderProfile, "api_mode_for_model", None)
+        for name, profile in profiles.items():
+            own = getattr(type(profile), "api_mode_for_model", None)
+            self.assertEqual(own is not base, name == "cpa-t", name)
+
+    def test_wire_per_model_follows_overrides_and_shared_ids(self):
+        self.write_config(
+            {
+                "t": {
+                    "base_url": self.root,
+                    "key_env": "T_KEY",
+                    "groups": {
+                        "xai": {"api_mode": "chat_completions"},
+                        "picks": {"models": ["gpt-*", "glm-*"]},
+                        "mine": {
+                            "models": ["claude-*", "gemini-*"],
+                            "api_mode": "anthropic_messages",
+                        },
+                    },
+                }
+            }
+        )
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        wide.fetch_models(api_key=API_KEY)
+        self.assertEqual(wide.api_mode_for_model("grok-4.6"), "chat_completions")
+        # picks is a named list on the default wire: gpt-5.6 is still a codex model.
+        self.assertEqual(profiles["cpa-t-picks"].api_mode, "chat_completions")
+        self.assertEqual(wide.api_mode_for_model("gpt-5.6"), "codex_responses")
+        self.assertEqual(wide.api_mode_for_model("claude-opus-5-5"), "anthropic_messages")
+        # gemini serves it on chat, mine on Messages: no single wire, so chat.
+        self.assertEqual(wide.api_mode_for_model("gemini-3.8-flash-high"), "chat_completions")
+
+    # ── Picker row, key hint and refresh (Hermes 0.23.0 and later) ──
+
+    def test_profiles_of_one_instance_share_one_picker_group(self):
+        self.write_config(
+            {
+                "t": {
+                    "base_url": self.root,
+                    "key_env": "T_KEY",
+                    "groups": {"picks": {"models": ["gpt-*"], "display_name": "Picks"}},
+                },
+                "u": {"base_url": self.root, "key_env": "T_KEY", "display_name": "Second"},
+            }
+        )
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=API_KEY)
+        profiles["cpa-u"].fetch_models(api_key=API_KEY)
+        note = "every model, or one CPA provider"
+        self.assertIn("cpa-t-picks", profiles)
+        self.assertIn("cpa-u-claude", profiles)
+        for name, profile in profiles.items():
+            second = name == "cpa-u" or name.startswith("cpa-u-")
+            want = ("cpa-u", "Second", note) if second else ("cpa-t", "CLIProxyAPI t", note)
+            self.assertEqual(profile.picker_group, want, name)
+
+    def test_missing_key_hint_names_the_variable_and_the_kind_of_key(self):
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=API_KEY)
+        want = "T_KEY takes a CPA client key (one of CPA's api-keys), not the management key."
+        for name in ("cpa-t", "cpa-t-claude"):
+            self.assertEqual(profiles[name].missing_credentials_hint(), want, name)
+
+    def test_model_refresh_asks_cpa_again_but_not_management(self):
+        os.environ["T_MGMT"] = MGMT_KEY
+        self.write_config(
+            {"t": {"base_url": self.root, "key_env": "T_KEY", "mgmt_key_env": "T_MGMT"}}
+        )
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        wide.fetch_models(api_key=API_KEY)
+        self.assertTrue(_mgmt(_Gateway.seen))
+        _Gateway.seen = []
+        wide.fetch_models(api_key=API_KEY)
+        self.assertEqual(_Gateway.seen, [])  # one listing serves 30 seconds
+        cache = cpa.cache_path(self.home, "t")
+        before = cache.read_text()
+        # Hermes calls the hook on every profile; any profile of the instance counts.
+        self.assertIsNone(profiles["cpa-t-claude"].invalidate_catalog_cache())
+        self.assertEqual(_Gateway.seen, [])  # the hook sends nothing
+        self.assertEqual(cache.read_text(), before)  # startup still registers from it
+        self.assertTrue(wide.fetch_models(api_key=API_KEY))
+        self.assertIn("/v1/models", {r["path"] for r in _Gateway.seen})
+        # The management pass keeps its own 15 minute pace.
+        self.assertEqual(_mgmt(_Gateway.seen), [])
+
     def test_hyphen_name_collision_is_refused(self):
         self.write_config(
             {
@@ -465,6 +582,47 @@ class BillingRouteTests(unittest.TestCase):
         self.assertEqual(xai.api_mode, "chat_completions")
         self.assertEqual(xai.env_vars[0], "GW_B")
         self.assertEqual(xai.fallback_models, ("grok-4.6",))
+
+    def test_wide_wire_comes_from_the_provider_not_from_the_key_that_sells_it(self):
+        config = json.loads((self.home / "config.yaml").read_text())
+        config["cliproxyapi"]["instances"]["t"]["groups"]["codex"] = {"route_key_env": "GW_B"}
+        (self.home / "config.yaml").write_text(json.dumps(config))
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        ids = wide.fetch_models(api_key=GW_KEY_A)
+        # Key B does not sell gpt-5.6, so there is no codex profile; the
+        # instance key does, and the model is still a codex model.
+        self.assertIn("gpt-5.6", ids)
+        self.assertNotIn("cpa-t-codex", profiles)
+        self.assertEqual(wide.api_mode_for_model("gpt-5.6"), "codex_responses")
+        self.assertEqual(wide.api_mode_for_model("claude-opus-5-5"), "anthropic_messages")
+        self.assertEqual(wide.api_mode_for_model("grok-4.6"), "chat_completions")
+        self.assertEqual(wide.base_url, self.gw_root + "/v1")
+
+    def test_missing_key_hint_names_the_gateway_key_and_the_cpa_key(self):
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
+        for name, env_name in (("cpa-t", "GW_A"), ("cpa-t-claude", "GW_A"), ("cpa-t-xai", "GW_B")):
+            self.assertEqual(
+                profiles[name].missing_credentials_hint(),
+                f"{env_name} takes the billing gateway's key; T_KEY takes the CPA client key.",
+                name,
+            )
+
+    def test_model_refresh_reads_cpa_and_the_gateway_again(self):
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
+        _Gateway.seen, _BillingGateway.seen = [], []
+        profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
+        self.assertEqual((_Gateway.seen, _BillingGateway.seen), ([], []))
+        profiles["cpa-t-xai"].invalidate_catalog_cache()
+        self.assertEqual((_Gateway.seen, _BillingGateway.seen), ([], []))
+        profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
+        # Each key still goes only to its own side.
+        self.assertTrue(_Gateway.seen)
+        self.assertTrue(all(r["auth"] == f"Bearer {API_KEY}" for r in _Gateway.seen))
+        gw_auth = {r["auth"] for r in _BillingGateway.seen}
+        self.assertEqual(gw_auth, {f"Bearer {GW_KEY_A}", f"Bearer {GW_KEY_B}"})
 
     def test_restart_uses_cached_gateway_lists_without_network(self):
         _, first = self.load()

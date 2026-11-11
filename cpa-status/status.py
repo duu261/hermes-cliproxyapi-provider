@@ -7,9 +7,11 @@ Rules (see AGENTS.md, "/cpa status"):
   provider plugin's persisted latch of every instance on the same root.
 - Never read ``email``, ``account``, ``id_token``, ``project_id``, ``path``,
   ``id`` or ``auth_index`` for display. ``/cpa quota`` keeps a few call fields
-  in memory only (see ``files_of``). Names and messages are masked, and the
+  in memory only (see ``files_of``) and shows one ``id_token`` claim, the date
+  a Codex subscription ends. Names and messages are masked, and the
   account's project id is cut out of them on ingest.
-- Quota shown is CPA's last-seen observation from the same GET (claude, codex).
+- Quota shown is CPA's last-seen observation from the same GET (claude, codex,
+  devin).
 """
 
 from __future__ import annotations
@@ -81,6 +83,22 @@ _LOOKUP_RE = re.compile(r"\b(lookup\s)\S+?(?:(\son)(?:(\s)\S+?)?)?(?=:(?:\s|$)|$
 # with "<word> ... access token expired..." when the cut removed that phrase.
 _CPA_PHRASE_RE = re.compile(r" \.\.\. (access token expired)\Z", re.IGNORECASE)
 MESSAGE_LIMIT = 60
+# CPA's cooldown reason codes in words (sdk/cliproxy/auth/cooldown_view.go:
+# cooldownErrorReason, cooldownStatusReason). "unknown" is CPA's own "no
+# reason known", so nothing is shown for it.
+_COOLDOWN_WORDS = {
+    "quota": "vendor limit reached",  # a 429, or a usage limit
+    "credential_quota": "vendor limit reached, all models",
+    "cloudflare_challenge": "Cloudflare challenge",
+    "model_not_supported": "model not supported",
+    "invalid_grant": "refresh token rejected",
+    "payment_required": "access refused or no credit",  # 402, 403, low balance
+    "transient_rate_limit": "vendor rate limited",
+    "unauthorized": "token rejected by vendor",  # 401
+    "not_found": "vendor HTTP 404",
+    "transient_error": "temporary vendor error",  # 408, 5xx
+    "unknown": "",
+}
 # The masks cost quadratic time on one long word, and CPA can store a whole
 # vendor error page as a message. Nothing past this many characters is shown.
 _MASK_INPUT = 256
@@ -193,6 +211,18 @@ def short_message(text: Any) -> str:
         if phrase:
             text = f"{text} {phrase}"
     return text if len(text) <= MESSAGE_LIMIT else text[: MESSAGE_LIMIT - 1] + "…"
+
+
+def cooldown_reason(raw: Any) -> str:
+    """A cooldown ``reason`` for output: CPA's code in words, else the masked text.
+
+    Text that is not one of CPA's codes (an older CPA, or a code added later)
+    is shown as it came, through the same masks as any other message.
+    """
+    if not isinstance(raw, str):
+        return ""
+    words = _COOLDOWN_WORDS.get(raw.strip())
+    return short_message(raw) if words is None else words
 
 
 # ── Classification ──────────────────────────────────────────────────────────
@@ -326,7 +356,8 @@ class ProviderSummary:
 
 # Fields /cpa reads. Everything else in a CPA entry (email, account, id_token,
 # project_id, path, id, auth_index, ...) is dropped on ingest, so it is never
-# kept in the short result cache either.
+# kept in the short result cache either. ``files_of`` adds the few values
+# ``/cpa quota`` needs from those, under ``_`` names.
 _KEPT_FIELDS = frozenset(
     {
         "provider",
@@ -344,6 +375,9 @@ _KEPT_FIELDS = frozenset(
         "requires_sign_in",
         "renewal_state",
         "access_token_expires_at",
+        "success",
+        "failed",
+        "priority",
     }
 )
 # Providers ``/cpa quota`` reads through CPA's api-call (see quota.py). Others
@@ -360,7 +394,11 @@ def files_of(listing: Any) -> list[dict[str, Any]]:
     (Antigravity ``project_id``), ``_plugin`` (CPA ``quota_plugin_id``, for
     non-built-in providers) and ``_kimi_ai`` (from the raw provider fields,
     before ``kimi-ai`` is normalized to ``kimi``). They stay in memory only and
-    are never rendered; everything else is dropped. ``project_id`` is also
+    are never rendered. ``_until`` (Codex
+    ``id_token.chatgpt_subscription_active_until``, as a time) is the one
+    field here that is shown, as a date. Everything else is dropped.
+
+    ``project_id`` is also
     used here to cut the id out of ``label``, ``name``, ``status_message`` and
     each cooldown ``reason``: CPA repeats it in the first two, and a vendor's
     error text can name it in the others. The listing itself is not changed.
@@ -394,6 +432,9 @@ def files_of(listing: Any) -> list[dict[str, Any]]:
                 entry["_target"] = target
             if account and provider == "codex":
                 entry["_acct"] = account
+            until = subscription_until(raw) if provider == "codex" else None
+            if until is not None:
+                entry["_until"] = until
             if provider == "antigravity" and _shaped(raw.get("project_id"), _TARGET_RE):
                 entry["_project"] = raw["project_id"]
             if provider == "kimi":
@@ -440,6 +481,26 @@ def call_target(entry: dict[str, Any]) -> tuple[str, str]:
     return target, account
 
 
+def subscription_until(entry: dict[str, Any]) -> datetime | None:
+    """When a Codex subscription ends, from a raw CPA listing entry.
+
+    The one ``id_token`` claim that may be shown (AGENTS.md). CPA passes it on
+    as the token has it (``any`` in internal/auth/codex/jwt_parser.go), so it
+    can be ISO text or unix seconds.
+    """
+    claims = entry.get("id_token")
+    if not isinstance(claims, dict):
+        return None
+    until = instant(claims.get("chatgpt_subscription_active_until"))
+    if until is None:
+        return None
+    try:
+        until.astimezone()  # the view shows it in local time
+    except (OverflowError, OSError, ValueError):
+        return None  # a date at the edge of the calendar: leave it out
+    return until
+
+
 def summarize(files: Iterable[dict[str, Any]], now: datetime) -> dict[str, ProviderSummary]:
     out: dict[str, ProviderSummary] = {}
     for entry in files:
@@ -464,9 +525,25 @@ def recent_hour(entry: dict[str, Any]) -> tuple[int, int]:
     )
 
 
+def totals(entry: dict[str, Any]) -> tuple[int, int]:
+    """Successes and failures CPA has counted for the account.
+
+    CPA keeps both in memory only (sdk/cliproxy/auth/types.go, ``json:"-"``),
+    so they start at zero when CPA starts and when an account is added.
+    """
+    return _count(entry.get("success")), _count(entry.get("failed"))
+
+
+def priority_of(entry: dict[str, Any]) -> int | None:
+    """The account's priority, when its file sets one; CPA omits it otherwise."""
+    value = entry.get("priority")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 # ── Last-seen quota ─────────────────────────────────────────────────────────
 # Header names from CPA v8.0.44: sdk/cliproxy/auth/quota_signals.go
-# (isQuotaSignalHeaderForProvider: claude and codex),
+# (isQuotaSignalHeaderForProvider: claude and codex; devin is listed as
+# observable but no header is accepted for it, see _DEVIN_WINDOWS),
 # internal/runtime/executor/helps/codex_quota.go (per window: Used-Percent,
 # Window-Minutes, Reset-At or Reset-After-Seconds) and
 # internal/runtime/executor/helps/claude_ratelimit.go (utilization is 0..1,
@@ -479,6 +556,13 @@ def recent_hour(entry: dict[str, Any]) -> tuple[int, int]:
 _CODEX_WINDOWS = (("Primary", "5h"), ("Secondary", "wk"))
 _CLAUDE_WINDOWS = (("5h", "5h"), ("7d", "wk"))
 _MINUTE_LABELS = {300: "5h", 10080: "wk"}
+# Devin signals are not headers. CPA writes them itself when it refreshes the
+# account's status (v7.3.0 and later: internal/runtime/executor/devin_executor.go
+# Refresh, internal/auth/devin/record.go): percent LEFT as "55%", reset time as
+# RFC 3339. It writes "0%" also when Devin sent no figure, so 0% counts only
+# together with a reset time.
+_DEVIN_WINDOWS = (("daily", "day"), ("weekly", "wk"))
+_DEVIN_PERCENT_RE = re.compile(r"\s*(\d{1,3})\s*%?\s*")
 
 
 @dataclass
@@ -495,7 +579,7 @@ def _percent(raw: Any, scale: float) -> int | None:
         return None
     if math.isnan(value) or math.isinf(value) or value < 0:
         return None
-    return int(value)
+    return min(int(value), 100)  # a vendor can report more than the limit
 
 
 def _number(raw: Any) -> float | None:
@@ -516,6 +600,37 @@ def _unix(raw: Any) -> datetime | None:
         return None
 
 
+def _later(start: datetime, seconds: float) -> datetime | None:
+    """*start* plus *seconds*; None when the calendar cannot hold the result."""
+    try:
+        return start + timedelta(seconds=seconds)
+    except OverflowError:
+        return None
+
+
+def _local(moment: datetime) -> datetime | None:
+    """*moment* in local time; None at the edge of the calendar, where there is none."""
+    try:
+        return moment.astimezone()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def instant(raw: Any) -> datetime | None:
+    """ISO time, or unix seconds (milliseconds when that large)."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not re.fullmatch(r"\d+(\.\d+)?", text):
+            return parse_time(text)
+        raw = text
+    value = _number(raw)
+    if value is None or value <= 0:
+        return None
+    return _unix(value / 1000 if value > 1e11 else value)
+
+
 def _minutes_label(minutes: int) -> str:
     if minutes in _MINUTE_LABELS:
         return _MINUTE_LABELS[minutes]
@@ -526,8 +641,17 @@ def _minutes_label(minutes: int) -> str:
     return f"{minutes}m"
 
 
+def _devin_left(raw: Any) -> int | None:
+    """Percent left from a Devin signal such as ``55%``; None when it is not 0..100."""
+    match = _DEVIN_PERCENT_RE.fullmatch(raw) if isinstance(raw, str) else None
+    if match is None:
+        return None
+    value = int(match.group(1))
+    return value if value <= 100 else None
+
+
 def quota_windows(entry: dict[str, Any]) -> list[Window]:
-    """Usage windows CPA last saw for this account (claude and codex only)."""
+    """Usage windows CPA last saw for this account (claude, codex and devin only)."""
     quota = entry.get("quota")
     if not isinstance(quota, dict):
         return []
@@ -553,7 +677,7 @@ def quota_windows(entry: dict[str, Any]) -> list[Window]:
             reset = _unix(lower.get(prefix + "reset-at"))
             after = _number(lower.get(prefix + "reset-after-seconds"))
             if reset is None and after is not None and after >= 0 and seen is not None:
-                reset = seen + timedelta(seconds=after)
+                reset = _later(seen, after)
             out.append(Window(label, used, reset))
     elif provider == "claude":
         for name, label in _CLAUDE_WINDOWS:
@@ -561,6 +685,13 @@ def quota_windows(entry: dict[str, Any]) -> list[Window]:
             used = _percent(lower.get(prefix + "utilization"), 100.0)
             if used is not None:
                 out.append(Window(label, used, _unix(lower.get(prefix + "reset"))))
+    elif provider == "devin":
+        for name, label in _DEVIN_WINDOWS:
+            left = _devin_left(lower.get(f"{name}_quota_remaining_percent"))
+            reset = parse_time(lower.get(f"{name}_quota_reset_at"))
+            if left is None or (left == 0 and reset is None):
+                continue
+            out.append(Window(label, 100 - left, reset))
     return out
 
 
@@ -612,11 +743,21 @@ def quota_text(entry: dict[str, Any], now: datetime) -> str:
     return text
 
 
-def handle(raw_args: str = "") -> str:
-    """Hermes command handler (sync: Hermes runs it off the event loop)."""
+def handle(raw_args: str = "", *, platform: str | None = None) -> str:
+    """Hermes command handler (sync: Hermes runs it off the event loop).
+
+    Hermes 0.22.3 and later pass ``platform`` (``telegram``, ``cli``, ...) to a
+    handler that names it; older Hermes calls with the text only.
+    """
     try:
         home = _hermes_home()
-        return report(raw_args, config=_read_config(home), home=home, secret=_read_secret)
+        return report(
+            raw_args,
+            config=_read_config(home),
+            home=home,
+            secret=_read_secret,
+            platform=platform,
+        )
     except Exception as exc:  # noqa: BLE001 - never raise into the gateway, never echo details
         logger.warning("cpa-status: /cpa failed (%s)", type(exc).__name__)
         return f"cpa-status: internal error ({type(exc).__name__})"
@@ -912,7 +1053,7 @@ USAGE = (
     "/cpa quota <pool> [provider] - live usage from each vendor\n"
     "Needs mgmt_key_env on the pool. Read-only; one request per pool,\n"
     "plain /cpa adds one CPA update check per 6 h\n"
-    "(quota: at most 3 more per account, 20 accounts, 4 at a time)."
+    "(quota: at most 4 more per account, 20 accounts, 4 at a time)."
 )
 _STATUS_TEXT = {
     "rejected": "key rejected (fix the key; it will not be sent again)",
@@ -933,7 +1074,9 @@ class _Row:
 
 
 def clock(when: datetime, now: datetime) -> str:
-    local = when.astimezone()
+    local = _local(when)
+    if local is None:
+        return when.date().isoformat()  # CPA can send any time: show the date as sent
     if (when - now).total_seconds() > 20 * 3600:
         return local.strftime("%b %d %H:%M")
     return local.strftime("%H:%M")
@@ -973,19 +1116,24 @@ def _state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> st
     return f"{text} · sign in again ({note})"
 
 
+def _models_cooling(count: int) -> str:
+    return f"{count} model{'' if count == 1 else 's'} cooling"
+
+
 def _plain_state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> str:
     if state.kind == "cooling":
         text = f"cooling until {clock(state.until, now)}" if state.until else "cooling"
-        reason = short_message(state.reason)
+        reason = cooldown_reason(state.reason)
         return text + (f" ({reason})" if reason else "")
     if state.kind == "error":
         message = state.reason or short_message(entry.get("status_message"))
         return "error" + (f": {message}" if message else "")
     if state.kind == "limited":
         text = f"limited until {clock(state.until, now)}" if state.until else "limited"
-        return text + (f" · {state.models_cooling} models cooling" if state.models_cooling else "")
+        cooling = state.models_cooling
+        return text + (f" · {_models_cooling(cooling)}" if cooling else "")
     if state.kind == "ready" and state.models_cooling:
-        return f"active · {state.models_cooling} models cooling"
+        return f"active · {_models_cooling(state.models_cooling)}"
     return "active" if state.kind == "ready" else state.kind
 
 
@@ -996,9 +1144,15 @@ def _account_lines(files: list[dict[str, Any]], provider: str, now: datetime) ->
             continue
         state = classify(entry, now)
         line = f"{display_name(entry)}  {_state_text(entry, state, now)}"
+        priority = priority_of(entry)
+        if priority is not None:
+            line += f" · prio {priority}"
         ok, failed = recent_hour(entry)
         if ok or failed:
             line += f" · 1h {ok}/{failed}"
+        ok, failed = totals(entry)
+        if ok or failed:
+            line += f" · total {ok}/{failed}"
         quota = quota_text(entry, now)
         if quota:
             line += f" · {quota}"
@@ -1025,11 +1179,14 @@ def report(
     home: Path,
     secret: Callable[[str], str | None],
     now: datetime | None = None,
+    platform: str | None = None,
 ) -> str:
     args = (raw_args or "").split()
     if args[:1] == ["quota"]:
         # Reserved word: a pool literally named "quota" is "/cpa quota quota".
-        return _quota().report(args[1:], config=config, home=home, secret=secret, now=now)
+        return _quota().report(
+            args[1:], config=config, home=home, secret=secret, now=now, platform=platform
+        )
     if args[:1] in (["help"], ["-h"], ["--help"]) or len(args) > 2:
         return USAGE
     now = now or datetime.now(timezone.utc)
@@ -1137,4 +1294,7 @@ def _provider_view(row: _Row, provider: str, now: datetime) -> str:
         return f"No provider '{shown}' in {row.spec.name}. Providers: {names}"
     count = len(lines)
     noun = "account" if count == 1 else "accounts"
-    return _cap([f"{row.spec.name} / {provider} · {count} {noun}", *lines])
+    head = f"{row.spec.name} / {provider} · {count} {noun}"
+    if any(sum(totals(e)) for e in result.files if provider_of(e) == provider):
+        head += " · total = since CPA start"
+    return _cap([head, *lines])

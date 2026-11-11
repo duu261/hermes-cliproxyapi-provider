@@ -71,9 +71,27 @@ Sau đó chạy `hermes model` (hoặc bất kỳ lệnh nào liệt kê model) 
 đọc danh sách model của instance, đăng ký các provider tìm thấy và lưu cache, nên
 các lần chạy sau đăng ký chúng ngay lúc khởi động mà không cần gọi mạng:
 
-- `cpa-main`: mọi model trên instance, trên chat wire.
+- `cpa-main`: mọi model trên instance, mỗi model đi trên wire của provider
+  phục vụ nó (Hermes 0.23.0 trở lên; Hermes cũ hơn giữ mọi model trên chat
+  wire).
 - `cpa-main-<provider>`: một provider cho mỗi provider CPA, ví dụ
   `cpa-main-claude`, `cpa-main-codex`, `cpa-main-xai`, `cpa-main-kimi`.
+
+Trên Hermes 0.23.0 trở lên:
+
+- Provider picker của `hermes model` và Telegram `/model` hiện một dòng cho
+  mỗi instance, mang tên của instance (`display_name`, nếu không có thì
+  `CLIProxyAPI main`), bên trong là `cpa-main` và các provider của nó. Trước
+  lần liệt kê đầu tiên, instance chỉ có `cpa-main`, và nó vẫn là một dòng
+  thường. Tên provider gõ tay không đổi.
+- `hermes model --refresh` và `/model --refresh` cũng xóa memo danh sách model
+  của chính plugin, nên lần liệt kê kế tiếp đọc lại CPA. Nếu không, một lần
+  liệt kê dùng chung cho mọi provider của instance trong 30 giây. Lượt
+  management vẫn giữ nhịp 15 phút.
+- Khi biến chứa key bị trống, thông báo "No usable credentials" của Hermes nói
+  thêm biến đó nhận key nào: CPA client key, không phải management key. Với
+  billing route (`route_via`), nó nêu tên biến chứa key của gateway và biến
+  của CPA.
 
 `hermes doctor` và các thiết lập nhiều tiến trình (`plugins.isolation: host`) chỉ
 thấy provider xuất hiện sau lúc khởi động khi đã khởi động lại.
@@ -96,6 +114,22 @@ liệt kê model. Nó chỉ ghi cache riêng sau lần liệt kê thành công �
 Ghi đè theo từng provider bằng `api_mode` (xem bên dưới). Khi hai provider
 phục vụ cùng một model id, id đó xuất hiện ở cả hai và CPA chọn account; khi đó
 wire là lựa chọn phù hợp nhất.
+
+Provider toàn instance (`cpa-main`) dùng cùng bảng này cho từng model trên
+Hermes 0.23.0 trở lên: model Claude, Kimi hoặc Kiro đi trên
+`anthropic_messages`, model Codex, xAI hoặc Meta đi trên `codex_responses`,
+phần còn lại trên `chat_completions`. Model
+được các provider trên hai wire khác nhau phục vụ, và model mà plugin chưa liệt
+kê, ở lại `chat_completions`. Ghi đè `api_mode` trên một provider cũng áp dụng ở
+đây. Một group tạo từ các pattern `models` chỉ quyết định wire của model khi
+group đó đặt `api_mode`, hoặc mang tên một provider có wire khác chat trong
+bảng. Hermes cũ hơn gửi mọi model của `cpa-main` trên `chat_completions`.
+
+Hermes lưu một wire cùng với model mặc định (`model.api_mode`) và dùng wire đã
+lưu khi khởi động một session. `hermes model` lưu `chat_completions` cho
+`cpa-main`, dù bạn chọn model nào. Để session khởi động trên wire của model, hãy
+chạy `hermes config unset model.api_mode`, hoặc chọn model trong một cuộc chat
+bằng `/model <id> --global`, lệnh này lưu wire của model đó.
 
 Giữ `xai` trên `codex_responses`. Grok 4.7 trả về phần reasoning dưới dạng một
 mục đã mã hóa, và client phải gửi lại mục này ở lượt tiếp theo
@@ -147,8 +181,9 @@ Chế độ công khai là đủ khi mỗi model có một provider và nhãn ve
 của CPA khớp với provider. Chế độ management là chế độ chính xác; cái giá của nó
 là key. Một management key của CPA có thể đổi cấu hình và thêm hoặc xóa account.
 Plugin chỉ gửi các thao tác đọc bên dưới, nhưng Hermes không gỡ `mgmt_key_env` khỏi
-shell của agent (xem Bảo mật), nên bất kỳ công cụ agent nào đọc được biến môi trường
-của bạn cũng đọc được key này.
+shell của agent, nên bất kỳ công cụ agent nào đọc được biến môi trường của bạn
+cũng đọc được key này, trừ khi plugin `cpa-status` ẩn nó (Hermes 0.23.1 trở
+lên, xem Bảo mật).
 
 Chế độ management gửi những gì:
 
@@ -228,11 +263,12 @@ cliproxyapi:
   admin, kênh, giá hay tính phí của nó.
 - Giới hạn đã biết: Hermes chỉ gỡ khỏi tiến trình con của agent những tên key mà một
   provider đã đăng ký khai báo. Provider được định tuyến khai báo key gateway, nên
-  `key_env` của CPA (cần cho discovery) vẫn hiện trong shell của agent trên một
-  instance có định tuyến. `mgmt_key_env` không bao giờ được khai báo trên provider,
-  nên nó không bị gỡ trên cả instance có hay không có định tuyến. Hiện Hermes chưa
-  có hook cho plugin để khai báo một secret mà không biến nó thành credential cho
-  inference.
+  Hermes để `key_env` của CPA (cần cho discovery) vẫn hiện trong shell của agent
+  trên một instance có định tuyến. `mgmt_key_env` không bao giờ được khai báo trên
+  provider, nên Hermes không gỡ nó trên cả instance có hay không có định tuyến.
+  Plugin `cpa-status` ẩn cả hai khỏi các lệnh của một chat session trên Hermes
+  0.23.1 trở lên; mục Bảo mật nêu rõ việc đó bao phủ những gì và không bao phủ
+  những gì.
 
 ## Metadata
 
@@ -262,8 +298,29 @@ Thứ tự ưu tiên, cao nhất trước: `model_overrides` của bạn, plugin
 - Key được tham chiếu theo tên biến môi trường và do Hermes phân giải.
 - Hermes chỉ gỡ khỏi tiến trình con của agent những tên biến môi trường mà một
   provider đã đăng ký khai báo. Mỗi profile khai báo key inference của nó (`key_env`,
-  hoặc key gateway trên instance có định tuyến), nên `mgmt_key_env`, và trên instance
-  có định tuyến là `key_env` của CPA, vẫn đọc được từ shell của agent.
+  hoặc key gateway trên instance có định tuyến), nên Hermes để `mgmt_key_env`, và
+  trên instance có định tuyến là `key_env` của CPA, vẫn đọc được từ shell của agent.
+- Plugin `cpa-status` ẩn các biến đó trên Hermes 0.23.1 trở lên. Nó gỡ chúng khỏi
+  môi trường của các lệnh mà một chat session chạy: lệnh terminal chạy foreground
+  và background, kể cả lệnh do `execute_code` khởi chạy, và các tiến trình phụ trợ
+  mà Hermes khởi chạy từ môi trường đã được làm sạch của nó (language server,
+  lint, text to speech và tương tự). Nó không bao gồm shell hook, script của cron
+  job, tiến trình mà Hermes khởi chạy kèm credential của profile (ví dụ một helper
+  `key_cmd`), và mọi tiến trình được khởi chạy khi không có session nào được gắn:
+  các tiến trình đó vẫn có thể thấy các biến này. Chỉ mới kiểm tra trên local
+  terminal backend với một profile. Các remote backend (docker, ssh và các
+  backend khác) không áp dụng việc ẩn: một biến được forward tới đó thì không bị
+  ẩn ở đó. Nó chỉ ẩn biến môi trường, không ẩn gì khác: một lệnh đọc được file mà
+  Hermes nạp key từ đó (`~/.hermes/.env`) thì vẫn đọc được key. Biến có tên bắt
+  đầu bằng `HERMES_`, hoặc đã do plugin khác quản lý, vẫn hiện, và một cảnh báo
+  trong log nêu tên nó. Tên các biến được đọc khi plugin được nạp, nên một
+  `mgmt_key_env` hoặc `route_via` thêm vào sau đó chỉ được ẩn sau lần khởi động
+  lại Hermes kế tiếp. Trên Hermes cũ hơn, hoặc khi không bật `cpa-status`, không
+  có gì bị ẩn.
+- Việc ẩn được bật mặc định. Script bạn chạy qua agent mà đọc một trong các biến
+  này sẽ không còn thấy nó. Để tắt việc ẩn, chạy
+  `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
+  rồi khởi động lại Hermes.
 - Chỉ cho phép plain `http://` (HTTP không mã hóa) khi mọi địa chỉ mà host phân giải ra đều là loopback,
   RFC 1918, 100.64/10 hoặc IPv6 ULA. Mọi trường hợp khác cần `https://`.
 - Không theo redirect, giới hạn kích thước response, và lỗi chỉ được báo bằng mã
@@ -352,9 +409,9 @@ pre · v8.0.51
   codex 4: 3 active · 1 cooling (next 17:20)
   xai 2: 2 active
 CPA v8.0.52 available (running v8.0.51)
-pre / codex · 4 accounts
-codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
-codex-bo…@…  cooling until 17:20 (quota)
+pre / codex · 4 accounts · total = since CPA start
+codex-al…@…  active · prio 1 · 1h 173/71 · total 2140/96 · 5h 22% · wk 0% (1m ago)
+codex-bo…@…  cooling until 17:20 (vendor limit reached)
 ```
 
 - Chỉ đọc: mỗi lần chạy gửi một `GET /v8/management/credentials` cho mỗi
@@ -365,9 +422,16 @@ codex-bo…@…  cooling until 17:20 (quota)
   đến từ update route của chính CPA (`GET /v8/management/server/latest-version`,
   hỏi GitHub): một request cho mỗi tiến trình Hermes mỗi 6 giờ, 10 phút
   sau khi thất bại. Thất bại chỉ ẩn dòng đó.
-- Quota gần nhất (5h và tuần) là số CPA ghi lại từ traffic thật của account
-  Claude và Codex. CPA không ghi cho provider khác. `/cpa` (không có `quota`)
-  không bao giờ bảo CPA kiểm tra quota với upstream; `/cpa quota` thì có.
+- Quota gần nhất là số CPA đã ghi lại. Với account Claude và Codex (5h và
+  tuần), CPA ghi từ traffic thật. Với account Devin (ngày và tuần), CPA ghi khi
+  account đăng nhập và khi CPA refresh trạng thái của account, nên số của Devin
+  có thể đã cũ; dòng đó hiện tuổi của nó. CPA không ghi cho provider khác.
+  `/cpa` (không có `quota`) không bao giờ bảo CPA kiểm tra quota với upstream;
+  `/cpa quota` thì có.
+- `/cpa pre codex` còn hiện priority của từng account khi CPA có liệt kê
+  (`prio 1`) và số request thành công/thất bại: `1h` là 1 giờ qua, `total` là
+  từ lúc CPA khởi động. CPA chỉ giữ các số total trong bộ nhớ, nên chúng đếm
+  lại từ 0 khi CPA khởi động lại.
 - Email trong tên account và thông báo được che. `email`, `account`,
   `project_id` và `path` không bao giờ được hiển thị (`/cpa quota` chỉ dùng
   `project_id` của Antigravity để dựng request); project id của account được
@@ -387,11 +451,17 @@ codex-bo…@…  cooling until 17:20 (quota)
 
 ```
 pre quota · live 21:40
+
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-codex-xy…@…  plus  5h 100% → 22:10 · wk 60% → Nov 02  OUT
-codex-bd…@…  pro  wk 31% → Oct 30
-codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
-codex-cu…@…  pro  wk 40% → Nov 01
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+    codex-cu…@… pro   wk 40%
+    codex-bd…@… pro   wk 31%
+
+antigravity · 1 account: 1 have room
+antigravity-01…@… pro  out: claude and gpt
+  gemini          5h 0% · wk 12%
+  claude and gpt  5h 100% → 23:10 · wk 64%
 ```
 
 `/cpa quota <pool>` hỏi từng vendor xem mỗi account đã dùng bao nhiêu, giống
@@ -402,30 +472,45 @@ quota plugin của nó khi CPA có liệt kê. Mọi request, và khi nào chún
 
 | Provider | Request cho mỗi account | Bạn thấy gì |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; giới hạn tuần theo model và app khi được gửi (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage khi bật, kèm đã tiêu/hạn mức; credit pool (`$ left`) |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan, credits khi account có |
-| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, rồi GET `https://cli-chat-proxy.grok.com/v1/billing` | credits tuần `wk` (`wk no figure yet` khi xAI chưa báo phần trăm); chi tiêu tháng `mo` và plan (`supergrok` / `supergrok_heavy`) chỉ khi xAI báo monthly limit |
-| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` kèm `project_id` của account; host `daily-cloudcode-pa.sandbox` và `cloudcode-pa` chỉ khi host trước lỗi ở phía vendor hoặc không trả quota | theo từng nhóm model, `5h` và `wk` |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage`, rồi GET `https://api.anthropic.com/api/oauth/profile` để lấy plan | `5h`, `wk`; giới hạn tuần theo model và app khi được gửi (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage khi bật, kèm đã tiêu/hạn mức; credit pool (`$ left`); plan (`team`, `max20`, `max5`, `max`, `pro`, `free`) |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan, credits khi account có; giới hạn riêng cho một feature hoặc model khi được gửi (`<name> wk`); số lần reset limit đang giữ (`2 resets banked`); ngày subscription kết thúc (`until Nov 16`) khi listing của CPA có, không tốn thêm request |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, rồi GET `https://cli-chat-proxy.grok.com/v1/billing` | credits tuần `wk` (`wk no figure yet` khi xAI chưa báo phần trăm); chi tiêu tháng `mo` chỉ khi xAI báo monthly limit; khi xAI gửi: phần credits tuần mà từng product đã dùng (`grokbuild 30%, api 6%`), pay as you go (`payg off`, hoặc đã tiêu/cap dạng `payg $3.00/$50.00`) và prepaid balance (`prepaid $25.00`) |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` kèm `project_id` của account; host `daily-cloudcode-pa.sandbox` và `cloudcode-pa` chỉ khi host trước lỗi ở phía vendor hoặc không trả quota; rồi POST `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` để lấy plan | theo từng nhóm model, `5h` và `wk`; plan (`free`, `pro`, `ultra`, `ultra-lite`) |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` khi CPA liệt kê account là `kimi-ai`) | từng window giới hạn, tuần, `mo` |
 | CPA plugin quota (vd. Kiro) | GET `/v8/management/plugins/<id>/quota` trên CPA; plugin tự hỏi vendor của nó | các meter và plan của plugin |
 
-Không request nào tốn tiền hay dùng hết quota: đều là các lần đọc usage mà web
-UI cũng làm. Cố ý không làm: bước kiểm tra chat trả phí 1 token của xAI
-(fallback của web UI cho account xAI trả phí dùng API key, các account này sẽ
-hiện lỗi billing), tra cứu danh tính và plan, tải file account, và mọi thao
-tác reset.
+Không request nào tốn tiền hay dùng hết quota: đều là các lần đọc mà web UI
+cũng làm cho trang quota của nó. Cố ý không làm: bước kiểm tra chat trả phí
+1 token của xAI (fallback của web UI cho account xAI trả phí dùng API key, các
+account này sẽ hiện lỗi billing), mọi tra cứu danh tính hay plan khác, tải
+file account, và mọi thao tác reset.
 
 Các header, kể cả `User-Agent` CLI của từng vendor, lấy từ web UI. Phần trăm là
 phần đã dùng (vendor nào báo phần còn lại thì được đổi lại); không cộng gộp
-giữa các plan. Một account là `OUT` khi có window ở 100% hoặc vendor báo nó
-đang bị chặn. Antigravity tính theo model group: CPA chỉ tạm ngưng các model đã
-hết, nên account chỉ là `OUT` khi mọi group đều đầy; nếu không, group đầy hiện
-là `out: <group>`. Các giới hạn tuần theo model của Claude
+giữa các plan. Một window chỉ hiện giờ reset (`→ 22:10`) khi đã dùng từ 80%
+trở lên. Một account là `OUT`, ghi ở đầu dòng của nó, khi có window ở 100%
+hoặc vendor báo nó đang bị chặn. Antigravity tính theo model group, mỗi group
+một dòng dưới account (`gemini`, `claude and gpt`): CPA chỉ tạm ngưng các model
+đã hết, nên account chỉ là `OUT` khi mọi group đều đầy; nếu không, group đầy
+hiện là `out: <group>`. Các giới hạn tuần theo model của Claude
 (Fable, Opus, Sonnet, apps, Cowork) cũng vậy: cái nào đầy hiện là `out: fable`
-và account vẫn phục vụ các model khác.
+và account vẫn phục vụ các model khác. Các giới hạn của Codex cho một feature
+hoặc model cũng vậy.
 
-- Chỉ khi bạn gõ lệnh. Mỗi lần chạy tối đa 20 account và 3 request cho mỗi
+- Trên Telegram, Discord, Slack, Matrix và Mattermost, câu trả lời được gửi
+  dưới dạng code block để các cột thẳng hàng. Cần Hermes 0.22.3 trở lên, bản
+  này báo cho lệnh biết platform; ở nơi khác và trên Hermes cũ hơn, câu trả
+  lời là plain text.
+- Plan của account Claude hoặc Antigravity tốn thêm một request cho mỗi
+  account (request profile và `loadCodeAssist` trong bảng), chỉ gửi sau khi
+  đã đọc được usage của account đó. Chỉ các field về plan trong câu trả lời
+  được đọc, và plan hiện ra là một trong các từ cố định trong bảng; giá trị
+  không có trong danh sách thì không hiện plan. Các câu trả lời này còn chứa
+  tên, email, tên tổ chức và project id: không cái nào được đọc, hiển thị hay
+  lưu lại. Khi request lỗi, dòng đó không có plan và không có gì khác thay
+  đổi; request không được gửi lại.
+- Chỉ khi bạn gõ lệnh. Mỗi lần chạy tối đa 20 account và 4 request cho mỗi
   account. Request đầu gửi một mình, sau đó tối đa 4 request cùng lúc; gõ lại
   trong 60 giây sẽ trả từ bộ nhớ. Bỏ qua account đã tắt. Sau 60 giây, một lượt
   chạy không gửi request mới nào nữa; account chưa tới lượt hiện
@@ -434,6 +519,10 @@ và account vẫn phục vụ các model khác.
   `devin`, `kimi`, `plugin`, hoặc provider của một plugin như `kiro`.
 - Token account hết hạn hiện `token rejected by vendor` và không bao giờ bị tính
   vào lockout của CPA. Management key bị từ chối sẽ dừng lượt chạy.
+- `until Nov 16` sau plan của Codex là ngày subscription kết thúc. Nó được đọc
+  từ danh sách account của CPA (claim `chatgpt_subscription_active_until` của
+  ID token mà CPA lưu), không hỏi vendor, nên nó cũ bằng token đó: ngày đã qua
+  hiện là `until Oct 03 (past)`.
 - Account index của CPA, account id của Codex, project id của Antigravity và
   plugin id của CPA chỉ dùng để dựng request, không bao giờ được hiển thị, ghi
   log hay lưu cache. Phản hồi của vendor được đọc theo từng trường; body và
@@ -455,6 +544,7 @@ năng cần CPA mới hơn:
 | Định nghĩa model cho plugin provider (Kiro và các plugin khác) | v8.0.34+ |
 | `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
 | `/cpa` quota gần nhất | v7.2.142+ |
+| `/cpa` quota gần nhất cho Devin | v7.3.0+ |
 | `/cpa` phiên bản CPA | v6.3.36+ |
 | `/cpa` gợi ý update | v6.5.42+ |
 | `/cpa quota` vendor có sẵn (`api-call` với `$TOKEN$`) | v6.6.63+ |

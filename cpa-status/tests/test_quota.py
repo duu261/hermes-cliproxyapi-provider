@@ -59,6 +59,21 @@ CODEX_PRO = {  # Management Center fixture shape: weekly primary, no secondary
     },
     "code_review_rate_limit": None,
 }
+# One entry of ``additional_rate_limits``, in the Management Center fixture shape.
+CODEX_SPARK = {
+    "limit_name": "GPT-5.3-Codex-Spark",
+    "metered_feature": "codex_bengalfox",
+    "rate_limit": {
+        "allowed": True,
+        "limit_reached": False,
+        "primary_window": {
+            "used_percent": 12,
+            "limit_window_seconds": 604800,
+            "reset_at": epoch(3 * 1440),
+        },
+        "secondary_window": None,
+    },
+}
 CODEX_PLUS_OUT = {
     "plan_type": "plus",
     "rate_limit": {
@@ -366,6 +381,152 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(quota.parse_codex(body, NOW).extra, "", junk)
         self.assertEqual(quota.parse_codex(CODEX_PRO, NOW).extra, "")
 
+    def test_codex_banked_resets(self):
+        def extra(banked, **more):
+            body = dict(CODEX_PRO, rate_limit_reset_credits=banked, **more)
+            return quota.parse_codex(body, NOW).extra
+
+        # The usage reply's own shape: one banked, none usable right now.
+        self.assertEqual(
+            extra({"available_count": 1, "applicable_available_count": 0}), "1 reset banked"
+        )
+        self.assertEqual(extra({"availableCount": "3"}), "3 resets banked")
+        other = dict(CODEX_PRO, rateLimitResetCredits={"available_count": 2})
+        self.assertEqual(quota.parse_codex(other, NOW).extra, "2 resets banked")
+        for none in (
+            {"available_count": 0},
+            {"available_count": -1},
+            {"available_count": True},
+            {"available_count": 1.5},
+            {"available_count": "many"},
+            {"available_count": 10**6},
+            {"applicable_available_count": 4},  # usable now, but no banked count
+            {"credits": [{"id": "x", "status": "available"}]},  # the list is not counted
+            {},
+            None,
+            [],
+            3,
+            "2",
+        ):
+            self.assertEqual(extra(none), "", repr(none))
+        self.assertEqual(
+            extra({"available_count": 2}, credits={"balance": "12.5"}),
+            "credits 12.50 · 2 resets banked",
+        )
+
+    def test_codex_additional_limits_are_scoped_windows(self):
+        body = dict(CODEX_PRO, additional_rate_limits=[CODEX_SPARK])
+        usage = quota.parse_codex(body, NOW)
+        self.assertEqual(
+            [(w.label, w.used, w.scoped) for w in usage.windows],
+            [("wk", 40, False), ("gpt-5.3-codex-spark wk", 12, True)],
+        )
+        self.assertEqual(usage.windows[1].resets_at, NOW + timedelta(days=3))
+        self.assertFalse(usage.reached)
+        self.assertEqual(quota.parse_codex(CODEX_PRO, NOW).windows[1:], [])
+        # The other spelling of every field name, and both windows of one limit.
+        camel = {
+            "limitName": "Spark",
+            "rateLimit": {
+                "primaryWindow": {"usedPercent": 5, "limitWindowSeconds": 18000},
+                "secondaryWindow": {"usedPercent": 7, "limitWindowSeconds": 604800},
+            },
+        }
+        usage = quota.parse_codex(dict(CODEX_PRO, additionalRateLimits=[camel]), NOW)
+        self.assertEqual(
+            [(w.label, w.used, w.scoped) for w in usage.windows[1:]],
+            [("spark 5h", 5, True), ("spark wk", 7, True)],
+        )
+
+    def test_codex_additional_limit_names(self):
+        def labels(*items):
+            usage = quota.parse_codex(dict(CODEX_PRO, additional_rate_limits=list(items)), NOW)
+            return [w.label for w in usage.windows[1:]]
+
+        rate = CODEX_SPARK["rate_limit"]
+        # The feature name stands in for a missing limit name, then the position.
+        self.assertEqual(
+            labels(
+                {"metered_feature": "codex_bengalfox", "rate_limit": rate},
+                {"limit_name": "  ", "rate_limit": rate},
+                {"limit_name": 7, "metered_feature": None, "rate_limit": rate},
+            ),
+            ["codex_bengalfox wk", "limit 2 wk", "limit 3 wk"],
+        )
+        # A name is vendor text: masked and bounded like any label.
+        self.assertEqual(
+            labels(
+                {"limit_name": "carol.canary@example.com", "rate_limit": rate},
+                {"limit_name": TOKENISH, "rate_limit": rate},
+                {"limit_name": "A very long limit name that goes on", "rate_limit": rate},
+            ),
+            ["ca…@… wk", "limit 2 wk", "a very long limit name t wk"],
+        )
+        # Not a limit: skipped, and nothing after it is lost.
+        self.assertEqual(
+            labels(
+                "junk",
+                None,
+                {"limit_name": "No Rate"},
+                {"limit_name": "Bad Rate", "rate_limit": "soon"},
+                {"limit_name": "No Figure", "rate_limit": {"primary_window": {}}},
+                CODEX_SPARK,
+            ),
+            ["gpt-5.3-codex-spark wk"],
+        )
+        for junk in (None, "spark", {"limit_name": "Spark", "rate_limit": rate}, 5):
+            usage = quota.parse_codex(dict(CODEX_PRO, additional_rate_limits=junk), NOW)
+            self.assertEqual([w.label for w in usage.windows], ["wk"], repr(junk))
+        many = [{"limit_name": f"L{n}", "rate_limit": rate} for n in range(1, 8)]
+        self.assertEqual(labels(*many), ["l1 wk", "l2 wk", "l3 wk", "l4 wk"])
+        # Only a limit that is shown counts toward that cap.
+        empty = [{"limit_name": f"E{n}", "rate_limit": {"primary_window": {}}} for n in range(6)]
+        self.assertEqual(labels(*empty, CODEX_SPARK), ["gpt-5.3-codex-spark wk"])
+        # Two limits under one name: the first is shown, once.
+        self.assertEqual(
+            labels(
+                {"limit_name": "Spark", "rate_limit": rate},
+                {"limit_name": "spark", "rate_limit": rate},
+            ),
+            ["spark wk"],
+        )
+        # With no plan windows in the reply the additional ones are still read.
+        alone = quota.parse_codex({"additional_rate_limits": [CODEX_SPARK]}, NOW)
+        self.assertEqual([w.label for w in alone.windows], ["gpt-5.3-codex-spark wk"])
+
+    def test_codex_full_additional_limit_is_not_out(self):
+        reset = epoch(2 * 1440)
+        full = {
+            "limit_name": "Spark",
+            "rate_limit": {
+                "allowed": False,
+                "limit_reached": True,
+                # No percent: the vendor's "reached" plus a reset time means full.
+                "primary_window": {"limit_window_seconds": 604800, "reset_at": reset},
+            },
+        }
+        usage = quota.parse_codex(dict(CODEX_PRO, additional_rate_limits=[full]), NOW)
+        self.assertEqual(
+            [(w.label, w.used, w.scoped) for w in usage.windows],
+            [("wk", 40, False), ("spark wk", 100, True)],
+        )
+        # The limit is on one feature: the account still serves the rest.
+        self.assertFalse(usage.reached)
+        result = quota.AccountResult("a", "codex", usage)
+        self.assertEqual(result.out_until(), (False, None))
+        when = quota._when(NOW + timedelta(days=2), NOW)
+        self.assertEqual(
+            quota._provider_block("codex", [result], NOW),
+            [
+                "codex · 1 account: 1 have room",
+                f"a pro  wk 40% · spark wk 100% → {when}  out: spark wk",
+            ],
+        )
+        # Reached with no reset time and no percent says nothing: not shown.
+        del full["rate_limit"]["primary_window"]["reset_at"]
+        usage = quota.parse_codex(dict(CODEX_PRO, additional_rate_limits=[full]), NOW)
+        self.assertEqual([w.label for w in usage.windows], ["wk"])
+
     def test_claude_full_scoped_limit_is_not_out(self):
         usage = quota.Usage(
             windows=[
@@ -381,7 +542,9 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(lines[1].endswith("  out: fable"), lines)
         usage.windows[1].used = 100
         self.assertTrue(result.out_until()[0])
-        self.assertTrue(quota._provider_block("claude", [result], NOW)[1].endswith("  OUT"))
+        line = quota._provider_block("claude", [result], NOW)[1]
+        self.assertTrue(line.startswith("OUT a  5h 10%"), line)
+        self.assertNotIn("out:", line)
 
     def test_codex_pro_weekly_primary_only(self):
         usage = quota.parse_codex(CODEX_PRO, NOW)
@@ -475,7 +638,7 @@ class ParserTests(unittest.TestCase):
 class RequestShapeTests(QuotaTestCase):
     def test_post_body_has_exactly_four_keys_and_table_values(self):
         self.run_quota()
-        self.assertEqual(len(_CPA.posts), 3)
+        self.assertEqual(len(_CPA.posts), 4)  # claude usage and tier, two codex usage
         for post in _CPA.posts:
             body = post["body"]
             self.assertEqual(set(body), {"auth_index", "method", "url", "header"})
@@ -484,7 +647,10 @@ class RequestShapeTests(QuotaTestCase):
             self.assertEqual(post["auth"], f"Bearer {KEY}")
             self.assertEqual(post["ua"], f"cpa-status/{cpa.VERSION}")
         by_url = {p["body"]["url"]: p["body"] for p in _CPA.posts}
-        self.assertEqual(set(by_url), {quota.CLAUDE_USAGE_URL, quota.CODEX_USAGE_URL})
+        self.assertEqual(
+            set(by_url),
+            {quota.CLAUDE_USAGE_URL, quota.CLAUDE_PROFILE_URL, quota.CODEX_USAGE_URL},
+        )
         claude = by_url[quota.CLAUDE_USAGE_URL]["header"]
         self.assertEqual(claude, quota.QUOTA_REQUESTS["claude"][0].header)
         self.assertEqual(claude["Authorization"], "Bearer $TOKEN$")
@@ -503,6 +669,8 @@ class RequestShapeTests(QuotaTestCase):
             urls,
             {
                 "https://api.anthropic.com/api/oauth/usage",
+                "https://api.anthropic.com/api/oauth/profile",
+                "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
                 "https://chatgpt.com/backend-api/wham/usage",
                 "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
                 "https://cli-chat-proxy.grok.com/v1/billing",
@@ -520,6 +688,18 @@ class RequestShapeTests(QuotaTestCase):
                     self.assertEqual("$TOKEN$" in value, name == "Authorization")
                 if "$TOKEN$" in probe.data:
                     self.assertEqual(provider, "devin")
+
+    def test_at_most_four_requests_per_account_as_the_help_says(self):
+        most = max(len(probes) for probes in quota.QUOTA_REQUESTS.values())
+        self.assertEqual(most, 4)  # antigravity: three quota URLs, then the tier request
+        self.assertIn(f"accounts and {most} requests per account", quota.USAGE)
+        self.assertIn(f"at most {most} more per account", status.USAGE)
+        for provider, probes in quota.QUOTA_REQUESTS.items():
+            tiers = [probe.tier for probe in probes]
+            # At most one tier request, and it is the last one of the account.
+            self.assertLessEqual(sum(tiers), 1, provider)
+            self.assertEqual(tiers, sorted(tiers), provider)
+            self.assertEqual(sum(tiers), 1 if provider in ("claude", "antigravity") else 0)
 
     def test_codex_without_account_id_has_no_header(self):
         _CPA.files = [account("codex", 2, id_token=None)]
@@ -767,7 +947,7 @@ class RunControlTests(QuotaTestCase):
         _CPA.delay = 0.05
         out = self.run_quota()
         self.assertEqual(len(_CPA.posts), 20)
-        self.assertIn("+5 more not checked", out)
+        self.assertEqual(out.splitlines()[-2:], ["", "+5 more not checked (at most 20 per run)"])
         self.assertLessEqual(_CPA.peak, quota.MAX_IN_FLIGHT)
         self.assertGreater(_CPA.peak, 1)
 
@@ -858,6 +1038,183 @@ class RunControlTests(QuotaTestCase):
         self.assertFalse(cpa.key_rejected(self.home, self.root, KEY))
 
 
+# ── Codex subscription end date (listing claim, no request) ─────────────────
+
+
+class UntilTests(QuotaTestCase):
+    UNTIL = NOW + timedelta(days=20, hours=-2)  # 12:00 UTC: one date in most zones
+
+    def claim(self, value, **more):
+        return {
+            "chatgpt_account_id": "acct-0002",
+            "chatgpt_subscription_active_until": value,
+            **more,
+        }
+
+    def shown(self, moment):
+        return moment.astimezone().strftime("%b %d")
+
+    def test_until_claim_shapes(self):
+        # CPA types the claim as `any`: an ISO string or unix seconds, as sent.
+        seconds = int(self.UNTIL.timestamp())
+        for value in (
+            self.UNTIL.isoformat(),
+            self.UNTIL.isoformat().replace("+00:00", "Z"),
+            seconds,
+            float(seconds),
+            seconds * 1000,
+            str(seconds),
+        ):
+            files = status.files_of({"files": [account("codex", 2, id_token=self.claim(value))]})
+            self.assertEqual(files[0].get("_until"), self.UNTIL, repr(value))
+
+    def test_until_claim_junk_and_other_providers(self):
+        for value in (True, False, None, 0, "0", -5, "", "soon", [], {}, float("nan")):
+            files = status.files_of({"files": [account("codex", 2, id_token=self.claim(value))]})
+            self.assertNotIn("_until", files[0], repr(value))
+        other = account("claude", 1, id_token=self.claim(self.UNTIL.isoformat()))
+        self.assertNotIn("_until", status.files_of({"files": [other]})[0])
+        broken = account("codex", 2, id_token="not-a-dict")
+        self.assertNotIn("_until", status.files_of({"files": [broken]})[0])
+        # The start date is another claim; it is never read in place of the end.
+        start_only = {
+            "chatgpt_account_id": "acct-0002",
+            "chatgpt_subscription_active_start": self.UNTIL.isoformat(),
+        }
+        files = status.files_of({"files": [account("codex", 2, id_token=start_only)]})
+        self.assertNotIn("_until", files[0])
+
+    def test_until_shown_next_to_the_plan_without_a_request(self):
+        start = NOW - timedelta(days=10)
+        claims = self.claim(
+            self.UNTIL.isoformat(),
+            chatgpt_subscription_active_start=start.isoformat(),
+            plan_type="secret-plan-claim",
+        )
+        _CPA.files = [account("codex", 2, id_token=claims), account("codex", 3)]
+        out = self.run_quota("quota pre codex")
+        self.assertIn(f"pro until {self.shown(self.UNTIL)}  wk 40%", out)
+        self.assertEqual(out.count("until "), 1)  # the account with no claim shows none
+        self.assertNotIn("secret-plan-claim", out)
+        self.assertNotIn(self.shown(start), out)
+        self.assertEqual(len(_CPA.posts), 2)  # one usage request per account, as before
+
+    def test_until_in_the_past_or_another_year(self):
+        past = NOW - timedelta(days=24, hours=2)
+        far = datetime(2027, 1, 5, 12, 0, tzinfo=timezone.utc)
+        _CPA.files = [
+            account("codex", 2, id_token=self.claim(past.isoformat())),
+            account("codex", 3, id_token=self.claim(far.isoformat())),
+        ]
+        out = self.run_quota("quota pre codex")
+        self.assertIn(f"pro until {self.shown(past)} (past)  wk 40%", out)
+        # The plan column is as wide as the longest plan in the block.
+        self.assertIn(f"plus until {self.shown(far)} 2027   5h 100%", out)
+        self.assertNotIn("2027 (past)", out)
+
+    def test_until_the_local_zone_cannot_hold_is_left_out(self):
+        # Turning such a date into local time raises, which would cost the whole view.
+        edges = ("9999-12-31T23:59:59-12:00", "0001-01-01T00:00:00+14:00")
+        for value in edges:
+            files = status.files_of({"files": [account("codex", 2, id_token=self.claim(value))]})
+            self.assertNotIn("_until", files[0], value)
+        _CPA.files = [account("codex", 2, id_token=self.claim(edges[0]))]
+        out = self.run_quota("quota pre codex")
+        self.assertIn("wk 40%", out)
+        self.assertNotIn("until ", out)
+        self.assertNotIn("internal error", out)
+
+
+# ── Times the calendar cannot hold (CPA and the vendors can send any value) ──
+
+
+class CalendarEdgeTests(QuotaTestCase):
+    EDGE = "9999-12-31T23:59:59-12:00"  # turning it into local time raises
+    HUGE = 1e18  # seconds: adding it to a time raises
+
+    def handled(self, args):
+        """The reply's lines, through handle() as Hermes calls it.
+
+        handle() turns an exception into "internal error", which is the whole
+        reply then: the views below would be gone.
+        """
+        real = status.report
+
+        def report(raw_args, **_):
+            return real(
+                raw_args, config=self.config(), home=self.home, secret=self.env.get, now=NOW
+            )
+
+        with (
+            mock.patch.object(status, "_hermes_home", return_value=self.home),
+            mock.patch.object(status, "report", side_effect=report),
+        ):
+            out = status.handle(args)
+        self.assertNotIn("internal error", out)
+        return out.splitlines()
+
+    def test_a_retry_or_last_seen_reset_at_the_edge_shows_as_a_date(self):
+        cooldown = {"scope": "credential", "reason": "quota", "retry_at": self.EDGE}
+        signals = {"daily_quota_remaining_percent": "0%", "daily_quota_reset_at": self.EDGE}
+        _CPA.files = [
+            account("codex", 2, status="error", unavailable=True, cooldowns=[cooldown]),
+            account("devin", 5, quota={"observed_at": iso(-4), "signals": signals}),
+        ]
+        self.assertEqual(
+            self.handled("")[2:],
+            ["  codex 1: 1 cooling (next 9999-12-31)", "  devin 1: 1 limited (next 9999-12-31)"],
+        )
+        self.assertEqual(
+            self.handled("pre codex")[1:],
+            ["codex-us…@…  cooling until 9999-12-31 (vendor limit reached)"],
+        )
+        self.assertEqual(
+            self.handled("pre devin")[1:],
+            ["devin-us…@…  limited until 9999-12-31 · day 100% until 9999-12-31 (4m ago)"],
+        )
+
+    def test_a_live_reset_at_the_edge_shows_as_a_date(self):
+        _CPA.files = [account("claude", 1)]
+        full = {"five_hour": {"utilization": 100, "resets_at": self.EDGE}}
+        _CPA.inner = {f"{1:016x}": (200, full)}
+        self.assertEqual(
+            self.handled("quota pre")[2:],
+            [
+                "claude · 1 account: 0 have room · 1 out (next free 9999-12-31)",
+                "OUT claude-us…@…  5h 100% → 9999-12-31",
+            ],
+        )
+
+    def test_a_reset_too_far_to_add_is_left_out(self):
+        signals = {
+            "X-Codex-Primary-Used-Percent": "100",
+            "X-Codex-Primary-Reset-After-Seconds": str(self.HUGE),
+        }
+        window = {
+            "used_percent": 100,
+            "limit_window_seconds": 604800,
+            "reset_after_seconds": self.HUGE,
+        }
+        _CPA.files = [
+            account("codex", 2, quota={"observed_at": iso(-4), "signals": signals}),
+            account("kimi", 8),
+        ]
+        _CPA.inner = {
+            f"{2:016x}": (200, dict(CODEX_PRO, rate_limit={"primary_window": window})),
+            f"{8:016x}": (200, {"usage": {"limit": 10, "used": 10, "reset_in": self.HUGE}}),
+        }
+        # Last seen by CPA: full, and nothing says when it frees.
+        self.assertEqual(self.handled("pre codex")[1:], ["codex-us…@…  limited · 5h 100% (4m ago)"])
+        self.assertEqual(
+            self.handled("quota pre codex")[2:],
+            ["codex · 1 account: 0 have room · 1 out", "OUT codex-us…@… pro  wk 100%"],
+        )
+        self.assertEqual(
+            self.handled("quota pre kimi")[2:],
+            ["kimi · 1 account: 0 have room · 1 out", "OUT kimi-us…@…  wk 100%"],
+        )
+
+
 # ── View and args (Task 10) ─────────────────────────────────────────────────
 
 
@@ -868,11 +1225,104 @@ class ViewTests(QuotaTestCase):
         self.assertIn("claude · 1 account: 1 have room", out)
         self.assertIn("codex · 2 accounts: 1 have room · 1 out (next free", out)
         self.assertIn("5h 55%", out)
-        self.assertIn("pro  wk 40%", out)
+        self.assertIn("pro   wk 40%", out)
         lines = out.splitlines()
         codex = lines[lines.index(next(line for line in lines if line.startswith("codex ·"))) + 1 :]
-        self.assertTrue(codex[0].endswith("OUT"))  # out first
+        self.assertTrue(codex[0].startswith("OUT "))  # out first
         self.assertIn("plus  5h 100%", codex[0])
+
+    def test_blank_line_between_provider_blocks(self):
+        lines = self.run_quota().splitlines()
+        self.assertTrue(lines[0].startswith("pre quota · live"))
+        heads = [i for i, line in enumerate(lines) if line.startswith(("claude ·", "codex ·"))]
+        self.assertEqual(len(heads), 2)
+        for index in heads:
+            self.assertEqual(lines[index - 1], "", lines)
+        self.assertEqual(lines.count(""), 2, lines)
+        self.assertTrue(lines[-1])
+
+    def test_out_starts_the_line_and_columns_line_up(self):
+        lines = self.run_quota().splitlines()
+        start = lines.index(next(line for line in lines if line.startswith("codex ·")))
+        free = quota._when(NOW + timedelta(minutes=70), NOW)
+        self.assertEqual(
+            lines[start + 1 : start + 3],
+            [
+                f"OUT codex-us…@… plus  5h 100% → {free} · wk 60%",
+                "    codex-us…@… pro   wk 40%",
+            ],
+        )
+        # A block with no account out is not indented.
+        claude = lines[lines.index(next(line for line in lines if line.startswith("claude ·"))) + 1]
+        self.assertTrue(claude.startswith("claude-us…@…  5h 55%"), claude)
+
+    def test_columns_are_as_wide_as_the_longest_value_up_to_a_cap(self):
+        def one(name, used, plan=""):
+            usage = quota.Usage(plan=plan, windows=[quota.Window("wk", used)])
+            return quota.AccountResult(name, "codex", usage)
+
+        failed = quota.AccountResult("abc", "codex", error="timeout")
+        block = quota._provider_block("codex", [one("ab", 5, "pro"), one("abcdef", 7), failed], NOW)
+        self.assertEqual(block[1:], ["abc     timeout", "abcdef      wk 7%", "ab     pro  wk 5%"])
+        # A very long name or plan is shown whole; the others stop at the cap.
+        block = quota._provider_block("codex", [one("n" * 50, 9), one("ab", 5, "pro")], NOW)
+        self.assertEqual(block[1], "n" * 50 + "      wk 9%")
+        self.assertEqual(block[2], "ab" + " " * (quota._NAME_PAD - 2) + " pro  wk 5%")
+        block = quota._provider_block("codex", [one("ab", 9, "p" * 32), one("cd", 5, "pro")], NOW)
+        self.assertEqual(block[1], "ab " + "p" * 32 + "  wk 9%")
+        self.assertEqual(block[2], "cd pro" + " " * (quota._PLAN_PAD - 3) + "  wk 5%")
+
+    def test_reset_time_only_on_a_window_that_is_nearly_full(self):
+        soon = NOW + timedelta(hours=2)
+        when = quota._when(soon, NOW)
+        for used, shown in ((0, False), (79.9, False), (80, True), (100, True)):
+            text = quota._window_text(quota.Window("wk", used, soon), NOW)
+            self.assertEqual(text, f"wk {int(used)}%" + (f" → {when}" if shown else ""), used)
+        gone = quota.Window("wk", 100, NOW - timedelta(hours=1))
+        self.assertEqual(quota._window_text(gone, NOW), "wk 100%")
+        # No figure yet: the reset time is all there is to show, so it stays.
+        self.assertEqual(
+            quota._pending_text(quota.Window("wk", 0, soon), NOW), f"wk no figure yet → {when}"
+        )
+
+    def test_view_is_a_code_block_only_where_one_renders(self):
+        def run(args="quota pre", platform=None):
+            status.reset_state()  # a repeat would say "cached", not "live"
+            return status.report(
+                args,
+                config=self.config(),
+                home=self.home,
+                secret=self.env.get,
+                now=NOW,
+                platform=platform,
+            )
+
+        plain = run()
+        for platform in ("telegram", "discord", "slack", "matrix", "mattermost", "Telegram"):
+            self.assertEqual(run(platform=platform), "```\n" + plain + "\n```", platform)
+        for platform in (None, "", "cli", "tui", "local", "sms", "feishu", "email"):
+            self.assertEqual(run(platform=platform), plain, platform)
+        self.assertNotIn("`", plain)
+        # Help, errors and the plain /cpa views are sentences, not a table.
+        for args in ("quota", "quota nope", "quota pre meta", "", "pre codex"):
+            self.assertNotIn("`", run(args, platform="telegram"), args)
+
+    def test_code_block_survives_the_size_cap_and_a_backtick(self):
+        _CPA.files = [account("codex", n, label=f"we```ird`{n}") for n in range(2, 22)]
+        with mock.patch.object(status, "OUTPUT_LIMIT", 400):
+            out = status.report(
+                "quota pre",
+                config=self.config(),
+                home=self.home,
+                secret=self.env.get,
+                now=NOW,
+                platform="telegram",
+            )
+        self.assertLessEqual(len(out), 400)
+        self.assertTrue(out.startswith("```\n") and out.endswith("\n```"), out[-40:])
+        self.assertEqual(out.count("`"), 6)  # the two fences and nothing else
+        self.assertIn("we'''ird'", out)
+        self.assertRegex(out.splitlines()[-2], r"^… \d+ more lines$")
 
     def test_provider_filter_is_case_insensitive(self):
         out = self.run_quota("quota PRE Codex")

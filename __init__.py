@@ -3,8 +3,8 @@
 For each CPA instance in the ``cliproxyapi`` section of ``config.yaml`` this
 registers one provider per CPA provider (``cpa-<instance>-<provider>``), each on
 the wire that CPA's executor for it accepts with the least translation, plus one
-instance-wide chat provider (``cpa-<instance>``). With no instances configured it
-uses one local CPA (``cpa-local``).
+instance-wide provider (``cpa-<instance>``) that holds every model. With no
+instances configured it uses one local CPA (``cpa-local``).
 
 Registration reads only config and the on-disk catalog cache. Network calls
 happen in ``fetch_models``, which refreshes the catalog, writes the cache and
@@ -30,6 +30,9 @@ except ImportError:  # pragma: no cover - direct import in tests
     import cpa  # type: ignore[no-redef]
 
 logger = logging.getLogger(__name__)
+
+# Shown beside an instance's row in the Hermes provider pickers.
+PICKER_NOTE = "every model, or one CPA provider"
 
 
 def _hermes_home() -> Path:
@@ -89,14 +92,20 @@ class _Instance:
         self.spec = spec
         self.home = home
         self.catalog = catalog
-        self.groups = self._groups(catalog)
+        self.groups: dict[str, list[str]] = {}
+        self.wires: dict[str, str] = {}
+        self._regroup(catalog)
         self.lock = threading.Lock()
         self.refreshed_at = 0.0  # monotonic; 0 means "not refreshed in this process"
         self.profiles: dict[str, CLIProxyAPIProfile] = {}
 
-    def _groups(self, catalog: cpa.Catalog) -> dict[str, list[str]]:
+    def _regroup(self, catalog: cpa.Catalog) -> None:
         groups = cpa.compute_groups(catalog, self.spec.overrides)
-        return cpa.filter_routed(groups, self.spec, catalog.route_ids)
+        # The wire is how CPA serves a model, so it is read before the billing
+        # route narrows the groups: a gateway key decides what is sold, not the wire.
+        # Swap, never mutate: Hermes reads both without the instance lock.
+        self.wires = cpa.model_wires(groups, self.spec.overrides)
+        self.groups = cpa.filter_routed(groups, self.spec, catalog.route_ids)
 
     def _route_lists(self, timeout: float) -> dict[str, list[str]]:
         """Fresh gateway lists per route key; the last known list when one fails."""
@@ -168,7 +177,7 @@ class _Instance:
                         type(exc).__name__,
                     )
             self.catalog = catalog
-            self.groups = self._groups(catalog)
+            self._regroup(catalog)
             self.refreshed_at = time.monotonic()
             for profile in self.profiles.values():
                 profile._cpa_sync()
@@ -238,6 +247,48 @@ class CLIProxyAPIProfile(ProviderProfile):
         value = self._cpa_instance.catalog.meta.get(model or "", {}).get("max_output_tokens")
         return value if isinstance(value, int) and value > 0 else self.default_max_tokens
 
+    # Hermes 0.23.0 and later call the two hooks below; older Hermes never does.
+
+    def missing_credentials_hint(self) -> str | None:
+        """Which key the variable takes; Hermes adds it to its "no credentials" message."""
+        spec = self._cpa_instance.spec
+        if spec.routed:
+            gateway_env = spec.route_key_for(self._cpa_group)
+            return (
+                f"{gateway_env} takes the billing gateway's key; "
+                f"{spec.key_env} takes the CPA client key."
+            )
+        return (
+            f"{spec.key_env} takes a CPA client key (one of CPA's api-keys), "
+            "not the management key."
+        )
+
+    def invalidate_catalog_cache(self) -> None:
+        """``/model --refresh``: the next listing asks CPA again. Sends nothing itself.
+
+        Only the 30 second memo is dropped. The management pass keeps its own
+        pace and the on-disk cache stays, so startup still registers from it.
+        """
+        # No lock: Hermes calls this on every profile, and a refresh in flight
+        # must not hold it up. That refresh is fresh anyway.
+        self._cpa_instance.refreshed_at = 0.0
+
+
+class CLIProxyAPIWideProfile(CLIProxyAPIProfile):
+    """The instance-wide provider: every model of the instance.
+
+    Hermes 0.23.0 and later ask ``api_mode_for_model`` and send each model on
+    the wire of the CPA provider that serves it. Older Hermes never calls it and
+    keeps every model on the chat wire. Only this profile defines the hook: a
+    provider profile has one wire.
+    """
+
+    def api_mode_for_model(self, model: str, *, api_key: str | None = None) -> str | None:
+        # Memory only: Hermes calls this on the request path. Always a wire,
+        # never None: Hermes keeps the wire of the model used before when a
+        # profile gives none.
+        return self._cpa_instance.wires.get(model or "", cpa.DEFAULT_WIRE)
+
 
 _INSTANCES: dict[str, _Instance] = {}
 _TAKEN: dict[str, str] = {}  # registered profile name -> owning instance
@@ -257,7 +308,7 @@ def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile
     base = spec.display_name or f"CLIProxyAPI {spec.name}"
     if group is None:
         name, label = spec.wide_name, base
-        description = f"CLIProxyAPI instance '{spec.name}', every model on the chat wire"
+        description = f"CLIProxyAPI instance '{spec.name}', every model"
     else:
         name = spec.group_name(group)
         label = (override.display_name if override else "") or f"{base} ({group})"
@@ -269,7 +320,7 @@ def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile
     else:
         root = spec.root
         env_vars = (spec.key_env, spec.url_env) if spec.url_env else (spec.key_env,)
-    profile = CLIProxyAPIProfile(
+    profile = (CLIProxyAPIProfile if group else CLIProxyAPIWideProfile)(
         name=name,
         api_mode=api_mode,
         display_name=label,
@@ -281,6 +332,10 @@ def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile
     )
     profile._cpa_instance = instance
     profile._cpa_group = group
+    # One picker row per instance on Hermes 0.23.0 and later, its providers
+    # inside. Set after construction: older Hermes has no such field, where a
+    # constructor argument raises and a plain attribute is ignored.
+    profile.picker_group = (spec.wide_name, base, PICKER_NOTE)
     profile._cpa_sync()
     return profile
 

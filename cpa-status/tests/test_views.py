@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
+import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -17,6 +20,12 @@ import status  # noqa: E402
 import cpa  # noqa: E402
 
 NOW = datetime(2026, 10, 27, 9, 0, tzinfo=timezone.utc)
+
+# The plain CI job has no YAML parser, so a test that reads config.yaml runs in the Hermes job.
+needs_yaml = unittest.skipUnless(
+    importlib.util.find_spec("ruamel") or importlib.util.find_spec("yaml"),
+    "no YAML parser (runs in the Hermes CI job)",
+)
 
 
 def iso(minutes: float) -> str:
@@ -98,8 +107,74 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(lines[0], "pre / codex · 3 accounts")
         self.assertTrue(lines[1].startswith("codex-ca…@…  error: token for ca…@… expired"))
         self.assertTrue(lines[2].startswith("codex-bo…@…  cooling until "))
-        self.assertIn("(quota)", lines[2])
+        self.assertIn("(vendor limit reached)", lines[2])
         self.assertEqual(lines[3], "codex-al…@…  active · 1h 3/1 · 5h 63% (4m ago)")
+
+    def provider_lines(self, *raw):
+        # Through files_of, as a real listing goes: a field it drops is not shown.
+        files = status.files_of({"files": [dict(entry) for entry in raw]})
+        self.fetch.return_value = (status.Fetched("ok", files=files), False)
+        return self.run_cpa("pre codex").splitlines()
+
+    def test_provider_view_shows_totals_and_priority(self):
+        counted = dict(LISTING[0], success=250, failed=8, priority=3)
+        lines = self.provider_lines(counted, LISTING[1])
+        self.assertEqual(lines[0], "pre / codex · 2 accounts · total = since CPA start")
+        self.assertTrue(lines[1].startswith("codex-bo…@…  cooling until "))
+        self.assertNotIn("total", lines[1])
+        self.assertNotIn("prio", lines[1])
+        self.assertEqual(
+            lines[2], "codex-al…@…  active · prio 3 · 1h 3/1 · total 250/8 · 5h 63% (4m ago)"
+        )
+
+    def test_last_seen_percent_stops_at_100(self):
+        # A vendor can report more than the limit. The account is full either way.
+        signals = {"X-Codex-Primary-Used-Percent": "103", "X-Codex-Secondary-Used-Percent": "250.9"}
+        over = dict(LISTING[0], quota={"observed_at": iso(-4), "signals": signals})
+        self.assertEqual(
+            self.provider_lines(over)[1:],
+            ["codex-al…@…  limited · 1h 3/1 · 5h 100% · wk 100% (4m ago)"],
+        )
+
+    def test_one_model_cooling_is_singular(self):
+        def line(count, **extra):
+            items = [
+                {"scope": "model", "model_key": f"m{n}", "retry_at": iso(10)} for n in range(count)
+            ]
+            return self.provider_lines(dict(LISTING[0], cooldowns=items, **extra))[1]
+
+        full = {"observed_at": iso(-4), "signals": {"X-Codex-Primary-Used-Percent": "100"}}
+        tail = " · 1h 3/1 · 5h 63% (4m ago)"
+        self.assertEqual(line(0), "codex-al…@…  active" + tail)
+        self.assertEqual(line(1), "codex-al…@…  active · 1 model cooling" + tail)
+        self.assertEqual(line(2), "codex-al…@…  active · 2 models cooling" + tail)
+        tail = " · 1h 3/1 · 5h 100% (4m ago)"
+        self.assertEqual(line(0, quota=full), "codex-al…@…  limited" + tail)
+        self.assertEqual(line(1, quota=full), "codex-al…@…  limited · 1 model cooling" + tail)
+        self.assertEqual(line(2, quota=full), "codex-al…@…  limited · 2 models cooling" + tail)
+
+    def test_priority_an_operator_can_set(self):
+        for value in (0, -5):
+            lines = self.provider_lines(dict(LISTING[0], priority=value))
+            self.assertEqual(lines[0], "pre / codex · 1 account")
+            self.assertIn(f"active · prio {value} · 1h 3/1", lines[1])
+
+    def test_totals_and_priority_ignore_junk(self):
+        for junk in (
+            {"success": True, "failed": "9", "priority": True},
+            {"success": -3, "failed": None, "priority": "1"},
+            {"success": 0, "failed": 0},
+            {"success": 1.5, "priority": 1.5},
+        ):
+            lines = self.provider_lines(dict(LISTING[0], **junk))
+            self.assertEqual(lines[0], "pre / codex · 1 account", junk)
+            self.assertEqual(lines[1], "codex-al…@…  active · 1h 3/1 · 5h 63% (4m ago)", junk)
+
+    def test_total_note_only_when_the_shown_provider_has_totals(self):
+        other = dict(LISTING[3], success=7, failed=2)
+        lines = self.provider_lines(LISTING[0], other)
+        self.assertEqual(lines[0], "pre / codex · 1 account")
+        self.assertNotIn("total", "\n".join(lines))
 
     def test_no_email_anywhere(self):
         for args in ("", "pre", "pre codex", "pre xai"):
@@ -127,6 +202,33 @@ class ViewTests(unittest.TestCase):
     def test_unknown_provider_echo_masked(self):
         out = self.run_cpa("pre sk-" + "a" * 40)
         self.assertNotIn("a" * 24, out)
+
+    def test_cooling_reason_in_plain_words(self):
+        # Every reason code CPA can send (sdk/cliproxy/auth/cooldown_view.go).
+        until = "codex-bo…@…  cooling until " + status.clock(NOW + timedelta(minutes=20), NOW)
+        for code, words in (
+            ("quota", " (vendor limit reached)"),
+            ("credential_quota", " (vendor limit reached, all models)"),
+            ("cloudflare_challenge", " (Cloudflare challenge)"),
+            ("model_not_supported", " (model not supported)"),
+            ("invalid_grant", " (refresh token rejected)"),
+            ("payment_required", " (access refused or no credit)"),
+            ("transient_rate_limit", " (vendor rate limited)"),
+            ("unauthorized", " (token rejected by vendor)"),
+            ("not_found", " (vendor HTTP 404)"),
+            ("transient_error", " (temporary vendor error)"),
+            ("unknown", ""),
+        ):
+            cooldown = {"scope": "credential", "reason": code, "retry_at": iso(20)}
+            lines = self.provider_lines(dict(LISTING[1], cooldowns=[cooldown]))
+            self.assertEqual(lines[1], until + words, code)
+
+    def test_cooling_reason_that_is_not_a_code_is_shown_as_sent(self):
+        # An older CPA, or a code added later: shown as it came, through the masks.
+        for text in ("Quota", "quota exhausted today", "new_reason_code"):
+            cooldown = {"scope": "credential", "reason": text, "retry_at": iso(20)}
+            lines = self.provider_lines(dict(LISTING[1], cooldowns=[cooldown]))
+            self.assertTrue(lines[1].endswith(f" ({text})"), lines[1])
 
     def test_cooling_reason_masked(self):
         entry = dict(LISTING[1])
@@ -175,6 +277,46 @@ class ViewTests(unittest.TestCase):
         self.assertIn(f"5h 100% until {until}", lines[1])
         self.assertTrue(lines[2].startswith("codex-al…@…  active"), lines)
         self.assertTrue(lines[3].startswith("codex-ol…@…  active"), lines)
+
+    def test_devin_last_seen_quota_in_the_views(self):
+        reset = NOW + timedelta(hours=3)
+        room = {
+            "provider": "devin",
+            "name": "devin-ivy@example.com.json",
+            "status": "active",
+            "quota": {
+                "observed_at": iso(-4),
+                "signals": {
+                    "daily_quota_remaining_percent": "55%",
+                    "daily_quota_reset_at": iso(180),
+                    "weekly_quota_remaining_percent": "88%",
+                },
+            },
+        }
+        used_up = {
+            "provider": "devin",
+            "name": "devin-joe@example.com.json",
+            "status": "active",
+            "quota": {
+                "observed_at": iso(-90),
+                "signals": {
+                    "daily_quota_remaining_percent": "0%",
+                    "daily_quota_reset_at": iso(180),
+                    "weekly_quota_remaining_percent": "40%",
+                },
+            },
+        }
+        self.fetch.return_value = (status.Fetched("ok", files=[room, used_up]), False)
+        until = status.clock(reset, NOW)
+        self.assertIn(f"  devin 2: 1 active · 1 limited (next {until})", self.run_cpa())
+        lines = self.run_cpa("pre devin").splitlines()
+        self.assertEqual(
+            lines[1:3],
+            [
+                f"devin-jo…@…  limited until {until} · day 100% until {until} · wk 60% (1h ago)",
+                "devin-iv…@…  active · day 45% · wk 12% (4m ago)",
+            ],
+        )
 
     def test_sign_in_note_on_pool_lines(self):
         serving = {
@@ -304,10 +446,24 @@ class HandleTests(unittest.TestCase):
             out = status.handle("")
         self.assertEqual(out, "cpa-status: internal error (ValueError)")
 
-    @unittest.skipUnless(
-        importlib.util.find_spec("ruamel") or importlib.util.find_spec("yaml"),
-        "no YAML parser (runs in the Hermes CI job)",
-    )
+    def test_handle_takes_the_platform_hermes_passes(self):
+        # Hermes 0.22.3+ passes `platform` to a handler that names it as a
+        # keyword; older Hermes calls the handler with the text only.
+        home = Path(tempfile.mkdtemp())
+        with (
+            mock.patch.object(status, "_hermes_home", return_value=home),
+            mock.patch.object(status, "report", return_value="ok") as report,
+        ):
+            self.assertEqual(status.handle("quota pre", platform="telegram"), "ok")
+            self.assertEqual(status.handle("quota pre"), "ok")
+        self.assertEqual(
+            [call.kwargs.get("platform") for call in report.call_args_list], ["telegram", None]
+        )
+        params = list(inspect.signature(status.handle).parameters.values())
+        self.assertEqual([p.name for p in params], ["raw_args", "platform"])
+        self.assertIs(params[1].kind, inspect.Parameter.KEYWORD_ONLY)
+
+    @needs_yaml
     def test_handle_reads_config_from_hermes_home(self):
         home = Path(tempfile.mkdtemp())
         (home / "config.yaml").write_text(
@@ -320,13 +476,7 @@ class HandleTests(unittest.TestCase):
         self.assertIn("solo: no management key", out)
 
     def test_register_adds_cpa_command(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-        init = Path(__file__).resolve().parents[1] / "__init__.py"
-        spec = importlib.util.spec_from_file_location("cpa_status_plugin", init)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = _load_plugin_module()
         calls = []
 
         class Ctx:
@@ -342,7 +492,182 @@ class HandleTests(unittest.TestCase):
         self.assertTrue(description)
 
 
+def _load_plugin_module():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    init = Path(__file__).resolve().parents[1] / "__init__.py"
+    spec = importlib.util.spec_from_file_location("cpa_status_plugin", init)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _Ctx:
+    """Plugin context of Hermes 0.23.1 or later, with the rules its session-env hook enforces."""
+
+    def __init__(self, settings=None, taken=()):
+        self.settings = dict(settings or {})
+        self.taken = set(taken)  # names another plugin already holds
+        self.commands: list[str] = []
+        self.asked: list[str] = []
+        self.hidden: list[tuple[list[str], Callable[[str], dict]]] = []
+
+    def register_command(self, name, handler, description="", **kw):
+        self.commands.append(name)
+
+    def get_config(self, key, default=None):
+        return self.settings.get(key, default)
+
+    def register_session_env(self, names, resolver):
+        names = [names] if isinstance(names, str) else list(names)
+        self.asked.extend(names)
+        if not names or any(n.upper().startswith("HERMES_") for n in names):
+            raise ValueError("session env names must be valid names outside HERMES_*")
+        if self.taken & set(names):
+            raise ValueError("session env name is already registered by another plugin")
+        self.hidden.append((names, resolver))
+
+    def unset(self, session_id="session-1"):
+        """What the registered resolvers tell Hermes to do for one session."""
+        out: dict = {}
+        for _names, resolver in self.hidden:
+            out.update(resolver(session_id))
+        return out
+
+
+class ShellKeyTests(unittest.TestCase):
+    """Keys no provider declares are hidden from a chat session's commands (Hermes 0.23.1+)."""
+
+    INSTANCES = {
+        "a": {"base_url": "http://127.0.0.1:9", "key_env": "A_KEY", "mgmt_key_env": "A_MGMT"},
+        "b": {
+            "base_url": "http://127.0.0.1:9",
+            "key_env": "B_KEY",
+            "mgmt_key_env": "B_MGMT",
+            "route_via": "http://127.0.0.1:9/v1",
+            "route_key_env": "B_GATEWAY",
+        },
+        "c": {"base_url": "http://127.0.0.1:9", "key_env": "C_KEY"},
+        "d": {"base_url": "http://127.0.0.1:9", "key_env": "D_KEY", "mgmt_key_env": "A_MGMT"},
+    }
+
+    def register(self, ctx, instances=None, text=None):
+        home = Path(tempfile.mkdtemp())
+        if text is None:
+            instances = self.INSTANCES if instances is None else instances
+            text = json.dumps({"cliproxyapi": {"instances": instances}})  # JSON is valid YAML
+        (home / "config.yaml").write_text(text)
+        module = _load_plugin_module()
+        with mock.patch.object(status, "_hermes_home", return_value=home):
+            module.register(ctx)
+        return ctx
+
+    @needs_yaml
+    def test_management_keys_and_a_routed_cpa_key_are_hidden(self):
+        ctx = self.register(_Ctx())
+        # Not A_KEY, C_KEY, D_KEY or B_GATEWAY: a provider declares those, so Hermes strips them.
+        self.assertEqual(sorted(ctx.asked), ["A_MGMT", "B_KEY", "B_MGMT"])
+        self.assertEqual(ctx.unset(), {"A_MGMT": None, "B_KEY": None, "B_MGMT": None})
+        self.assertEqual(ctx.unset(""), ctx.unset("another-session"))
+        self.assertEqual(ctx.commands, ["cpa"])
+
+    @needs_yaml
+    def test_the_setting_turns_hiding_off(self):
+        for value in (False, "false", "off", "no", 0):
+            ctx = self.register(_Ctx({"hide_keys_from_shells": value}))
+            self.assertEqual((ctx.asked, ctx.commands), ([], ["cpa"]), repr(value))
+        for value in (True, "true", None, "", "maybe"):
+            ctx = self.register(_Ctx({"hide_keys_from_shells": value}))
+            self.assertEqual(sorted(ctx.asked), ["A_MGMT", "B_KEY", "B_MGMT"], repr(value))
+
+    @needs_yaml
+    def test_a_refused_name_does_not_stop_the_others(self):
+        instances = dict(self.INSTANCES)
+        instances["e"] = {
+            "base_url": "http://127.0.0.1:9",
+            "key_env": "E_KEY",
+            "mgmt_key_env": "HERMES_E_MGMT",
+        }
+        with self.assertLogs(level="WARNING") as logs:
+            ctx = self.register(_Ctx(taken={"B_MGMT"}), instances)
+        self.assertEqual(ctx.unset(), {"A_MGMT": None, "B_KEY": None})
+        self.assertEqual(ctx.commands, ["cpa"])
+        # Hermes keeps HERMES_* for itself: never asked, and said so.
+        self.assertNotIn("HERMES_E_MGMT", ctx.asked)
+        joined = "\n".join(logs.output)
+        self.assertEqual((joined.count("B_MGMT"), joined.count("HERMES_E_MGMT")), (1, 1))
+        self.assertNotIn("A_MGMT", joined)
+
+    @needs_yaml
+    def test_keys_are_read_from_config_without_a_lookup_or_a_valid_instance(self):
+        instances = {
+            # The provider skips both instances; their keys are in the environment all the same.
+            "bad-url": {"base_url": "ftp://x", "key_env": "X_KEY", "mgmt_key_env": "X_MGMT"},
+            "named": {
+                "base_url": "http://pool.example",
+                "key_env": "Y_KEY",
+                "mgmt_key_env": "Y_MGMT",
+            },
+            "bad-name": {
+                "base_url": "http://127.0.0.1:9",
+                "key_env": "Z",
+                "mgmt_key_env": "not a name",
+            },
+            "not-a-mapping": "x",
+        }
+        with mock.patch("socket.getaddrinfo", side_effect=AssertionError("address lookup")):
+            ctx = self.register(_Ctx(), instances)
+        self.assertEqual(sorted(ctx.asked), ["X_MGMT", "Y_MGMT"])
+
+    @needs_yaml
+    def test_nothing_to_hide_registers_only_the_command(self):
+        for text in (
+            "model: {}\n",
+            "cliproxyapi: 7\n",
+            "cliproxyapi:\n  instances: []\n",
+        ):
+            with self.assertNoLogs(level="WARNING"):
+                ctx = self.register(_Ctx(), text=text)
+            self.assertEqual((ctx.asked, ctx.commands), ([], ["cpa"]), text)
+        ctx = self.register(_Ctx(), text="cliproxyapi: [unclosed\n")  # not YAML
+        self.assertEqual((ctx.asked, ctx.commands), ([], ["cpa"]))
+
+    def test_older_hermes_registers_the_command_and_says_nothing(self):
+        class Old:  # Hermes before 0.23.1: no register_session_env
+            commands: list[str] = []
+
+            def register_command(self, name, handler, description="", **kw):
+                self.commands.append(name)
+
+            def get_config(self, key, default=None):
+                raise AssertionError("the setting is read only when Hermes can hide a key")
+
+        with self.assertNoLogs(level="WARNING"):
+            ctx = self.register(Old())
+        self.assertEqual(ctx.commands, ["cpa"])
+
+    def test_a_failing_hook_never_costs_the_command(self):
+        class Broken(_Ctx):
+            def get_config(self, key, default=None):
+                raise RuntimeError("settings unavailable")
+
+        try:
+            with self.assertLogs(level="WARNING") as logs:
+                ctx = self.register(Broken())
+        except RuntimeError:
+            self.fail("register() raised: the plugin would not load and /cpa would be gone")
+        self.assertEqual((ctx.asked, ctx.commands), ([], ["cpa"]))
+        self.assertIn("RuntimeError", "\n".join(logs.output))
+
+
 class VersionTests(unittest.TestCase):
+    def test_manifest_setting_is_declared(self):
+        manifest = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
+        self.assertIn(
+            "config_schema:\n  hide_keys_from_shells:\n    type: bool\n    default: true\n",
+            manifest,
+        )
+
     def test_manifest_version_matches_code(self):
         manifest = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
         self.assertIn(f"version: {cpa.VERSION}\n", manifest)

@@ -1,5 +1,5 @@
 name: cpa-status
-version: 0.7.4
+version: 0.8.0
 manifest_version: 2
 requires_hermes: ">=0.21.7"
 description: "/cpa: account health for every configured CLIProxyAPI pool, and live per-account usage (every provider CPA's web UI shows quota for) on request."
@@ -8,6 +8,11 @@ license: MIT
 homepage: https://github.com/duu261/hermes-cliproxyapi-provider
 tags: [cliproxyapi, status, slash-command]
 kind: standalone
+config_schema:
+  hide_keys_from_shells:
+    type: bool
+    default: true
+    description: "Hermes 0.23.1 or later: remove each mgmt_key_env, and the CPA key_env of an instance with route_via, from the commands a chat session runs. Read when the plugin loads."
 platforms:
   - linux
   - macos

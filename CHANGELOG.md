@@ -1,5 +1,141 @@
 # Changelog
 
+## Unreleased (planned, not built)
+
+Ideas that are parked. None of them is in any release, and none is promised.
+
+- `/cpa quota` Antigravity: the AI credit balance. The plan lookup already
+  returns it, so it would cost no request.
+- `/cpa quota` Kimi: the plan name. It costs one more request per Kimi
+  account, and no Kimi account was available to check the reply against.
+- `/cpa quota` Codex: when each banked limit reset expires. It costs one more
+  request per account.
+- Using a banked Codex limit reset from chat. This would be the first write:
+  today both plugins only read.
+- Address masking in `/cpa` (hosts, IPs, paths in error text): drop it, or
+  make it a setting. Emails, tokens and project ids stay masked either way.
+
+## 0.8.0
+
+- Provider: on Hermes 0.23.0 or later the instance-wide provider
+  (`cpa-<instance>`) sends each model on the wire of the CPA provider that
+  serves it, from the wire table: Claude, Kimi and Kiro models on
+  `anthropic_messages`, Codex, xAI and Meta models on `codex_responses`, the
+  rest on `chat_completions`. Before, it sent every model on
+  `chat_completions`, where Grok 4.7 stops reasoning after a few tool rounds.
+  This changes the default for everyone who uses `cpa-<instance>`. A model
+  that providers on two different wires serve, and a model not listed yet,
+  stay on `chat_completions`. A provider's `api_mode` override applies. Hermes
+  uses a wire saved in `model.api_mode` when it starts a session, and
+  `hermes model` saves `chat_completions` for `cpa-<instance>` whatever model
+  you pick. To start sessions on the wire of the model, run
+  `hermes config unset model.api_mode`, or pick the model in a chat with
+  `/model <id> --global`. Older Hermes is unchanged.
+- Provider, on Hermes 0.23.0 or later (older Hermes is unchanged):
+  - The provider pickers of `hermes model` and Telegram `/model` show one row
+    per instance, with `cpa-<instance>` and its providers inside, instead of
+    one row per provider. Display only: typed provider names and saved
+    configs are unchanged. This changes the picker for everyone.
+  - `hermes model --refresh` and `/model --refresh` also drop the plugin's 30
+    second memo of the model list, so the next listing reads CPA again. The
+    hook sends nothing itself, keeps the on-disk cache and does not bring the
+    management pass forward.
+  - Hermes' "No usable credentials" message for a `cpa-*` provider also says
+    which key the variable takes: a CPA client key, not the management key;
+    with a billing route, the gateway key variable and the CPA one.
+- `cpa-status`, on Hermes 0.23.1 or later: hides from the terminal commands a
+  chat session runs the key variables that no provider declares: every
+  `mgmt_key_env`, and the CPA `key_env` of an instance with `route_via`.
+  Before, Hermes left them readable by agent shells. On by default, so this
+  changes behavior for everyone who has `cpa-status` enabled: a script you run
+  through the agent that reads one of these variables stops finding it. Turn
+  it off with
+  `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
+  and restart Hermes. Limits: checked on the local terminal backend with one
+  profile only, and remote backends (docker, ssh and others) do not apply it;
+  it hides environment variables, not the file the keys are loaded from;
+  shell hooks, cron job scripts, processes Hermes starts with the profile's
+  credentials and any process started with no session bound can still see
+  them; a name that starts with `HERMES_`, or that another plugin already
+  manages, stays visible and is named in a log warning. Older Hermes is
+  unchanged.
+- `/cpa`: Devin accounts show last-seen quota, like Claude and Codex accounts:
+  percent used per day and week (`day 45% · wk 12% (4m ago)`), from the
+  figures CPA v7.3.0 or later already lists. CPA records them when the account
+  signs in and when it refreshes the account's status, not on each request, so
+  the figure can be old. An account whose day or week is used up shows as
+  `limited` until its reset time. A 0% left with no reset time is not shown,
+  because CPA also writes 0% when Devin sent no figure. No new request.
+- `/cpa quota` xAI: when xAI sends them, the account line also shows the
+  share of the weekly credits each product used (`grokbuild 30%, api 6%`),
+  pay as you go (`payg off` when the cap is 0, else spend/cap as
+  `payg $3.00/$50.00`) and a prepaid balance (`prepaid $25.00`). They come
+  from the two billing replies the run already fetches, so no request is
+  added. A product with no figure is left out, never shown as 0%, and a
+  missing cap shows nothing. As everywhere in this view the percent is what
+  is used; CPA's web UI shows the weekly figure as what is left.
+- `/cpa quota` Codex: limits on one feature or model
+  (`additional_rate_limits` in the usage reply) are shown as their own
+  windows under the vendor's name for them (`gpt-5.3-codex-spark wk 12%`),
+  at most four. A full one shows as `out: <name> wk` and never makes the
+  account `OUT`. Banked limit resets are shown as a count
+  (`2 resets banked`), from the same reply; the web UI also shows when each
+  one expires, from a second request this plugin does not send. No request
+  is added. A name that looks like a token is masked like any other text,
+  and the limit is then named by its feature or its position (`limit 2`).
+- `/cpa quota` shows the plan of Claude accounts (`team`, `max20`, `max5`,
+  `max`, `pro`, `free`) and Antigravity accounts (`free`, `pro`, `ultra`,
+  `ultra-lite`), as CPA's web UI does. This costs one more request per such
+  account: GET `https://api.anthropic.com/api/oauth/profile`, and POST
+  `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`. Each
+  is sent only after the account's usage was read, so never as a run's first
+  request, and is not retried. Only the plan fields of the reply are read.
+  The plan is one of those fixed words; a value that is not on the list
+  shows no plan. A failed request leaves the plan out and changes nothing
+  else. The limit is now 4 requests per account per run (was 3): an
+  Antigravity account can need three quota URLs and then this one.
+- `/cpa quota` layout. A blank line separates the provider blocks. `OUT` is at
+  the start of the account's line, and the account and plan columns of a
+  block line up. An Antigravity account has one line per model group under
+  it, with short group names (`gemini`, `claude and gpt`). A window shows
+  when it resets only at 80% used or more (`no figure yet` keeps its reset
+  time). On Telegram, Discord, Slack, Matrix and Mattermost the reply is sent
+  as a code block so the columns line up; this needs Hermes 0.22.3 or later,
+  which tells the command the platform. Elsewhere, and on older Hermes, the
+  reply is plain text as before.
+- `/cpa <pool> <provider>`: a cooling account shows why in words, not as
+  CPA's code: `vendor limit reached` (`quota`), `vendor limit reached, all
+  models` (`credential_quota`), `vendor rate limited`
+  (`transient_rate_limit`), `token rejected by vendor` (`unauthorized`),
+  `refresh token rejected` (`invalid_grant`), `access refused or no credit`
+  (`payment_required`: a 402, a 403 or a low balance), `model not supported`,
+  `Cloudflare challenge`, `vendor HTTP 404` (`not_found`) and `temporary
+  vendor error` (`transient_error`). CPA's `unknown` shows no reason. Text
+  that is not one of these codes is shown as before, masked.
+- `/cpa quota` Codex: the day the subscription ends is shown after the plan
+  (`pro until Nov 16`), with the year when it is not this year. It is read
+  from CPA's account listing (the `chatgpt_subscription_active_until` claim of
+  the ID token CPA stores), so it costs no request and is as old as that
+  token; a date that has passed shows as `until Oct 03 (past)`. No other
+  claim of that token is read for display.
+- `/cpa <pool> <provider>`: each account line shows the account's priority
+  when CPA lists one (`prio 1`) and its successful/failed requests since CPA
+  started (`total 2140/96`), next to the last hour (`1h 173/71`). The header
+  says `total = since CPA start` when a total is shown: CPA keeps these counts
+  in memory only, so they start again at zero when CPA restarts. No new
+  request: the fields come with the listing `/cpa` already reads.
+- `/cpa quota` xAI: no plan name is shown. Before, a monthly limit equal to
+  one of two fixed amounts was shown as `supergrok` or `supergrok_heavy`.
+  xAI sends no plan name and has changed its plans, so that was a guess.
+- Fix, `/cpa` and `/cpa quota`: a retry or reset time at the edge of the
+  calendar (year 9999 with a time zone behind UTC, for example) made the
+  command answer `internal error`. It is now shown as the date as sent
+  (`until 9999-12-31`). A reset given as a number of seconds too large to
+  add to a time is left out.
+- Fix, `/cpa`: a last-seen usage figure above the limit is shown as `100%`
+  (it could read `5h 103%`), as `/cpa quota` already does. One cooling
+  model reads `1 model cooling`, not `1 models cooling`.
+
 ## 0.7.4
 
 Fixes only. No new requests.

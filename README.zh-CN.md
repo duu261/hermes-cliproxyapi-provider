@@ -62,9 +62,23 @@ cliproxyapi:
 然后运行一次 `hermes model`（或任何会列出 model 的命令）。plugin 会读取该 instance 的 model 列表，
 注册找到的 provider 并写入 cache，之后每次启动时直接注册，无需网络请求：
 
-- `cpa-main`：instance 上的全部 model，走 chat wire。
+- `cpa-main`：instance 上的全部 model，每个 model 走为它提供服务的 provider 的 wire
+  （Hermes 0.23.0 及以上；更早的 Hermes 仍让全部 model 走 chat wire）。
 - `cpa-main-<provider>`：每个 CPA provider 一个，例如 `cpa-main-claude`、
   `cpa-main-codex`、`cpa-main-xai`、`cpa-main-kimi`。
+
+在 Hermes 0.23.0 及以上：
+
+- `hermes model` 和 Telegram `/model` 的 provider picker 为每个 instance 只显示一行，
+  以该 instance 命名（`display_name`，否则为 `CLIProxyAPI main`），`cpa-main` 及其
+  provider 都在这一行里面。首次列出 model 之前，instance 只有 `cpa-main`，它仍是普通的
+  一行。手动输入的 provider 名称不变。
+- `hermes model --refresh` 和 `/model --refresh` 也会清除 plugin 自己保存的 model 列表
+  memo，因此下一次列出 model 时会重新读取 CPA。否则，一次列出的结果在 30 秒内供该
+  instance 的全部 provider 共用。management 请求仍保持 15 分钟的节奏。
+- 当存放 key 的变量为空时，Hermes 的 "No usable credentials" 提示还会说明该变量需要
+  哪种 key：CPA client key，而不是 management key。使用 billing route（`route_via`）时，
+  它会指出存放 gateway key 的变量和存放 CPA key 的变量。
 
 `hermes doctor` 和多进程部署（`plugins.isolation: host`）只有在重启后才能看到启动后
 新出现的 provider。
@@ -85,6 +99,21 @@ cliproxyapi:
 
 可通过 `api_mode` 按 provider 覆盖（见下文）。当两个 provider 提供同一个 model id 时，它会
 同时出现在两者中，由 CPA 选择 account；此时的 wire 只是最佳匹配。
+
+在 Hermes 0.23.0 及以上，instance 级 provider（`cpa-main`）按 model 使用同一张表：
+Claude、Kimi 或 Kiro model 走 `anthropic_messages`，Codex、xAI 或 Meta model 走
+`codex_responses`，其余走
+`chat_completions`。由两种不同 wire 的 provider 同时提供的 model，以及 plugin 尚未列出的
+model，保持 `chat_completions`。provider 上的 `api_mode` 覆盖在这里同样生效。用 `models`
+pattern 建立的 group，只有在它设置了 `api_mode`，或者与表中某个非 chat wire 的 provider
+同名时，才决定 model 的 wire。更早的 Hermes 让 `cpa-main` 的全部 model 走
+`chat_completions`。
+
+Hermes 会把一个 wire 和默认 model 一起保存（`model.api_mode`），并在启动 session 时使用
+已保存的 wire。无论你选择哪个 model，`hermes model` 都为 `cpa-main` 保存
+`chat_completions`。要让 session 启动时使用该 model 的 wire，请运行
+`hermes config unset model.api_mode`，或者在聊天中用 `/model <id> --global` 选择 model，
+这条命令会保存该 model 的 wire。
 
 请让 `xai` 保持 `codex_responses`。Grok 4.7 以加密条目的形式返回推理内容，客户端
 必须在下一轮把它原样发回
@@ -133,8 +162,9 @@ CPA 自己的 provider 映射和 model 定义。
 
 当每个 model 有一个 provider、且 CPA 的厂商标签与 provider 一致时，公开模式就够用。
 management 模式是精确模式，代价是 key。CPA management key 可以修改配置、添加或删除
-account。plugin 只发送下列读取，但 Hermes 不会从 agent shell 中剥离 `mgmt_key_env`
-（见“安全”），所以任何能读取你环境变量的 agent 工具也都能读到它。
+account。plugin 只发送下列读取，但 Hermes 不会从 agent shell 中剥离 `mgmt_key_env`，
+所以任何能读取你环境变量的 agent 工具也都能读到它，除非 `cpa-status` plugin 将它隐藏
+（Hermes 0.23.1 及以上，见“安全”）。
 
 management 模式发送：
 
@@ -200,9 +230,10 @@ cliproxyapi:
 - gateway 可能故障转移到它以同一 model 名出售的其他渠道。plugin 无法察觉也无法阻止。
 - plugin 只使用 gateway 的 client endpoint，绝不使用其管理、渠道、定价或计费 API。
 - 已知限制：Hermes 只会从 agent 子进程中剥离已注册 provider 所声明的 key 名。路由
-  provider 声明的是 gateway key，因此在启用路由的 instance 上，CPA 的 `key_env`（discovery 需要）
-  对 agent shell 仍然可见。`mgmt_key_env` 从不在 provider 上声明，所以无论是否启用
-  路由都不会被剥离。Hermes 目前还没有 plugin hook 可以声明一个 secret 而不把它变成 inference credential。
+  provider 声明的是 gateway key，因此在启用路由的 instance 上，Hermes 让 CPA 的 `key_env`
+  （discovery 需要）对 agent shell 仍然可见。`mgmt_key_env` 从不在 provider 上声明，所以
+  无论是否启用路由，Hermes 都不会剥离它。在 Hermes 0.23.1 及以上，`cpa-status` plugin 会
+  对 chat session 运行的命令隐藏这两者；“安全”一节说明它覆盖什么、不覆盖什么。
 
 ## 元数据
 
@@ -228,8 +259,22 @@ providers:
 
 - key 通过环境变量名引用，由 Hermes 解析。
 - Hermes 只会从 agent 子进程中剥离已注册 provider 所声明的环境变量名。每个 profile
-  声明其 inference key（`key_env`，或启用路由的 instance 上的 gateway key），因此 `mgmt_key_env`，
-  以及启用路由的 instance 上 CPA 的 `key_env`，对 agent shell 仍然可读。
+  声明其 inference key（`key_env`，或启用路由的 instance 上的 gateway key），因此 Hermes 让
+  `mgmt_key_env`，以及启用路由的 instance 上 CPA 的 `key_env`，对 agent shell 仍然可读。
+- 在 Hermes 0.23.1 及以上，`cpa-status` plugin 会隐藏这些变量。它把这些变量从 chat session
+  运行的命令的环境中移除：前台和后台的 terminal 命令（包括 `execute_code` 启动的命令），以及
+  Hermes 用其清理过的环境启动的辅助进程（language server、lint、text to speech 等）。它不覆盖
+  shell hook、cron job 的脚本、Hermes 带着 profile 的 credential 启动的进程（例如 `key_cmd`
+  helper），以及任何在没有绑定 session 时启动的进程：这些进程仍然可能看到这些变量。仅在
+  local terminal backend 上、使用一个 profile 核对过。remote backend（docker、ssh 等）不应用
+  隐藏：被 forward 到那里的变量在那里不会被隐藏。它只隐藏环境变量，不隐藏其他任何东西：能读取
+  Hermes 加载 key 的文件（`~/.hermes/.env`）的命令仍然能读到 key。名称以 `HERMES_` 开头的
+  变量，或已由其他 plugin 管理的变量，仍然可见，并且会有一条 log 警告写出它的名称。变量名在
+  plugin 加载时读取，因此之后添加的 `mgmt_key_env` 或 `route_via` 只有在下一次重启 Hermes
+  之后才会被隐藏。在更早的 Hermes 上，或未启用 `cpa-status` 时，不会隐藏任何东西。
+- 隐藏默认开启。你通过 agent 运行的脚本如果读取其中某个变量，将不再能找到它。要关闭隐藏，
+  请运行 `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
+  并重启 Hermes。
 - 只有当主机解析出的每个地址都属于 loopback、RFC 1918、100.64/10 或 IPv6 ULA 时，
   才允许使用 plain `http://`。其他情况必须使用 `https://`。
 - 不跟随重定向，限制 response 大小，失败只报告 HTTP 状态码和错误类别，绝不包含 body、
@@ -310,9 +355,9 @@ pre · v8.0.51
   codex 4: 3 active · 1 cooling (next 17:20)
   xai 2: 2 active
 CPA v8.0.52 available (running v8.0.51)
-pre / codex · 4 accounts
-codex-al…@…  active · 1h 173/71 · 5h 22% · wk 0% (1m ago)
-codex-bo…@…  cooling until 17:20 (quota)
+pre / codex · 4 accounts · total = since CPA start
+codex-al…@…  active · prio 1 · 1h 173/71 · total 2140/96 · 5h 22% · wk 0% (1m ago)
+codex-bo…@…  cooling until 17:20 (vendor limit reached)
 ```
 
 - 只读：每次运行对每个 instance 发送一次 `GET /v8/management/credentials`（只有在
@@ -322,9 +367,14 @@ codex-bo…@…  cooling until 17:20 (quota)
   `/cpa` 总览上，`CPA <version> available` 来自 CPA 自己的 update route
   （`GET /v8/management/server/latest-version`，会问 GitHub）：每个 Hermes
   进程每 6 小时一次 request，失败后 10 分钟。失败只隐藏该行。
-- 最近一次的 quota（`5h` 和 `wk`）来自 CPA 在真实流量中为 Claude 和 Codex account
-  记录的数据，其他 provider CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询 quota；
+- 最近一次的 quota 来自 CPA 已记录的数据。对 Claude 和 Codex account（`5h` 和 `wk`），
+  CPA 在真实流量中记录。对 Devin account（`day` 和 `wk`），CPA 在 account 登录时以及
+  CPA refresh 该 account 的状态时记录，所以 Devin 的数字可能已经过时；该行会显示它的
+  时间。其他 provider CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询 quota；
   `/cpa quota` 会。
+- `/cpa pre codex` 还会显示每个 account 的 priority（只在 CPA 列出时显示，`prio 1`）
+  以及成功/失败的 request 数：`1h` 是最近一小时，`total` 是自 CPA 启动以来。
+  CPA 只把这些 total 保存在内存里，所以 CPA 重启后会从 0 重新计数。
 - account 名和消息里的邮箱会被遮盖。从不显示 `email`、`account`、`project_id` 和
   `path`（`/cpa quota` 只用 Antigravity 的 `project_id` 来构造它的 request）；
   account 的 project id 在 CPA 把它重复写进 label 或文件名的地方、以及消息提到它的
@@ -341,11 +391,17 @@ codex-bo…@…  cooling until 17:20 (quota)
 
 ```
 pre quota · live 21:40
+
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-codex-xy…@…  plus  5h 100% → 22:10 · wk 60% → Nov 02  OUT
-codex-bd…@…  pro  wk 31% → Oct 30
-codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
-codex-cu…@…  pro  wk 40% → Nov 01
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+    codex-cu…@… pro   wk 40%
+    codex-bd…@… pro   wk 31%
+
+antigravity · 1 account: 1 have room
+antigravity-01…@… pro  out: claude and gpt
+  gemini          5h 0% · wk 12%
+  claude and gpt  5h 100% → 23:10 · wk 64%
 ```
 
 `/cpa quota <pool>` 向各厂商查询每个 account 已用了多少，做法与 CPA 自带 web UI 的
@@ -355,32 +411,47 @@ quota 页面相同。对内置的厂商，CPA 的 `api-call` 路由带着该 acc
 
 | Provider | 每个 account 的请求 | 显示内容 |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`；每周 model 和 app 限额在有发送时显示 (`fable`, `opus`, `sonnet`, `apps`, `cowork`)；extra usage 在开启时显示，含已用/上限；credit pool (`$ left`) |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan，account 有 credits 时显示 |
-| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, 然后 GET `https://cli-chat-proxy.grok.com/v1/billing` | 每周 credits `wk`（xAI 还没报告百分比时显示 `wk no figure yet`）；只有 xAI 报告 monthly limit 时才显示每月花费 `mo` 和 plan（`supergrok` / `supergrok_heavy`） |
-| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` ，带该 account 的 `project_id`；只有前一个 host 在厂商侧失败或没有返回 quota 时，才依次请求 `daily-cloudcode-pa.sandbox` 和 `cloudcode-pa` | 按 model 分组，`5h` 和 `wk` |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage`, 然后 GET `https://api.anthropic.com/api/oauth/profile` 以获取 plan | `5h`, `wk`；每周 model 和 app 限额在有发送时显示 (`fable`, `opus`, `sonnet`, `apps`, `cowork`)；extra usage 在开启时显示，含已用/上限；credit pool (`$ left`)；plan (`team`, `max20`, `max5`, `max`, `pro`, `free`) |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan，account 有 credits 时显示；针对单个 feature 或 model 的限额在有发送时显示 (`<name> wk`)；存着的 limit reset 次数 (`2 resets banked`)；CPA 的列表里有时显示 subscription 结束的日期 (`until Nov 16`)，不增加 request |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, 然后 GET `https://cli-chat-proxy.grok.com/v1/billing` | 每周 credits `wk`（xAI 还没报告百分比时显示 `wk no figure yet`）；只有 xAI 报告 monthly limit 时才显示每月花费 `mo`；xAI 有发送时还显示：每个 product 用掉的每周 credits 占比 (`grokbuild 30%, api 6%`)、pay as you go（`payg off`，或已用/cap，如 `payg $3.00/$50.00`）和 prepaid balance (`prepaid $25.00`) |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` ，带该 account 的 `project_id`；只有前一个 host 在厂商侧失败或没有返回 quota 时，才依次请求 `daily-cloudcode-pa.sandbox` 和 `cloudcode-pa`；然后 POST `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` 以获取 plan | 按 model 分组，`5h` 和 `wk`；plan (`free`, `pro`, `ultra`, `ultra-lite`) |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` （CPA 把 account 列为 `kimi-ai` 时用 `api.kimi.ai`） | 每个限额 window、每周、`mo` |
 | CPA plugin quota（如 Kiro） | GET `/v8/management/plugins/<id>/quota` （在 CPA 上；由 plugin 去问它的厂商） | plugin 的 meter 和 plan |
 
-这些请求都不花钱，也不消耗 quota：都是 web UI 本身也会做的用量读取。刻意不做：xAI
-付费的 1 token chat 检查（web UI 给使用 API key 的付费 xAI account 的 fallback，这类
-account 会显示 billing 错误）、身份和 plan 查询、下载 account 文件，以及任何 reset。
+这些请求都不花钱，也不消耗 quota：都是 web UI 为它的 quota 页面也会做的读取。刻意
+不做：xAI 付费的 1 token chat 检查（web UI 给使用 API key 的付费 xAI account 的
+fallback，这类 account 会显示 billing 错误）、其他任何身份或 plan 查询、下载 account
+文件，以及任何 reset。
 
 header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已用量（报告剩余量的
-厂商会被换算）；不跨 plan 汇总。某个 window 达到 100% 或厂商标记该 account 为 blocked
-时，该 account 显示 `OUT`。Antigravity 按 model group 计算：CPA 只暂停用完的
-model，所以只有每个 group 都满时 account 才显示 `OUT`；否则满的 group 显示为
-`out: <group>`。Claude 按 model 划分的每周限额（Fable、Opus、Sonnet、apps、Cowork）
-同样如此：满的那个显示为 `out: fable`，account 继续提供其他 model。
+厂商会被换算）；不跨 plan 汇总。window 只有在已用 80% 或以上时才显示 reset 时间
+（`→ 22:10`）。某个 window 达到 100% 或厂商标记该 account 为 blocked 时，该 account
+在它那一行的开头显示 `OUT`。Antigravity 按 model group 计算，每个 group 在 account
+下面占一行（`gemini`、`claude and gpt`）：CPA 只暂停用完的 model，所以只有每个 group
+都满时 account 才显示 `OUT`；否则满的 group 显示为 `out: <group>`。Claude 按 model
+划分的每周限额（Fable、Opus、Sonnet、apps、Cowork）同样如此：满的那个显示为
+`out: fable`，account 继续提供其他 model。Codex 针对单个 feature 或 model 的限额
+也一样。
 
-- 只在你输入时运行。每次最多 20 个 account，每个 account 最多 3 个请求。第一个请求
+- 在 Telegram、Discord、Slack、Matrix 和 Mattermost 上，回复以 code block 发送，
+  让各列对齐。这需要 Hermes 0.22.3 或更高版本，它会把 platform 告诉命令；在其他地方
+  以及更旧的 Hermes 上，回复是 plain text。
+- Claude 或 Antigravity account 的 plan 需要每个 account 多一个请求（表中的 profile
+  和 `loadCodeAssist` 请求），只在读到该 account 的用量之后才发送。只读取回复里与
+  plan 有关的字段，plan 显示为表中固定词之一；不在列表里的值不显示 plan。这些回复还
+  带有姓名、email、组织名称和 project id：都不读取、不显示、不保存。请求失败时，该行
+  没有 plan，其他不变；不会重试。
+- 只在你输入时运行。每次最多 20 个 account，每个 account 最多 4 个请求。第一个请求
   单独发送，之后最多 4 个并发；60 秒内重复输入直接用内存结果。跳过已禁用的 account。
   一次运行在 60 秒后不再发送新请求；没轮到的 account 显示 `not checked`。
 - `/cpa quota <pool> <provider>` 接受 `claude`、`codex`、`xai`、`antigravity`、
   `devin`、`kimi`、`plugin`，或某个 plugin 的 provider（如 `kiro`）。
 - account token 过期时显示 `token rejected by vendor`，永远不计入 CPA 的封禁次数。
   management key 被拒绝时整个运行停止。
+- Codex plan 后面的 `until Nov 16` 是 subscription 结束的日期。它读自 CPA 的 account
+  列表（CPA 保存的 ID token 里的 `chatgpt_subscription_active_until` claim），不向厂商
+  查询，所以它和那个 token 一样旧：已经过去的日期显示为 `until Oct 03 (past)`。
 - CPA 的 account 索引、Codex 的 account id、Antigravity 的 project id 和 CPA 的
   plugin id 只用于构造请求，从不显示、记录日志或 cache。厂商回复按字段读取；从不显示
   body 和 header。
@@ -399,6 +470,7 @@ model，所以只有每个 group 都满时 account 才显示 `OUT`；否则满�
 | plugin provider 的 model 定义（Kiro 等） | v8.0.34+ |
 | `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
 | `/cpa` 最近一次的 quota | v7.2.142+ |
+| `/cpa` Devin 最近一次的 quota | v7.3.0+ |
 | `/cpa` CPA 版本 | v6.3.36+ |
 | `/cpa` update 提示 | v6.5.42+ |
 | `/cpa quota` 内置厂商 (`api-call` 带 `$TOKEN$`) | v6.6.63+ |
