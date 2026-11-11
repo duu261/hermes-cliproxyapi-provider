@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased (planned, not built)
+
+Ideas that are parked. None of them is in any release, and none is promised.
+
+- `/cpa quota` Antigravity: the AI credit balance. The plan lookup already
+  returns it, so it would cost no request.
+- `/cpa quota` Kimi: the plan name. It costs one more request per Kimi
+  account, and no Kimi account was available to check the reply against.
+- `/cpa quota` Codex: when each banked limit reset expires. It costs one more
+  request per account.
+- Using a banked Codex limit reset from chat. This would be the first write:
+  today both plugins only read.
+- Address masking in `/cpa` (hosts, IPs, paths in error text): drop it, or
+  make it a setting. Emails, tokens and project ids stay masked either way.
+
 ## 0.8.0
 
 - Provider: on Hermes 0.23.0 or later the instance-wide provider
