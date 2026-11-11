@@ -10,7 +10,8 @@ Rules (see AGENTS.md, "/cpa status"):
   in memory only (see ``files_of``) and shows one ``id_token`` claim, the date
   a Codex subscription ends. Names and messages are masked, and the
   account's project id is cut out of them on ingest.
-- Quota shown is CPA's last-seen observation from the same GET (claude, codex).
+- Quota shown is CPA's last-seen observation from the same GET (claude, codex,
+  devin).
 """
 
 from __future__ import annotations
@@ -490,7 +491,14 @@ def subscription_until(entry: dict[str, Any]) -> datetime | None:
     claims = entry.get("id_token")
     if not isinstance(claims, dict):
         return None
-    return instant(claims.get("chatgpt_subscription_active_until"))
+    until = instant(claims.get("chatgpt_subscription_active_until"))
+    if until is None:
+        return None
+    try:
+        until.astimezone()  # the view shows it in local time
+    except (OverflowError, OSError, ValueError):
+        return None  # a date at the edge of the calendar: leave it out
+    return until
 
 
 def summarize(files: Iterable[dict[str, Any]], now: datetime) -> dict[str, ProviderSummary]:

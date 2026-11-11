@@ -1112,6 +1112,18 @@ class UntilTests(QuotaTestCase):
         self.assertIn(f"plus until {self.shown(far)} 2027   5h 100%", out)
         self.assertNotIn("2027 (past)", out)
 
+    def test_until_the_local_zone_cannot_hold_is_left_out(self):
+        # Turning such a date into local time raises, which would cost the whole view.
+        edges = ("9999-12-31T23:59:59-12:00", "0001-01-01T00:00:00+14:00")
+        for value in edges:
+            files = status.files_of({"files": [account("codex", 2, id_token=self.claim(value))]})
+            self.assertNotIn("_until", files[0], value)
+        _CPA.files = [account("codex", 2, id_token=self.claim(edges[0]))]
+        out = self.run_quota("quota pre codex")
+        self.assertIn("wk 40%", out)
+        self.assertNotIn("until ", out)
+        self.assertNotIn("internal error", out)
+
 
 # ── View and args (Task 10) ─────────────────────────────────────────────────
 
