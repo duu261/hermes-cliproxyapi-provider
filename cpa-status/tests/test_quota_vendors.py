@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import unittest
 import unittest.mock
 from datetime import timedelta
@@ -22,6 +23,7 @@ import status  # noqa: E402
 from test_quota import (  # noqa: E402
     _CPA,
     BAD,
+    CLAUDE_BODY,
     KEY,
     NOW,
     TOKENISH,
@@ -439,7 +441,10 @@ class RequestTests(QuotaTestCase):
             (idx(5), third): (200, AG_BODY),
         }
         out = self.run_quota("quota pre antigravity")
-        self.assertEqual([p["body"]["url"] for p in _CPA.posts], list(quota.ANTIGRAVITY_URLS))
+        self.assertEqual(
+            [p["body"]["url"] for p in _CPA.posts],
+            [*quota.ANTIGRAVITY_URLS, quota.ANTIGRAVITY_TIER_URL],
+        )
         body = _CPA.posts[0]["body"]
         self.assertEqual(body["method"], "POST")
         self.assertEqual(body["data"], '{"project":"' + PROJECT + '"}')
@@ -459,7 +464,10 @@ class RequestTests(QuotaTestCase):
         _CPA.files = [ag(5)]
         _CPA.inner = {idx(5): (200, AG_BODY)}
         self.run_quota("quota pre antigravity")
-        self.assertEqual(len(_CPA.posts), 1)
+        self.assertEqual(
+            [p["body"]["url"] for p in _CPA.posts],
+            [quota.ANTIGRAVITY_URLS[0], quota.ANTIGRAVITY_TIER_URL],
+        )
 
     def test_antigravity_all_urls_fail_shows_last_inner_error(self):
         _CPA.files = [ag(5)]
@@ -554,7 +562,8 @@ class RequestTests(QuotaTestCase):
         self.run_quota()
         self.assertEqual(_CPA.plugin_gets, [])
         self.assertEqual(
-            {p["body"]["url"] for p in _CPA.posts}, {quota.CLAUDE_USAGE_URL, quota.KIMI_COM_URL}
+            {p["body"]["url"] for p in _CPA.posts},
+            {quota.CLAUDE_USAGE_URL, quota.CLAUDE_PROFILE_URL, quota.KIMI_COM_URL},
         )
 
     def test_bare_pool_includes_every_covered_provider(self):
@@ -653,6 +662,314 @@ class LockoutTests(QuotaTestCase):
         self.assertLessEqual(len(_CPA.posts) - 2, quota.MAX_IN_FLIGHT)
 
 
+# ── Subscription tier (one more request per Claude and Antigravity account) ─
+
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
+CODE_ASSIST_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+# The fields the Management Center reads for the plan. Everything else here is
+# made up: it stands for what the real replies also carry and is never shown.
+CLAUDE_PROFILE = {
+    "account": {
+        "uuid": "11111111-2222-3333-4444-555555555555",
+        "full_name": "Carol Canary",
+        "email": "carol.canary@example.com",
+        "has_claude_max": True,
+        "has_claude_pro": False,
+    },
+    "organization": {
+        "uuid": "66666666-7777-8888-9999-000000000000",
+        "name": "Canary Org Ltd",
+        "organization_type": "claude_max",
+        "billing_type": "stripe_subscription",
+        "rate_limit_tier": "default_claude_max_20x",
+        "subscription_status": "active",
+    },
+}
+AG_TIER = {
+    "currentTier": {"id": "free-tier", "name": "Free Canary"},
+    "paidTier": {"id": "g1-pro-tier", "name": "Pro Canary"},
+    "cloudaicompanionProject": PROJECT,
+}
+CLAUDE_TIERS = {"team", "max20", "max5", "max", "pro", "free", ""}
+ANTIGRAVITY_TIERS = {"free", "pro", "ultra", "ultra-lite", ""}
+
+
+class TierParserTests(unittest.TestCase):
+    def test_claude_tier_is_a_word_from_the_closed_list(self):
+        team = {"organization_type": "claude_team", "subscription_status": "active"}
+        for org, acct, expected in (
+            (team, {}, "team"),
+            (dict(team, subscription_status=" Active "), {"has_claude_max": True}, "team"),
+            # A team that is not active is not the team plan: the other fields decide.
+            (dict(team, subscription_status="canceled"), {"has_claude_pro": True}, "pro"),
+            ({"organization_type": "claude_team"}, {}, ""),
+            ({"rate_limit_tier": "default_claude_max_20x"}, {"has_claude_max": True}, "max20"),
+            ({"rate_limit_tier": " DEFAULT_CLAUDE_MAX_5X "}, {}, "max5"),
+            # Only the rate-limit tier tells Max 5x from Max 20x; the flag says "max".
+            ({"rate_limit_tier": "default_claude_ai"}, {"has_claude_max": True}, "max"),
+            ({}, {"has_claude_max": True, "has_claude_pro": True}, "max"),
+            ({}, {"has_claude_max": False, "has_claude_pro": True}, "pro"),
+            ({}, {"has_claude_max": "false", "has_claude_pro": "TRUE"}, "pro"),
+            ({}, {"has_claude_max": 0, "has_claude_pro": 1}, "pro"),
+            ({}, {"has_claude_max": False, "has_claude_pro": False}, "free"),
+            # Free only when both flags say no; a missing or odd flag is unknown.
+            ({}, {"has_claude_max": False}, ""),
+            ({}, {"has_claude_max": False, "has_claude_pro": "maybe"}, ""),
+            ({}, {}, ""),
+            ({"rate_limit_tier": "default_claude_max_40x"}, {}, ""),
+            ({"rate_limit_tier": 20}, {}, ""),
+            ({"rateLimitTier": "default_claude_max_20x"}, {}, ""),  # not an allowed field
+        ):
+            got = quota.parse_claude_tier({"organization": org, "account": acct})
+            self.assertEqual(got, expected, (org, acct))
+            self.assertIn(got, CLAUDE_TIERS)
+        for junk in (None, [], "max", 5, {"organization": "claude_team", "account": [True]}):
+            self.assertEqual(quota.parse_claude_tier(junk), "", repr(junk))
+        self.assertEqual(quota.parse_claude_tier(CLAUDE_PROFILE), "max20")
+
+    def test_antigravity_tier_is_a_word_from_the_closed_list(self):
+        for payload, expected in (
+            ({"paidTier": {"id": "g1-pro-tier"}}, "pro"),
+            ({"paidTier": {"id": "g1-ultra-tier"}, "currentTier": {"id": "free-tier"}}, "ultra"),
+            ({"paidTier": {"id": " g1-ultra-lite-tier "}}, "ultra-lite"),
+            ({"currentTier": {"id": "free-tier"}}, "free"),
+            # No paid tier id: the current tier decides.
+            ({"paidTier": {"name": "no id"}, "currentTier": {"id": "g1-pro-tier"}}, "pro"),
+            ({"paidTier": {"id": "  "}, "currentTier": {"id": "free-tier"}}, "free"),
+            ({"paidTier": None, "currentTier": {"id": "free-tier"}}, "free"),
+            # A paid tier the list does not know is not replaced by the current one.
+            ({"paidTier": {"id": "g2-new-tier"}, "currentTier": {"id": "free-tier"}}, ""),
+            ({"currentTier": {"id": "G1-PRO-TIER"}}, ""),  # ids are matched as sent
+            ({"currentTier": {"id": "pro"}}, ""),
+            ({"paid_tier": {"id": "g1-pro-tier"}}, ""),  # not an allowed field
+            ({"paidTier": "g1-pro-tier"}, ""),
+            ({"paidTier": {"id": 7}}, ""),
+            ({}, ""),
+            (None, ""),
+            ([], ""),
+            ("g1-pro-tier", ""),
+        ):
+            got = quota.parse_antigravity_tier(payload)
+            self.assertEqual(got, expected, repr(payload))
+            self.assertIn(got, ANTIGRAVITY_TIERS)
+        self.assertEqual(quota.parse_antigravity_tier(AG_TIER), "pro")
+
+
+class TierTests(QuotaTestCase):
+    def claude_only(self, profile=(200, CLAUDE_PROFILE)):
+        _CPA.files = [account("claude", 1)]
+        _CPA.inner = {idx(1): (200, CLAUDE_BODY)}
+        _CPA.by_url = {(idx(1), PROFILE_URL): profile}
+
+    def antigravity_only(self, tier=(200, AG_TIER)):
+        _CPA.files = [ag(5)]
+        _CPA.inner = {idx(5): (200, AG_BODY)}
+        _CPA.by_url = {(idx(5), CODE_ASSIST_URL): tier}
+
+    def urls(self):
+        return [p["body"]["url"] for p in _CPA.posts]
+
+    def test_claude_profile_request_and_plan(self):
+        self.claude_only()
+        out = self.run_quota("quota pre claude")
+        self.assertEqual(self.urls(), [USAGE_URL, PROFILE_URL])
+        usage, profile = (p["body"] for p in _CPA.posts)
+        self.assertEqual(set(profile), {"auth_index", "method", "url", "header"})
+        self.assertEqual(profile["method"], "GET")
+        self.assertEqual(profile["auth_index"], idx(1))
+        # The usage request's headers, except Accept, which is not sent.
+        self.assertEqual(
+            profile["header"],
+            {
+                "Authorization": "Bearer " + TOKEN,
+                "Content-Type": "application/json",
+                "User-Agent": "claude-cli/2.1.280 (external, cli)",
+                "anthropic-beta": "oauth-2025-04-20",
+            },
+        )
+        self.assertEqual(usage["header"], dict(profile["header"], Accept="application/json"))
+        self.assertIn("\nclaude-us…@… max20  5h 55% · wk 31%", out)
+
+    def test_antigravity_tier_request_and_plan(self):
+        self.antigravity_only()
+        out = self.run_quota("quota pre antigravity")
+        self.assertEqual(self.urls(), [quota.ANTIGRAVITY_URLS[0], CODE_ASSIST_URL])
+        usage, tier = (p["body"] for p in _CPA.posts)
+        self.assertEqual(set(tier), {"auth_index", "method", "url", "header", "data"})
+        self.assertEqual(tier["method"], "POST")
+        self.assertEqual(tier["auth_index"], idx(5))
+        self.assertEqual(tier["data"], '{"metadata":{"ideType":"ANTIGRAVITY"}}')
+        self.assertEqual(tier["header"], usage["header"])
+        self.assertNotIn(PROJECT, json.dumps(tier))
+        self.assertRegex(out, r"(?m)^antigravity-\S+ pro  out: claude$")
+
+    def test_a_failed_tier_request_leaves_the_plan_out(self):
+        big = "x" * (quota.MAX_INNER_BYTES + 1)
+        replies = (
+            (401, {"error": "secret-body"}),
+            (403, "secret-body"),
+            (429, {}),
+            (500, {}),
+            (200, "secret-body not json"),
+            (200, []),
+            (200, {"account": {"full_name": "secret-body"}}),
+            (200, big),
+        )
+        for case in ("claude", "antigravity"):
+            for reply in replies:
+                with self.subTest(case=case, status=reply[0], body=str(reply[1])[:20]):
+                    status.reset_state()  # the account listing is cached too
+                    _CPA.posts = []
+                    getattr(self, case + "_only")(reply)
+                    out = self.run_quota(f"quota pre {case}")
+                    # Sent once: no retry, and no fallback URL for Antigravity.
+                    self.assertEqual(len(_CPA.posts), 2, self.urls())
+                    self.assertIn(f"{case} · 1 account: 1 have room", out)
+                    self.assertNotIn("failed", out)
+                    self.assertNotIn("vendor", out)
+                    self.assertNotIn("secret-body", out)
+                    self.assertFalse(cpa.key_rejected(self.home, self.root, KEY))
+        self.claude_only((500, {}))
+        status.reset_state()
+        self.assertIn("\nclaude-us…@…  5h 55% · wk 31%", self.run_quota("quota pre claude"))
+
+    def test_a_tier_reply_counts_only_when_the_vendor_said_ok(self):
+        # A reply that would give a plan, under a failed status or over the size cap.
+        pad = "x" * quota.MAX_INNER_BYTES
+        for case, good in (("claude", CLAUDE_PROFILE), ("antigravity", AG_TIER)):
+            for reply in (
+                (401, good),
+                (403, good),
+                (429, good),
+                (500, good),
+                (200, {**good, "pad": pad}),
+            ):
+                with self.subTest(case=case, status=reply[0]):
+                    status.reset_state()
+                    _CPA.posts = []
+                    getattr(self, case + "_only")(reply)
+                    out = self.run_quota(f"quota pre {case}")
+                    self.assertEqual(len(_CPA.posts), 2, self.urls())
+                    self.assertIn(f"{case} · 1 account: 1 have room", out)
+                    self.assertNotIn("max20", out)
+                    self.assertNotIn("@… pro", out)
+
+    def test_no_tier_request_when_the_quota_part_failed(self):
+        for reply, shown in (((500, {}), "vendor HTTP 500"), ((200, {}), "no quota data")):
+            quota.reset_state()
+            _CPA.posts = []
+            self.claude_only()
+            _CPA.inner = {idx(1): reply}
+            self.assertIn(shown, self.run_quota("quota pre claude"))
+            self.assertEqual(self.urls(), [USAGE_URL])
+        status.reset_state()  # the account listing is cached too
+        _CPA.posts = []
+        self.antigravity_only()
+        _CPA.inner = {idx(5): (200, {"groups": []})}
+        self.assertIn("no quota data", self.run_quota("quota pre antigravity"))
+        self.assertEqual(self.urls(), list(quota.ANTIGRAVITY_URLS))
+
+    def test_a_cpa_side_tier_failure_keeps_the_usage_row(self):
+        real = quota.api_call
+        for error in (cpa.GatewayError(502, "upstream"), cpa.GatewayError(0, "timeout")):
+            calls = []
+
+            def flaky(root, key, path, body, _error=error, _calls=calls, **kwargs):
+                _calls.append(body["url"])
+                if body["url"] == PROFILE_URL:
+                    raise _error
+                return real(root, key, path, body, **kwargs)
+
+            quota.reset_state()
+            self.claude_only()
+            with unittest.mock.patch.object(quota, "api_call", flaky):
+                out = self.run_quota("quota pre claude")
+            self.assertEqual(calls, [USAGE_URL, PROFILE_URL])
+            self.assertIn("claude · 1 account: 1 have room", out)
+            self.assertIn("\nclaude-us…@…  5h 55% · wk 31%", out)
+            self.assertNotIn("CPA could not", out)
+            self.assertNotIn("timeout", out)
+
+    def test_tier_request_is_never_the_first_request(self):
+        # A bad key must cost one usage request, as before the tier requests.
+        _CPA.files = [account("claude", n) for n in range(2, 8)]
+        _CPA.inner = {idx(n): (200, CLAUDE_BODY) for n in range(2, 8)}
+        status.report("pre", config=self.config(), home=self.home, secret=self.env.get, now=NOW)
+        _CPA.posts = []
+        self.env["PRE_MGMT"] = BAD
+        status._RESULTS[(self.root, status._memory_id(BAD))] = status._RESULTS[
+            (self.root, status._memory_id(KEY))
+        ]
+        self.assertIn("key rejected", self.run_quota())
+        self.assertEqual(self.urls(), [USAGE_URL])
+
+    def test_outer_401_on_a_tier_request_latches_and_stops(self):
+        _CPA.files = [account("claude", n) for n in range(2, 8)]
+        _CPA.inner = {idx(n): (200, CLAUDE_BODY) for n in range(2, 8)}
+        _CPA.flip_after = 1  # the second request, the first tier request, gets a 401
+        self.assertIn("key rejected", self.run_quota())
+        self.assertEqual(self.urls(), [USAGE_URL, PROFILE_URL])
+        self.assertTrue(cpa.key_rejected(self.home, self.root, KEY))
+
+    def test_tier_request_is_not_sent_after_the_run_time_limit(self):
+        self.claude_only()
+        real = quota.api_call
+
+        def slow(root, key, path, body, **kwargs):
+            reply = real(root, key, path, body, **kwargs)
+            time.sleep(0.3)  # the usage reply arrives, then the run's time is up
+            return reply
+
+        with (
+            unittest.mock.patch.object(quota, "api_call", slow),
+            unittest.mock.patch.object(quota, "RUN_SECONDS", 0.2),
+        ):
+            out = self.run_quota("quota pre claude")
+        self.assertEqual(self.urls(), [USAGE_URL])
+        self.assertTrue(out.splitlines()[1].startswith("stopped after 0.2 s"), out)
+        self.assertIn("\nclaude-us…@…  5h 55% · wk 31%", out)
+
+    def test_other_providers_send_no_tier_request(self):
+        _CPA.files = [account("codex", 2), account("xai", 4), account("kimi", 8), kiro(11)]
+        _CPA.inner[idx(8)] = (200, KIMI_BODY)
+        _CPA.plugin = {idx(11): (200, KIRO_BODY)}
+        self.run_quota()
+        self.assertEqual(len(_CPA.posts), 4)  # codex 1, xai 2, kimi 1
+        self.assertEqual(len(_CPA.plugin_gets), 1)
+        for url in self.urls():
+            self.assertNotIn("profile", url)
+            self.assertNotIn("loadCodeAssist", url)
+
+    def test_tier_replies_show_only_the_fixed_word(self):
+        _CPA.files = [account("claude", 1), ag(5)]
+        _CPA.inner = {idx(1): (200, CLAUDE_BODY), idx(5): (200, AG_BODY)}
+        _CPA.by_url = {
+            (idx(1), PROFILE_URL): (200, CLAUDE_PROFILE),
+            (idx(5), CODE_ASSIST_URL): (200, AG_TIER),
+        }
+        out = self.run_quota()
+        self.assertIn("@… max20  5h 55%", out)
+        self.assertRegex(out, r"(?m)^antigravity-\S+ pro  out: claude$")
+        shown = out + "".join(repr(run) for run in quota._CACHE.values())
+        self.assertEqual(len(quota._CACHE), 1)
+        for canary in (
+            "Carol",
+            "carol",
+            "Canary",
+            "canary",  # also in the project id
+            "11111111",
+            "66666666",
+            "stripe",
+            "claude_max",  # the raw organization type and rate-limit tier
+            "g1-pro-tier",
+            "free-tier",
+            idx(1),
+            idx(5),
+        ):
+            self.assertNotIn(canary, shown)
+
+
 # ── Privacy and closed table ────────────────────────────────────────────────
 
 
@@ -703,8 +1020,8 @@ class PrivacyTests(QuotaTestCase):
             "api.x.ai",
             "chat/completions",
             "/v1/me",
-            "loadCodeAssist",
             "onboardUser",
+            "backend-api/subscriptions",
             "credentials/download",
             "/quota/reset",
             "cooldown/reset",

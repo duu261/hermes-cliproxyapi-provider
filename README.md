@@ -399,7 +399,7 @@ OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
     codex-bd…@… pro   wk 31%
 
 antigravity · 1 account: 1 have room
-antigravity-01…@…  out: claude and gpt
+antigravity-01…@… pro  out: claude and gpt
   gemini          5h 0% · wk 12%
   claude and gpt  5h 100% → 23:10 · wk 64%
 ```
@@ -412,18 +412,19 @@ quota plugin when CPA lists one. Every request, and when it is sent:
 
 | Provider | Requests per account | What you see |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; weekly model and app limits when sent (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage when on, with spend/limit; credit pools (`$ left`) |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage`, then GET `https://api.anthropic.com/api/oauth/profile` for the plan | `5h`, `wk`; weekly model and app limits when sent (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage when on, with spend/limit; credit pools (`$ left`); plan (`team`, `max20`, `max5`, `max`, `pro`, `free`) |
 | Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan, credits when the account has them; the day the subscription ends (`until Nov 16`) when CPA's listing has it, at no extra request |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk` (`wk no figure yet` until xAI reports a percent); monthly spend `mo` only when xAI reports a monthly limit |
-| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota | per model group, `5h` and `wk` |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota; then POST `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` for the plan | per model group, `5h` and `wk`; plan (`free`, `pro`, `ultra`, `ultra-lite`) |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` when CPA lists the account as `kimi-ai`) | each limit window, weekly, `mo` |
 | CPA plugin quota (e.g. Kiro) | GET `/v8/management/plugins/<id>/quota` on CPA; the plugin asks its vendor | the plugin's meters and plan |
 
-None of these cost money or use up quota: they are the same usage reads the
-web UI makes. Left out on purpose: xAI's paid 1-token chat check (the web UI's
-fallback for paid API-key accounts, which then show the billing error),
-identity and plan lookups, downloading account files, and every reset.
+None of these cost money or use up quota: they are the same reads the web UI
+makes for its quota page. Left out on purpose: xAI's paid 1-token chat check
+(the web UI's fallback for paid API-key accounts, which then show the billing
+error), every other identity or plan lookup, downloading account files, and
+every reset.
 
 The headers, including each vendor's CLI `User-Agent`, are the web UI's. The
 percent is what is used (vendors that report what is left are converted);
@@ -441,7 +442,15 @@ other models.
   code block, so the columns line up. This needs Hermes 0.22.3 or later, which
   tells the command the platform; elsewhere, and on older Hermes, the reply is
   plain text.
-- Only when you type it. At most 20 accounts and 3 requests per account per
+- The plan of a Claude or Antigravity account costs one more request per
+  account (the profile and `loadCodeAssist` requests in the table), sent only
+  after that account's usage was read. Only the plan fields of the reply are
+  read, and the plan is shown as one of the fixed words in the table; a value
+  that is not on the list shows no plan. The replies also carry a name, an
+  email, an organization name and the project id: none of them is read, shown
+  or kept. When the request fails, the line has no plan and nothing else
+  changes; it is not retried.
+- Only when you type it. At most 20 accounts and 4 requests per account per
   run. The first request goes alone, then at most 4 at a time; a repeat within
   60 seconds answers from memory. Disabled accounts are skipped. A run sends
   no new request after 60 seconds; accounts it did not reach show

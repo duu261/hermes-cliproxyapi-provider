@@ -1005,7 +1005,7 @@ USAGE = (
     "/cpa quota <pool> [provider] - live usage from each vendor\n"
     "Needs mgmt_key_env on the pool. Read-only; one request per pool,\n"
     "plain /cpa adds one CPA update check per 6 h\n"
-    "(quota: at most 3 more per account, 20 accounts, 4 at a time)."
+    "(quota: at most 4 more per account, 20 accounts, 4 at a time)."
 )
 _STATUS_TEXT = {
     "rejected": "key rejected (fix the key; it will not be sent again)",

@@ -477,7 +477,7 @@ class ParserTests(unittest.TestCase):
 class RequestShapeTests(QuotaTestCase):
     def test_post_body_has_exactly_four_keys_and_table_values(self):
         self.run_quota()
-        self.assertEqual(len(_CPA.posts), 3)
+        self.assertEqual(len(_CPA.posts), 4)  # claude usage and tier, two codex usage
         for post in _CPA.posts:
             body = post["body"]
             self.assertEqual(set(body), {"auth_index", "method", "url", "header"})
@@ -486,7 +486,10 @@ class RequestShapeTests(QuotaTestCase):
             self.assertEqual(post["auth"], f"Bearer {KEY}")
             self.assertEqual(post["ua"], f"cpa-status/{cpa.VERSION}")
         by_url = {p["body"]["url"]: p["body"] for p in _CPA.posts}
-        self.assertEqual(set(by_url), {quota.CLAUDE_USAGE_URL, quota.CODEX_USAGE_URL})
+        self.assertEqual(
+            set(by_url),
+            {quota.CLAUDE_USAGE_URL, quota.CLAUDE_PROFILE_URL, quota.CODEX_USAGE_URL},
+        )
         claude = by_url[quota.CLAUDE_USAGE_URL]["header"]
         self.assertEqual(claude, quota.QUOTA_REQUESTS["claude"][0].header)
         self.assertEqual(claude["Authorization"], "Bearer $TOKEN$")
@@ -505,6 +508,8 @@ class RequestShapeTests(QuotaTestCase):
             urls,
             {
                 "https://api.anthropic.com/api/oauth/usage",
+                "https://api.anthropic.com/api/oauth/profile",
+                "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
                 "https://chatgpt.com/backend-api/wham/usage",
                 "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
                 "https://cli-chat-proxy.grok.com/v1/billing",
@@ -522,6 +527,18 @@ class RequestShapeTests(QuotaTestCase):
                     self.assertEqual("$TOKEN$" in value, name == "Authorization")
                 if "$TOKEN$" in probe.data:
                     self.assertEqual(provider, "devin")
+
+    def test_at_most_four_requests_per_account_as_the_help_says(self):
+        most = max(len(probes) for probes in quota.QUOTA_REQUESTS.values())
+        self.assertEqual(most, 4)  # antigravity: three quota URLs, then the tier request
+        self.assertIn(f"accounts and {most} requests per account", quota.USAGE)
+        self.assertIn(f"at most {most} more per account", status.USAGE)
+        for provider, probes in quota.QUOTA_REQUESTS.items():
+            tiers = [probe.tier for probe in probes]
+            # At most one tier request, and it is the last one of the account.
+            self.assertLessEqual(sum(tiers), 1, provider)
+            self.assertEqual(tiers, sorted(tiers), provider)
+            self.assertEqual(sum(tiers), 1 if provider in ("claude", "antigravity") else 0)
 
     def test_codex_without_account_id_has_no_header(self):
         _CPA.files = [account("codex", 2, id_token=None)]

@@ -399,7 +399,7 @@ OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
     codex-bd…@… pro   wk 31%
 
 antigravity · 1 account: 1 have room
-antigravity-01…@…  out: claude and gpt
+antigravity-01…@… pro  out: claude and gpt
   gemini          5h 0% · wk 12%
   claude and gpt  5h 100% → 23:10 · wk 64%
 ```
@@ -412,19 +412,19 @@ quota plugin của nó khi CPA có liệt kê. Mọi request, và khi nào chún
 
 | Provider | Request cho mỗi account | Bạn thấy gì |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`; giới hạn tuần theo model và app khi được gửi (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage khi bật, kèm đã tiêu/hạn mức; credit pool (`$ left`) |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage`, rồi GET `https://api.anthropic.com/api/oauth/profile` để lấy plan | `5h`, `wk`; giới hạn tuần theo model và app khi được gửi (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage khi bật, kèm đã tiêu/hạn mức; credit pool (`$ left`); plan (`team`, `max20`, `max5`, `max`, `pro`, `free`) |
 | Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan, credits khi account có; ngày subscription kết thúc (`until Nov 16`) khi listing của CPA có, không tốn thêm request |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, rồi GET `https://cli-chat-proxy.grok.com/v1/billing` | credits tuần `wk` (`wk no figure yet` khi xAI chưa báo phần trăm); chi tiêu tháng `mo` chỉ khi xAI báo monthly limit |
-| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` kèm `project_id` của account; host `daily-cloudcode-pa.sandbox` và `cloudcode-pa` chỉ khi host trước lỗi ở phía vendor hoặc không trả quota | theo từng nhóm model, `5h` và `wk` |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` kèm `project_id` của account; host `daily-cloudcode-pa.sandbox` và `cloudcode-pa` chỉ khi host trước lỗi ở phía vendor hoặc không trả quota; rồi POST `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` để lấy plan | theo từng nhóm model, `5h` và `wk`; plan (`free`, `pro`, `ultra`, `ultra-lite`) |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` khi CPA liệt kê account là `kimi-ai`) | từng window giới hạn, tuần, `mo` |
 | CPA plugin quota (vd. Kiro) | GET `/v8/management/plugins/<id>/quota` trên CPA; plugin tự hỏi vendor của nó | các meter và plan của plugin |
 
-Không request nào tốn tiền hay dùng hết quota: đều là các lần đọc usage mà web
-UI cũng làm. Cố ý không làm: bước kiểm tra chat trả phí 1 token của xAI
-(fallback của web UI cho account xAI trả phí dùng API key, các account này sẽ
-hiện lỗi billing), tra cứu danh tính và plan, tải file account, và mọi thao
-tác reset.
+Không request nào tốn tiền hay dùng hết quota: đều là các lần đọc mà web UI
+cũng làm cho trang quota của nó. Cố ý không làm: bước kiểm tra chat trả phí
+1 token của xAI (fallback của web UI cho account xAI trả phí dùng API key, các
+account này sẽ hiện lỗi billing), mọi tra cứu danh tính hay plan khác, tải
+file account, và mọi thao tác reset.
 
 Các header, kể cả `User-Agent` CLI của từng vendor, lấy từ web UI. Phần trăm là
 phần đã dùng (vendor nào báo phần còn lại thì được đổi lại); không cộng gộp
@@ -441,7 +441,15 @@ và account vẫn phục vụ các model khác.
   dưới dạng code block để các cột thẳng hàng. Cần Hermes 0.22.3 trở lên, bản
   này báo cho lệnh biết platform; ở nơi khác và trên Hermes cũ hơn, câu trả
   lời là plain text.
-- Chỉ khi bạn gõ lệnh. Mỗi lần chạy tối đa 20 account và 3 request cho mỗi
+- Plan của account Claude hoặc Antigravity tốn thêm một request cho mỗi
+  account (request profile và `loadCodeAssist` trong bảng), chỉ gửi sau khi
+  đã đọc được usage của account đó. Chỉ các field về plan trong câu trả lời
+  được đọc, và plan hiện ra là một trong các từ cố định trong bảng; giá trị
+  không có trong danh sách thì không hiện plan. Các câu trả lời này còn chứa
+  tên, email, tên tổ chức và project id: không cái nào được đọc, hiển thị hay
+  lưu lại. Khi request lỗi, dòng đó không có plan và không có gì khác thay
+  đổi; request không được gửi lại.
+- Chỉ khi bạn gõ lệnh. Mỗi lần chạy tối đa 20 account và 4 request cho mỗi
   account. Request đầu gửi một mình, sau đó tối đa 4 request cùng lúc; gõ lại
   trong 60 giây sẽ trả từ bộ nhớ. Bỏ qua account đã tắt. Sau 60 giây, một lượt
   chạy không gửi request mới nào nữa; account chưa tới lượt hiện

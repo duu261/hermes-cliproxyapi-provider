@@ -8,7 +8,10 @@ quota plugin serves quota (e.g. Kiro) are read with CPA's plugin quota GET.
 Rules (see AGENTS.md, "/cpa status"):
 
 - Only on command. Requests are fixed in code; nothing from the user or config
-  reaches one. No paid, identity, download or reset calls.
+  reaches one. No paid, download or reset calls. Besides usage, the only
+  lookups are the two tier requests (the Claude profile and Antigravity
+  ``loadCodeAssist``), sent after an account's usage was read and used for
+  the plan word alone.
 - The whole run holds the shared management guard for its CPA once. Accounts
   are tried one at a time, one request at a time, until a reply proves CPA
   accepted the key; an outer 401 latches the key and stops the run. After that
@@ -46,7 +49,8 @@ except ImportError:  # pragma: no cover - direct import in tests
 # router-for-me/Cli-Proxy-API-Management-Center@64b4f5aed1
 # src/utils/quota/constants.ts, src/features/quota/providers/*/data.ts and
 # devin/requests.ts (the xAI client version is from @38990aec51). CPA v8.0.46
-# fills TOKEN in header values and in data.
+# fills TOKEN in header values and in data. The two tier requests are from
+# @953fb24443: providers/claude/data.ts and services/api/antigravitySubscription.ts.
 
 TOKEN = "$" + "TOKEN" + "$"
 BEARER = "Bearer " + TOKEN
@@ -57,9 +61,13 @@ class Probe(NamedTuple):
     url: str
     header: dict[str, str]
     data: str = ""
+    # A tier request: sent once, after the account's usage was read, to show
+    # the plan. It never fails the account's row (see ``_Runner._tier``).
+    tier: bool = False
 
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 XAI_WEEKLY_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 XAI_MONTHLY_URL = "https://cli-chat-proxy.grok.com/v1/billing"
@@ -68,10 +76,20 @@ ANTIGRAVITY_URLS = (
     "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
 )
+ANTIGRAVITY_TIER_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+ANTIGRAVITY_TIER_DATA = '{"metadata":{"ideType":"ANTIGRAVITY"}}'
 DEVIN_URL = "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"
 KIMI_COM_URL = "https://api.kimi.com/coding/v1/usages"
 KIMI_AI_URL = "https://api.kimi.ai/coding/v1/usages"
 
+# The Management Center sends these on both Claude requests, plus ``Accept``
+# on the usage request only.
+_CLAUDE_HEADER = {
+    "Authorization": BEARER,
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.280 (external, cli)",
+    "anthropic-beta": "oauth-2025-04-20",
+}
 _XAI_VERSION = "1.0.70"
 _XAI_HEADER = {
     "Authorization": BEARER,
@@ -103,17 +121,8 @@ _PROJECT = "<project>"  # becomes {"project":"<project_id>"} for the account
 
 QUOTA_REQUESTS: dict[str, tuple[Probe, ...]] = {
     "claude": (
-        Probe(
-            "GET",
-            CLAUDE_USAGE_URL,
-            {
-                "Authorization": BEARER,
-                "Content-Type": "application/json",
-                "User-Agent": "claude-cli/2.1.280 (external, cli)",
-                "anthropic-beta": "oauth-2025-04-20",
-                "Accept": "application/json",
-            },
-        ),
+        Probe("GET", CLAUDE_USAGE_URL, {**_CLAUDE_HEADER, "Accept": "application/json"}),
+        Probe("GET", CLAUDE_PROFILE_URL, _CLAUDE_HEADER, tier=True),
     ),
     "codex": (
         Probe(
@@ -132,8 +141,9 @@ QUOTA_REQUESTS: dict[str, tuple[Probe, ...]] = {
         Probe("GET", XAI_WEEKLY_URL, _XAI_HEADER),
         Probe("GET", XAI_MONTHLY_URL, _XAI_HEADER),
     ),
-    "antigravity": tuple(
-        Probe("POST", url, _ANTIGRAVITY_HEADER, _PROJECT) for url in ANTIGRAVITY_URLS
+    "antigravity": (
+        *(Probe("POST", url, _ANTIGRAVITY_HEADER, _PROJECT) for url in ANTIGRAVITY_URLS),
+        Probe("POST", ANTIGRAVITY_TIER_URL, _ANTIGRAVITY_HEADER, ANTIGRAVITY_TIER_DATA, tier=True),
     ),
     "devin": (
         Probe(
@@ -166,27 +176,40 @@ _PLAN_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _SELECTOR_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 
 
+def _body(probe: Probe, provider: str, entry: dict[str, Any], target: str) -> dict[str, Any]:
+    url, header = probe.url, dict(probe.header)
+    if provider == "codex" and entry.get("_acct"):
+        header["Chatgpt-Account-Id"] = entry["_acct"]
+    if provider == "kimi" and entry.get("_kimi_ai") is True:
+        url = KIMI_AI_URL
+    body: dict[str, Any] = {
+        "auth_index": target,
+        "method": probe.method,
+        "url": url,
+        "header": header,
+    }
+    if probe.data == _PROJECT:
+        body["data"] = json.dumps({"project": entry["_project"]}, separators=(",", ":"))
+    elif probe.data:
+        body["data"] = probe.data
+    return body
+
+
 def request_bodies(provider: str, entry: dict[str, Any], target: str) -> list[dict[str, Any]]:
-    """The exact JSON CPA receives for one account, in send order."""
-    bodies = []
-    for probe in QUOTA_REQUESTS[provider]:
-        url, header = probe.url, dict(probe.header)
-        if provider == "codex" and entry.get("_acct"):
-            header["Chatgpt-Account-Id"] = entry["_acct"]
-        if provider == "kimi" and entry.get("_kimi_ai") is True:
-            url = KIMI_AI_URL
-        body: dict[str, Any] = {
-            "auth_index": target,
-            "method": probe.method,
-            "url": url,
-            "header": header,
-        }
-        if probe.data == _PROJECT:
-            body["data"] = json.dumps({"project": entry["_project"]}, separators=(",", ":"))
-        elif probe.data:
-            body["data"] = probe.data
-        bodies.append(body)
-    return bodies
+    """The exact JSON CPA receives for one account's usage, in send order."""
+    return [
+        _body(probe, provider, entry, target)
+        for probe in QUOTA_REQUESTS[provider]
+        if not probe.tier
+    ]
+
+
+def tier_body(provider: str, entry: dict[str, Any], target: str) -> dict[str, Any] | None:
+    """The exact JSON of the provider's tier request, or None when it has none."""
+    for probe in QUOTA_REQUESTS.get(provider, ()):
+        if probe.tier:
+            return _body(probe, provider, entry, target)
+    return None
 
 
 # ── Parsing vendor replies ──────────────────────────────────────────────────
@@ -351,6 +374,90 @@ def parse_claude(payload: Any) -> Usage:
     usage.windows += scoped
     usage.extra = " · ".join(filter(None, [_claude_extra(payload), *_claude_balances(payload)]))
     return usage
+
+
+# ── Subscription tier (the two tier requests) ───────────────────────────────
+# Only the fields named here are read; the replies also carry a name, an
+# email, an organization name and the project id. The result is one of the
+# fixed words below or "", never a value from the reply.
+
+
+def _word(raw: Any) -> str:
+    """A reply field as trimmed text, like the Management Center reads it."""
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw):
+        return str(raw)
+    return ""
+
+
+def _flag(raw: Any) -> bool | None:
+    """A yes/no reply field; None when it is missing or not a yes or a no."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    if isinstance(raw, str):
+        word = raw.strip().lower()
+        if word in ("true", "1", "yes", "y", "on"):
+            return True
+        if word in ("false", "0", "no", "n", "off"):
+            return False
+    return None
+
+
+# Only the organization's rate-limit tier tells Max 5x from Max 20x.
+_CLAUDE_MAX = (("claude_max_20x", "max20"), ("claude_max_5x", "max5"))
+
+
+def parse_claude_tier(payload: Any) -> str:
+    """``team``, ``max20``, ``max5``, ``max``, ``pro``, ``free`` or ``""``."""
+    if not isinstance(payload, dict):
+        return ""
+    org, acct = payload.get("organization"), payload.get("account")
+    org = org if isinstance(org, dict) else {}
+    acct = acct if isinstance(acct, dict) else {}
+    kind = _word(org.get("organization_type")).lower()
+    if kind == "claude_team" and _word(org.get("subscription_status")).lower() == "active":
+        return "team"
+    rate = _word(org.get("rate_limit_tier")).lower()
+    for ending, word in _CLAUDE_MAX:
+        if rate.endswith(ending):
+            return word
+    has_max, has_pro = _flag(acct.get("has_claude_max")), _flag(acct.get("has_claude_pro"))
+    if has_max:
+        return "max"
+    if has_pro:
+        return "pro"
+    if has_max is False and has_pro is False:
+        return "free"
+    return ""
+
+
+_ANTIGRAVITY_TIERS = {
+    "free-tier": "free",
+    "g1-pro-tier": "pro",
+    "g1-ultra-tier": "ultra",
+    "g1-ultra-lite-tier": "ultra-lite",
+}
+
+
+def parse_antigravity_tier(payload: Any) -> str:
+    """``free``, ``pro``, ``ultra``, ``ultra-lite`` or ``""``: the paid tier, else the current."""
+    if not isinstance(payload, dict):
+        return ""
+
+    def tier_id(key: str) -> str:
+        tier = payload.get(key)
+        return _word(tier.get("id")) if isinstance(tier, dict) else ""
+
+    return _ANTIGRAVITY_TIERS.get(tier_id("paidTier") or tier_id("currentTier"), "")
+
+
+_TIER_PARSERS: dict[str, Callable[[Any], str]] = {
+    "claude": parse_claude_tier,
+    "antigravity": parse_antigravity_tier,
+}
 
 
 _FIVE_HOURS = 18000
@@ -986,6 +1093,23 @@ class _Runner:
             return usage
         return parse_usage(provider, _payload(self.api(bodies[0])), now)
 
+    def _tier(self, entry: dict[str, Any], provider: str, target: str) -> str:
+        """The plan word from the provider's tier request, or ``""``.
+
+        Sent once, and only after the account's usage was read, so it is never
+        the run's first request. Any failure leaves the plan out: the account
+        keeps its usage row. An outer 401 still latches the key and stops the
+        run, like every other request.
+        """
+        body = tier_body(provider, entry, target)
+        if body is None:
+            return ""
+        try:
+            payload = _payload(self.api(body))
+        except (_AccountError, _StopError):
+            return ""
+        return _TIER_PARSERS[provider](payload)
+
     def account(self, entry: dict[str, Any], now: datetime) -> AccountResult:
         name, provider = status.display_name(entry), status.provider_of(entry)
         target = entry.get("_target")
@@ -1001,6 +1125,7 @@ class _Runner:
             return AccountResult(name, provider, error=str(exc))
         if not usage.windows and not usage.pending:
             return AccountResult(name, provider, error="no quota data")
+        usage.plan = self._tier(entry, provider, target) or usage.plan
         return AccountResult(name, provider, usage=usage, until=entry.get("_until"))
 
 
@@ -1079,7 +1204,7 @@ USAGE = (
     "/cpa quota <pool> <provider> - claude, codex, xai, antigravity, devin, kimi,\n"
     "  or plugin (or a plugin's provider, e.g. kiro) for CPA plugin quota\n"
     "Asks each vendor through CPA, like CPA's web UI quota page: at most 20\n"
-    "accounts and 3 requests per account, cached 60 s. Percent = used."
+    "accounts and 4 requests per account, cached 60 s. Percent = used."
 )
 
 

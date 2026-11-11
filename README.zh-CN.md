@@ -352,7 +352,7 @@ OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
     codex-bd…@… pro   wk 31%
 
 antigravity · 1 account: 1 have room
-antigravity-01…@…  out: claude and gpt
+antigravity-01…@… pro  out: claude and gpt
   gemini          5h 0% · wk 12%
   claude and gpt  5h 100% → 23:10 · wk 64%
 ```
@@ -364,17 +364,18 @@ quota 页面相同。对内置的厂商，CPA 的 `api-call` 路由带着该 acc
 
 | Provider | 每个 account 的请求 | 显示内容 |
 |---|---|---|
-| Claude | GET `https://api.anthropic.com/api/oauth/usage` | `5h`, `wk`；每周 model 和 app 限额在有发送时显示 (`fable`, `opus`, `sonnet`, `apps`, `cowork`)；extra usage 在开启时显示，含已用/上限；credit pool (`$ left`) |
+| Claude | GET `https://api.anthropic.com/api/oauth/usage`, 然后 GET `https://api.anthropic.com/api/oauth/profile` 以获取 plan | `5h`, `wk`；每周 model 和 app 限额在有发送时显示 (`fable`, `opus`, `sonnet`, `apps`, `cowork`)；extra usage 在开启时显示，含已用/上限；credit pool (`$ left`)；plan (`team`, `max20`, `max5`, `max`, `pro`, `free`) |
 | Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan，account 有 credits 时显示；CPA 的列表里有时显示 subscription 结束的日期 (`until Nov 16`)，不增加 request |
 | xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, 然后 GET `https://cli-chat-proxy.grok.com/v1/billing` | 每周 credits `wk`（xAI 还没报告百分比时显示 `wk no figure yet`）；只有 xAI 报告 monthly limit 时才显示每月花费 `mo` |
-| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` ，带该 account 的 `project_id`；只有前一个 host 在厂商侧失败或没有返回 quota 时，才依次请求 `daily-cloudcode-pa.sandbox` 和 `cloudcode-pa` | 按 model 分组，`5h` 和 `wk` |
+| Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` ，带该 account 的 `project_id`；只有前一个 host 在厂商侧失败或没有返回 quota 时，才依次请求 `daily-cloudcode-pa.sandbox` 和 `cloudcode-pa`；然后 POST `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` 以获取 plan | 按 model 分组，`5h` 和 `wk`；plan (`free`, `pro`, `ultra`, `ultra-lite`) |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` （CPA 把 account 列为 `kimi-ai` 时用 `api.kimi.ai`） | 每个限额 window、每周、`mo` |
 | CPA plugin quota（如 Kiro） | GET `/v8/management/plugins/<id>/quota` （在 CPA 上；由 plugin 去问它的厂商） | plugin 的 meter 和 plan |
 
-这些请求都不花钱，也不消耗 quota：都是 web UI 本身也会做的用量读取。刻意不做：xAI
-付费的 1 token chat 检查（web UI 给使用 API key 的付费 xAI account 的 fallback，这类
-account 会显示 billing 错误）、身份和 plan 查询、下载 account 文件，以及任何 reset。
+这些请求都不花钱，也不消耗 quota：都是 web UI 为它的 quota 页面也会做的读取。刻意
+不做：xAI 付费的 1 token chat 检查（web UI 给使用 API key 的付费 xAI account 的
+fallback，这类 account 会显示 billing 错误）、其他任何身份或 plan 查询、下载 account
+文件，以及任何 reset。
 
 header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已用量（报告剩余量的
 厂商会被换算）；不跨 plan 汇总。window 只有在已用 80% 或以上时才显示 reset 时间
@@ -388,7 +389,12 @@ header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已�
 - 在 Telegram、Discord、Slack、Matrix 和 Mattermost 上，回复以 code block 发送，
   让各列对齐。这需要 Hermes 0.22.3 或更高版本，它会把 platform 告诉命令；在其他地方
   以及更旧的 Hermes 上，回复是 plain text。
-- 只在你输入时运行。每次最多 20 个 account，每个 account 最多 3 个请求。第一个请求
+- Claude 或 Antigravity account 的 plan 需要每个 account 多一个请求（表中的 profile
+  和 `loadCodeAssist` 请求），只在读到该 account 的用量之后才发送。只读取回复里与
+  plan 有关的字段，plan 显示为表中固定词之一；不在列表里的值不显示 plan。这些回复还
+  带有姓名、email、组织名称和 project id：都不读取、不显示、不保存。请求失败时，该行
+  没有 plan，其他不变；不会重试。
+- 只在你输入时运行。每次最多 20 个 account，每个 account 最多 4 个请求。第一个请求
   单独发送，之后最多 4 个并发；60 秒内重复输入直接用内存结果。跳过已禁用的 account。
   一次运行在 60 秒后不再发送新请求；没轮到的 account 显示 `not checked`。
 - `/cpa quota <pool> <provider>` 接受 `claude`、`codex`、`xai`、`antigravity`、

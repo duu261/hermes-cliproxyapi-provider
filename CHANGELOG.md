@@ -2,6 +2,17 @@
 
 ## 0.8.0
 
+- `/cpa quota` shows the plan of Claude accounts (`team`, `max20`, `max5`,
+  `max`, `pro`, `free`) and Antigravity accounts (`free`, `pro`, `ultra`,
+  `ultra-lite`), as CPA's web UI does. This costs one more request per such
+  account: GET `https://api.anthropic.com/api/oauth/profile`, and POST
+  `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`. Each
+  is sent only after the account's usage was read, so never as a run's first
+  request, and is not retried. Only the plan fields of the reply are read.
+  The plan is one of those fixed words; a value that is not on the list
+  shows no plan. A failed request leaves the plan out and changes nothing
+  else. The limit is now 4 requests per account per run (was 3): an
+  Antigravity account can need three quota URLs and then this one.
 - `/cpa quota` layout. A blank line separates the provider blocks. `OUT` is at
   the start of the account's line, and the account and plan columns of a
   block line up. An Antigravity account has one line per model group under
