@@ -413,8 +413,8 @@ quota plugin của nó khi CPA có liệt kê. Mọi request, và khi nào chún
 | Provider | Request cho mỗi account | Bạn thấy gì |
 |---|---|---|
 | Claude | GET `https://api.anthropic.com/api/oauth/usage`, rồi GET `https://api.anthropic.com/api/oauth/profile` để lấy plan | `5h`, `wk`; giới hạn tuần theo model và app khi được gửi (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage khi bật, kèm đã tiêu/hạn mức; credit pool (`$ left`); plan (`team`, `max20`, `max5`, `max`, `pro`, `free`) |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan, credits khi account có; ngày subscription kết thúc (`until Nov 16`) khi listing của CPA có, không tốn thêm request |
-| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, rồi GET `https://cli-chat-proxy.grok.com/v1/billing` | credits tuần `wk` (`wk no figure yet` khi xAI chưa báo phần trăm); chi tiêu tháng `mo` chỉ khi xAI báo monthly limit |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window theo độ dài của chính nó (`5h`, `wk`, `mo`), plan, credits khi account có; giới hạn riêng cho một feature hoặc model khi được gửi (`<name> wk`); số lần reset limit đang giữ (`2 resets banked`); ngày subscription kết thúc (`until Nov 16`) khi listing của CPA có, không tốn thêm request |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, rồi GET `https://cli-chat-proxy.grok.com/v1/billing` | credits tuần `wk` (`wk no figure yet` khi xAI chưa báo phần trăm); chi tiêu tháng `mo` chỉ khi xAI báo monthly limit; khi xAI gửi: phần credits tuần mà từng product đã dùng (`grokbuild 30%, api 6%`), pay as you go (`payg off`, hoặc đã tiêu/cap dạng `payg $3.00/$50.00`) và prepaid balance (`prepaid $25.00`) |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` kèm `project_id` của account; host `daily-cloudcode-pa.sandbox` và `cloudcode-pa` chỉ khi host trước lỗi ở phía vendor hoặc không trả quota; rồi POST `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` để lấy plan | theo từng nhóm model, `5h` và `wk`; plan (`free`, `pro`, `ultra`, `ultra-lite`) |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` khi CPA liệt kê account là `kimi-ai`) | từng window giới hạn, tuần, `mo` |
@@ -435,7 +435,8 @@ một dòng dưới account (`gemini`, `claude and gpt`): CPA chỉ tạm ngưng
 đã hết, nên account chỉ là `OUT` khi mọi group đều đầy; nếu không, group đầy
 hiện là `out: <group>`. Các giới hạn tuần theo model của Claude
 (Fable, Opus, Sonnet, apps, Cowork) cũng vậy: cái nào đầy hiện là `out: fable`
-và account vẫn phục vụ các model khác.
+và account vẫn phục vụ các model khác. Các giới hạn của Codex cho một feature
+hoặc model cũng vậy.
 
 - Trên Telegram, Discord, Slack, Matrix và Mattermost, câu trả lời được gửi
   dưới dạng code block để các cột thẳng hàng. Cần Hermes 0.22.3 trở lên, bản

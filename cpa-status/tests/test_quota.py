@@ -59,6 +59,21 @@ CODEX_PRO = {  # Management Center fixture shape: weekly primary, no secondary
     },
     "code_review_rate_limit": None,
 }
+# One entry of ``additional_rate_limits``, in the Management Center fixture shape.
+CODEX_SPARK = {
+    "limit_name": "GPT-5.3-Codex-Spark",
+    "metered_feature": "codex_bengalfox",
+    "rate_limit": {
+        "allowed": True,
+        "limit_reached": False,
+        "primary_window": {
+            "used_percent": 12,
+            "limit_window_seconds": 604800,
+            "reset_at": epoch(3 * 1440),
+        },
+        "secondary_window": None,
+    },
+}
 CODEX_PLUS_OUT = {
     "plan_type": "plus",
     "rate_limit": {
@@ -365,6 +380,152 @@ class ParserTests(unittest.TestCase):
             body["credits"] = junk
             self.assertEqual(quota.parse_codex(body, NOW).extra, "", junk)
         self.assertEqual(quota.parse_codex(CODEX_PRO, NOW).extra, "")
+
+    def test_codex_banked_resets(self):
+        def extra(banked, **more):
+            body = dict(CODEX_PRO, rate_limit_reset_credits=banked, **more)
+            return quota.parse_codex(body, NOW).extra
+
+        # The usage reply's own shape: one banked, none usable right now.
+        self.assertEqual(
+            extra({"available_count": 1, "applicable_available_count": 0}), "1 reset banked"
+        )
+        self.assertEqual(extra({"availableCount": "3"}), "3 resets banked")
+        other = dict(CODEX_PRO, rateLimitResetCredits={"available_count": 2})
+        self.assertEqual(quota.parse_codex(other, NOW).extra, "2 resets banked")
+        for none in (
+            {"available_count": 0},
+            {"available_count": -1},
+            {"available_count": True},
+            {"available_count": 1.5},
+            {"available_count": "many"},
+            {"available_count": 10**6},
+            {"applicable_available_count": 4},  # usable now, but no banked count
+            {"credits": [{"id": "x", "status": "available"}]},  # the list is not counted
+            {},
+            None,
+            [],
+            3,
+            "2",
+        ):
+            self.assertEqual(extra(none), "", repr(none))
+        self.assertEqual(
+            extra({"available_count": 2}, credits={"balance": "12.5"}),
+            "credits 12.50 · 2 resets banked",
+        )
+
+    def test_codex_additional_limits_are_scoped_windows(self):
+        body = dict(CODEX_PRO, additional_rate_limits=[CODEX_SPARK])
+        usage = quota.parse_codex(body, NOW)
+        self.assertEqual(
+            [(w.label, w.used, w.scoped) for w in usage.windows],
+            [("wk", 40, False), ("gpt-5.3-codex-spark wk", 12, True)],
+        )
+        self.assertEqual(usage.windows[1].resets_at, NOW + timedelta(days=3))
+        self.assertFalse(usage.reached)
+        self.assertEqual(quota.parse_codex(CODEX_PRO, NOW).windows[1:], [])
+        # The other spelling of every field name, and both windows of one limit.
+        camel = {
+            "limitName": "Spark",
+            "rateLimit": {
+                "primaryWindow": {"usedPercent": 5, "limitWindowSeconds": 18000},
+                "secondaryWindow": {"usedPercent": 7, "limitWindowSeconds": 604800},
+            },
+        }
+        usage = quota.parse_codex(dict(CODEX_PRO, additionalRateLimits=[camel]), NOW)
+        self.assertEqual(
+            [(w.label, w.used, w.scoped) for w in usage.windows[1:]],
+            [("spark 5h", 5, True), ("spark wk", 7, True)],
+        )
+
+    def test_codex_additional_limit_names(self):
+        def labels(*items):
+            usage = quota.parse_codex(dict(CODEX_PRO, additional_rate_limits=list(items)), NOW)
+            return [w.label for w in usage.windows[1:]]
+
+        rate = CODEX_SPARK["rate_limit"]
+        # The feature name stands in for a missing limit name, then the position.
+        self.assertEqual(
+            labels(
+                {"metered_feature": "codex_bengalfox", "rate_limit": rate},
+                {"limit_name": "  ", "rate_limit": rate},
+                {"limit_name": 7, "metered_feature": None, "rate_limit": rate},
+            ),
+            ["codex_bengalfox wk", "limit 2 wk", "limit 3 wk"],
+        )
+        # A name is vendor text: masked and bounded like any label.
+        self.assertEqual(
+            labels(
+                {"limit_name": "carol.canary@example.com", "rate_limit": rate},
+                {"limit_name": TOKENISH, "rate_limit": rate},
+                {"limit_name": "A very long limit name that goes on", "rate_limit": rate},
+            ),
+            ["ca…@… wk", "limit 2 wk", "a very long limit name t wk"],
+        )
+        # Not a limit: skipped, and nothing after it is lost.
+        self.assertEqual(
+            labels(
+                "junk",
+                None,
+                {"limit_name": "No Rate"},
+                {"limit_name": "Bad Rate", "rate_limit": "soon"},
+                {"limit_name": "No Figure", "rate_limit": {"primary_window": {}}},
+                CODEX_SPARK,
+            ),
+            ["gpt-5.3-codex-spark wk"],
+        )
+        for junk in (None, "spark", {"limit_name": "Spark", "rate_limit": rate}, 5):
+            usage = quota.parse_codex(dict(CODEX_PRO, additional_rate_limits=junk), NOW)
+            self.assertEqual([w.label for w in usage.windows], ["wk"], repr(junk))
+        many = [{"limit_name": f"L{n}", "rate_limit": rate} for n in range(1, 8)]
+        self.assertEqual(labels(*many), ["l1 wk", "l2 wk", "l3 wk", "l4 wk"])
+        # Only a limit that is shown counts toward that cap.
+        empty = [{"limit_name": f"E{n}", "rate_limit": {"primary_window": {}}} for n in range(6)]
+        self.assertEqual(labels(*empty, CODEX_SPARK), ["gpt-5.3-codex-spark wk"])
+        # Two limits under one name: the first is shown, once.
+        self.assertEqual(
+            labels(
+                {"limit_name": "Spark", "rate_limit": rate},
+                {"limit_name": "spark", "rate_limit": rate},
+            ),
+            ["spark wk"],
+        )
+        # With no plan windows in the reply the additional ones are still read.
+        alone = quota.parse_codex({"additional_rate_limits": [CODEX_SPARK]}, NOW)
+        self.assertEqual([w.label for w in alone.windows], ["gpt-5.3-codex-spark wk"])
+
+    def test_codex_full_additional_limit_is_not_out(self):
+        reset = epoch(2 * 1440)
+        full = {
+            "limit_name": "Spark",
+            "rate_limit": {
+                "allowed": False,
+                "limit_reached": True,
+                # No percent: the vendor's "reached" plus a reset time means full.
+                "primary_window": {"limit_window_seconds": 604800, "reset_at": reset},
+            },
+        }
+        usage = quota.parse_codex(dict(CODEX_PRO, additional_rate_limits=[full]), NOW)
+        self.assertEqual(
+            [(w.label, w.used, w.scoped) for w in usage.windows],
+            [("wk", 40, False), ("spark wk", 100, True)],
+        )
+        # The limit is on one feature: the account still serves the rest.
+        self.assertFalse(usage.reached)
+        result = quota.AccountResult("a", "codex", usage)
+        self.assertEqual(result.out_until(), (False, None))
+        when = quota._when(NOW + timedelta(days=2), NOW)
+        self.assertEqual(
+            quota._provider_block("codex", [result], NOW),
+            [
+                "codex · 1 account: 1 have room",
+                f"a pro  wk 40% · spark wk 100% → {when}  out: spark wk",
+            ],
+        )
+        # Reached with no reset time and no percent says nothing: not shown.
+        del full["rate_limit"]["primary_window"]["reset_at"]
+        usage = quota.parse_codex(dict(CODEX_PRO, additional_rate_limits=[full]), NOW)
+        self.assertEqual([w.label for w in usage.windows], ["wk"])
 
     def test_claude_full_scoped_limit_is_not_out(self):
         usage = quota.Usage(

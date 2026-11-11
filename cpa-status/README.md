@@ -40,9 +40,12 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   other providers through their CPA quota plugin (e.g. Kiro). A Codex line
   also shows the day the subscription ends (`until Nov 16`) when CPA's
   listing has it, at no extra request. A Claude or Antigravity line shows
-  the plan (`max20`, `pro`), from one more request per account. On Telegram,
-  Discord, Slack, Matrix and Mattermost the reply is a code block (Hermes
-  0.22.3 or later). Nothing paid,
+  the plan (`max20`, `pro`), from one more request per account. When the
+  vendor sends them, an xAI line shows usage by product, pay as you go and
+  a prepaid balance, and a Codex line shows limits on one feature or model
+  and banked limit resets, all from replies the run already fetches. On
+  Telegram, Discord, Slack, Matrix and Mattermost the reply is a code block
+  (Hermes 0.22.3 or later). Nothing paid,
   no downloads, no resets; the full request list is in the
   [README](../README.md#cpa-quota-live-usage). At most 20 accounts and 4
   requests per account per run, first request alone, then 4 at a time;

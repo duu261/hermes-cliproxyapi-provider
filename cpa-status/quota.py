@@ -234,7 +234,10 @@ class Usage:
     # The vendor confirmed a running window but sent no figure for it (xAI
     # leaves the percent out until an account has used enough). Never a 0.
     pending: list[Window] = field(default_factory=list)
-    extra: str = ""  # Claude extra usage and credit pools, Codex credits; only when present
+    # Shown after the windows, only when present: Claude extra usage and credit
+    # pools; Codex credits and banked resets; xAI usage by product, pay as you
+    # go and prepaid balance.
+    extra: str = ""
 
 
 def _num(raw: Any) -> float | None:
@@ -480,24 +483,26 @@ def _codex_label(seconds: float | None, position: str) -> str | None:
     return status._minutes_label(int(seconds // 60))
 
 
-def parse_codex(payload: Any, now: datetime) -> Usage:
-    usage = Usage()
-    if not isinstance(payload, dict):
-        return usage
-    plan = payload.get("plan_type")
-    if isinstance(plan, str):
-        # Codex also sends hyphenated plans ("pro-lite"); one spelling is shown.
-        value = plan.strip().lower().replace("-", "_")
-        if _PLAN_RE.match(value):
-            usage.plan = value
-    usage.extra = _codex_credits(payload)
-    limit = payload.get("rate_limit")
-    if limit is None:
-        limit = payload.get("rateLimit")
+def _name(raw: Any, limit: int) -> str:
+    """A vendor's name for a product or a limit: masked, bounded, lower case.
+
+    Empty when nothing readable is left (not text, blank, or all masked).
+    """
+    text = _label(raw, limit).lower().strip()
+    return text if any(ch.isalnum() for ch in text) else ""
+
+
+def _codex_windows(limit: Any, now: datetime, name: str = "") -> tuple[list[Window], bool]:
+    """The windows of one Codex rate limit, and whether the vendor says it is reached.
+
+    ``name`` marks an additional limit, on one feature or model: its windows
+    carry the name and are scoped, so a full one never makes the account OUT.
+    """
     if not isinstance(limit, dict):
-        return usage
+        return [], False
     reached_flag = limit.get("limit_reached", limit.get("limitReached"))
-    usage.reached = reached_flag is True or limit.get("allowed") is False
+    reached = reached_flag is True or limit.get("allowed") is False
+    windows: list[Window] = []
     taken: set[str] = set()
     for keys, position in (
         (("primary_window", "primaryWindow"), "5h"),
@@ -517,12 +522,70 @@ def parse_codex(payload: Any, now: datetime) -> Usage:
                 resets = now + timedelta(seconds=after)
         used = _used(window.get("used_percent", window.get("usedPercent")))
         if used is None:
-            if not (usage.reached and resets is not None):
+            if not (reached and resets is not None):
                 continue
             used = 100.0  # as the Management Center does
         taken.add(label)
-        usage.windows.append(Window(label, used, resets))
+        shown = f"{name} {label}" if name else label
+        windows.append(Window(shown, used, resets, scoped=bool(name)))
+    return windows, reached
+
+
+# Additional limits shown per account.
+_CODEX_EXTRA_LIMITS = 4
+
+
+def _codex_additional(payload: dict[str, Any], now: datetime) -> list[Window]:
+    """``additional_rate_limits``: a limit on one feature or model (e.g. Codex Spark)."""
+    items = _first(payload, "additional_rate_limits", "additionalRateLimits")
+    found: list[Window] = []
+    limits = 0
+    for index, item in enumerate(items if isinstance(items, list) else []):
+        if not isinstance(item, dict) or limits >= _CODEX_EXTRA_LIMITS:
+            continue
+        name = (
+            _name(_first(item, "limit_name", "limitName"), 24)
+            or _name(_first(item, "metered_feature", "meteredFeature"), 24)
+            or f"limit {index + 1}"
+        )
+        seen = {w.label for w in found}
+        windows, _ = _codex_windows(_first(item, "rate_limit", "rateLimit"), now, name)
+        windows = [w for w in windows if w.label not in seen]
+        if windows:
+            limits += 1
+            found += windows
+    return found
+
+
+def parse_codex(payload: Any, now: datetime) -> Usage:
+    usage = Usage()
+    if not isinstance(payload, dict):
+        return usage
+    plan = payload.get("plan_type")
+    if isinstance(plan, str):
+        # Codex also sends hyphenated plans ("pro-lite"); one spelling is shown.
+        value = plan.strip().lower().replace("-", "_")
+        if _PLAN_RE.match(value):
+            usage.plan = value
+    usage.extra = " · ".join(filter(None, [_codex_credits(payload), _codex_banked(payload)]))
+    usage.windows, usage.reached = _codex_windows(_first(payload, "rate_limit", "rateLimit"), now)
+    usage.windows += _codex_additional(payload, now)
     return usage
+
+
+def _codex_banked(payload: dict[str, Any]) -> str:
+    """Banked limit resets, from the count the usage reply carries.
+
+    The Management Center asks a second URL for each one's expiry; that request
+    is not sent here, so only the count is shown.
+    """
+    banked = _first(payload, "rate_limit_reset_credits", "rateLimitResetCredits")
+    if not isinstance(banked, dict):
+        return ""
+    count = _num(_first(banked, "available_count", "availableCount"))
+    if count is None or count != int(count) or not 1 <= count <= 999:
+        return ""
+    return f"{int(count)} reset{'' if count == 1 else 's'} banked"
 
 
 def _codex_credits(payload: dict[str, Any]) -> str:
@@ -579,7 +642,56 @@ def parse_xai(weekly: Any, monthly: Any) -> Usage:
     if limit and limit > 0 and spent is not None and spent >= 0:
         if "mo" not in {w.label for w in usage.windows}:
             usage.windows.append(Window("mo", min(spent, limit) / limit * 100, _instant(end)))
+    usage.extra = _xai_extra(configs)
     return usage
+
+
+_XAI_PRODUCTS = 6
+_CENTS_MAX = 10**11  # a billion dollars; anything larger is not an amount
+
+
+def _xai_products(config: dict[str, Any]) -> str:
+    """``grokbuild 30%, api 6%``: the share of the weekly credits each product used."""
+    items = _first(config, "productUsage", "product_usage")
+    parts: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or len(parts) >= _XAI_PRODUCTS:
+            continue
+        name = _name(item.get("product"), 16)
+        used = _used(_first(item, "usagePercent", "usage_percent"))
+        if name and used is not None:  # no figure is left out, never shown as 0%
+            parts.append(f"{name} {int(used)}%")
+    return ", ".join(parts)
+
+
+def _xai_amount(configs: list[dict[str, Any]], *keys: str) -> float | None:
+    """The first reply's value for a cents field, when it is a plausible amount."""
+    for config in configs:
+        value = _cents(_first(config, *keys))
+        if value is not None and 0 <= value <= _CENTS_MAX:
+            return value
+    return None
+
+
+def _xai_extra(configs: list[dict[str, Any]]) -> str:
+    """Usage by product, pay as you go and prepaid balance, from the billing replies.
+
+    Each part is shown only when xAI sent it: a missing cap is not ``off``.
+    """
+    products = next((text for config in configs if (text := _xai_products(config))), "")
+    cap = _xai_amount(configs, "onDemandCap", "on_demand_cap")
+    spent = _xai_amount(configs, "onDemandUsed", "on_demand_used")
+    if cap is None:
+        payg = ""
+    elif cap == 0:
+        payg = "payg off"
+    elif spent is None:
+        payg = f"payg cap {_money(cap, 'USD')}"
+    else:
+        payg = f"payg {_money(spent, 'USD')}/{_money(cap, 'USD')}"
+    balance = _xai_amount(configs, "prepaidBalance", "prepaid_balance")
+    prepaid = f"prepaid {_money(balance, 'USD')}" if balance else ""
+    return " · ".join(filter(None, [products, payg, prepaid]))
 
 
 _WINDOW_LABELS = {"5h": "5h", "five-hour": "5h", "five_hour": "5h", "weekly": "wk", "week": "wk"}

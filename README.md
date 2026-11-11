@@ -413,8 +413,8 @@ quota plugin when CPA lists one. Every request, and when it is sent:
 | Provider | Requests per account | What you see |
 |---|---|---|
 | Claude | GET `https://api.anthropic.com/api/oauth/usage`, then GET `https://api.anthropic.com/api/oauth/profile` for the plan | `5h`, `wk`; weekly model and app limits when sent (`fable`, `opus`, `sonnet`, `apps`, `cowork`); extra usage when on, with spend/limit; credit pools (`$ left`); plan (`team`, `max20`, `max5`, `max`, `pro`, `free`) |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan, credits when the account has them; the day the subscription ends (`until Nov 16`) when CPA's listing has it, at no extra request |
-| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk` (`wk no figure yet` until xAI reports a percent); monthly spend `mo` only when xAI reports a monthly limit |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | windows by their own length (`5h`, `wk`, `mo`), plan, credits when the account has them; limits on one feature or model when sent (`<name> wk`); banked limit resets as a count (`2 resets banked`); the day the subscription ends (`until Nov 16`) when CPA's listing has it, at no extra request |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, then GET `https://cli-chat-proxy.grok.com/v1/billing` | weekly credits `wk` (`wk no figure yet` until xAI reports a percent); monthly spend `mo` only when xAI reports a monthly limit; when xAI sends them, the share of the weekly credits each product used (`grokbuild 30%, api 6%`), pay as you go (`payg off`, or spend/cap as `payg $3.00/$50.00`) and a prepaid balance (`prepaid $25.00`) |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` with the account's `project_id`; the `daily-cloudcode-pa.sandbox` and `cloudcode-pa` hosts only when the one before failed at the vendor or returned no quota; then POST `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` for the plan | per model group, `5h` and `wk`; plan (`free`, `pro`, `ultra`, `ultra-lite`) |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` (`api.kimi.ai` when CPA lists the account as `kimi-ai`) | each limit window, weekly, `mo` |
@@ -436,7 +436,7 @@ holds back only the models that ran out, so an account is `OUT` only when
 every group is full; otherwise the full groups show as `out: <group>`.
 Claude's model-scoped weekly limits (Fable, Opus, Sonnet, apps, Cowork) work
 the same way: a full one shows as `out: fable` and the account keeps serving
-other models.
+other models. So do Codex limits on one feature or model.
 
 - On Telegram, Discord, Slack, Matrix and Mattermost the reply is sent as a
   code block, so the columns line up. This needs Hermes 0.22.3 or later, which

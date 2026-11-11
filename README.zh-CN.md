@@ -365,8 +365,8 @@ quota 页面相同。对内置的厂商，CPA 的 `api-call` 路由带着该 acc
 | Provider | 每个 account 的请求 | 显示内容 |
 |---|---|---|
 | Claude | GET `https://api.anthropic.com/api/oauth/usage`, 然后 GET `https://api.anthropic.com/api/oauth/profile` 以获取 plan | `5h`, `wk`；每周 model 和 app 限额在有发送时显示 (`fable`, `opus`, `sonnet`, `apps`, `cowork`)；extra usage 在开启时显示，含已用/上限；credit pool (`$ left`)；plan (`team`, `max20`, `max5`, `max`, `pro`, `free`) |
-| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan，account 有 credits 时显示；CPA 的列表里有时显示 subscription 结束的日期 (`until Nov 16`)，不增加 request |
-| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, 然后 GET `https://cli-chat-proxy.grok.com/v1/billing` | 每周 credits `wk`（xAI 还没报告百分比时显示 `wk no figure yet`）；只有 xAI 报告 monthly limit 时才显示每月花费 `mo` |
+| Codex | GET `https://chatgpt.com/backend-api/wham/usage` | window 按自身长度标注 (`5h`, `wk`, `mo`), plan，account 有 credits 时显示；针对单个 feature 或 model 的限额在有发送时显示 (`<name> wk`)；存着的 limit reset 次数 (`2 resets banked`)；CPA 的列表里有时显示 subscription 结束的日期 (`until Nov 16`)，不增加 request |
+| xAI | GET `https://cli-chat-proxy.grok.com/v1/billing?format=credits`, 然后 GET `https://cli-chat-proxy.grok.com/v1/billing` | 每周 credits `wk`（xAI 还没报告百分比时显示 `wk no figure yet`）；只有 xAI 报告 monthly limit 时才显示每月花费 `mo`；xAI 有发送时还显示：每个 product 用掉的每周 credits 占比 (`grokbuild 30%, api 6%`)、pay as you go（`payg off`，或已用/cap，如 `payg $3.00/$50.00`）和 prepaid balance (`prepaid $25.00`) |
 | Antigravity | POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` ，带该 account 的 `project_id`；只有前一个 host 在厂商侧失败或没有返回 quota 时，才依次请求 `daily-cloudcode-pa.sandbox` 和 `cloudcode-pa`；然后 POST `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` 以获取 plan | 按 model 分组，`5h` 和 `wk`；plan (`free`, `pro`, `ultra`, `ultra-lite`) |
 | Devin | POST `https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus` | `day`, `wk`, plan |
 | Kimi | GET `https://api.kimi.com/coding/v1/usages` （CPA 把 account 列为 `kimi-ai` 时用 `api.kimi.ai`） | 每个限额 window、每周、`mo` |
@@ -384,7 +384,8 @@ header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已�
 下面占一行（`gemini`、`claude and gpt`）：CPA 只暂停用完的 model，所以只有每个 group
 都满时 account 才显示 `OUT`；否则满的 group 显示为 `out: <group>`。Claude 按 model
 划分的每周限额（Fable、Opus、Sonnet、apps、Cowork）同样如此：满的那个显示为
-`out: fable`，account 继续提供其他 model。
+`out: fable`，account 继续提供其他 model。Codex 针对单个 feature 或 model 的限额
+也一样。
 
 - 在 Telegram、Discord、Slack、Matrix 和 Mattermost 上，回复以 code block 发送，
   让各列对齐。这需要 Hermes 0.22.3 或更高版本，它会把 platform 告诉命令；在其他地方

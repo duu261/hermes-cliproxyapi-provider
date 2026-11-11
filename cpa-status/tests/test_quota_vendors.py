@@ -24,6 +24,8 @@ from test_quota import (  # noqa: E402
     _CPA,
     BAD,
     CLAUDE_BODY,
+    CODEX_PRO,
+    CODEX_SPARK,
     KEY,
     NOW,
     TOKENISH,
@@ -54,6 +56,17 @@ XAI_MONTHLY = {
         "monthlyLimit": {"val": 15000},
         "used": {"val": "3000"},
         "billingPeriodEnd": iso(20 * 1440),
+    }
+}
+# Field names as the Management Center reads them; the figures are made up.
+XAI_PRODUCTS = {
+    "config": {
+        "creditUsagePercent": 36,
+        "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": iso(3 * 1440)},
+        "productUsage": [
+            {"product": "GrokBuild", "usagePercent": 30.4},
+            {"product": "Api", "usagePercent": 6},
+        ],
     }
 }
 AG_BODY = {
@@ -184,6 +197,119 @@ class ParserTests(unittest.TestCase):
         self.assertIn("1 have room", out)
         self.assertIn("wk no figure yet → ", out)
         self.assertNotIn("0%", out)
+
+    def test_xai_usage_by_product(self):
+        self.assertEqual(quota.parse_xai(XAI_PRODUCTS, None).extra, "grokbuild 30%, api 6%")
+        self.assertEqual(quota.parse_xai(XAI_WEEKLY, XAI_MONTHLY).extra, "")
+
+        def extra(items, monthly=None, key="productUsage"):
+            return quota.parse_xai({"config": {key: items}}, monthly).extra
+
+        # The other spelling of both field names.
+        self.assertEqual(
+            extra([{"product": "Api", "usage_percent": "12.9"}], key="product_usage"), "api 12%"
+        )
+        # A product with no percent is left out, never shown as 0%.
+        self.assertEqual(
+            extra(
+                [
+                    {"product": "GrokBuild"},
+                    {"product": "Api", "usagePercent": None},
+                    {"product": "Voice", "usagePercent": True},
+                    {"product": "Images", "usagePercent": -1},
+                    {"product": "Chat", "usagePercent": 250},
+                    {"usagePercent": 9},
+                    {"product": 7, "usagePercent": 9},
+                    "junk",
+                    None,
+                ]
+            ),
+            "chat 100%",
+        )
+        for junk in (None, "GrokBuild 30%", {"product": "Api", "usagePercent": 5}, [], 5):
+            self.assertEqual(extra(junk), "", repr(junk))
+        # The weekly reply's list is the one shown; the other reply fills in only
+        # when the weekly one has nothing to show.
+        other = {"config": {"productUsage": [{"product": "Api", "usagePercent": 3}]}}
+        self.assertEqual(quota.parse_xai(XAI_PRODUCTS, other).extra, "grokbuild 30%, api 6%")
+        self.assertEqual(extra([{"product": "GrokBuild"}], other), "api 3%")
+        self.assertEqual(quota.parse_xai(None, other).extra, "api 3%")
+        # A product name is vendor text: masked and bounded like any label.
+        shown = extra(
+            [
+                {"product": "carol.canary@example.com", "usagePercent": 1},
+                {"product": TOKENISH, "usagePercent": 2},
+                {"product": "A very long product name indeed", "usagePercent": 3},
+                {"product": "  Two\n words ", "usagePercent": 4},
+            ]
+        )
+        self.assertEqual(shown, "ca…@… 1%, a very long prod 3%, two words 4%")
+        many = [{"product": f"P{n}", "usagePercent": n} for n in range(1, 10)]
+        self.assertEqual(extra(many), "p1 1%, p2 2%, p3 3%, p4 4%, p5 5%, p6 6%")
+
+    def test_xai_pay_as_you_go(self):
+        def extra(weekly=None, monthly=None):
+            return quota.parse_xai(
+                None if weekly is None else {"config": weekly},
+                None if monthly is None else {"config": monthly},
+            ).extra
+
+        self.assertEqual(extra({"onDemandCap": {"val": 0}, "onDemandUsed": {"val": 0}}), "payg off")
+        self.assertEqual(extra({"on_demand_cap": "0"}), "payg off")
+        # No cap in either reply says nothing about pay as you go: no "off".
+        self.assertEqual(extra({"onDemandUsed": {"val": 120}}), "")
+        self.assertEqual(extra({}, {}), "")
+        self.assertEqual(
+            extra({"onDemandCap": {"val": 5000}, "onDemandUsed": {"val": "300"}}),
+            "payg $3.00/$50.00",
+        )
+        self.assertEqual(extra({"on_demand_cap": 5000, "on_demand_used": 0}), "payg $0.00/$50.00")
+        self.assertEqual(extra({"onDemandCap": 123456}), "payg cap $1,234.56")
+        self.assertEqual(extra({"onDemandCap": 5000, "onDemandUsed": -1}), "payg cap $50.00")
+        # The weekly reply's value is used; the other reply fills in what it lacks.
+        self.assertEqual(extra({"onDemandCap": 0}, {"onDemandCap": 5000}), "payg off")
+        self.assertEqual(
+            extra({"onDemandUsed": 250}, {"onDemandCap": 5000, "onDemandUsed": 999}),
+            "payg $2.50/$50.00",
+        )
+        self.assertEqual(extra(None, {"onDemandCap": {"val": 0}}), "payg off")
+        for junk in (-5, True, "soon", {"val": None}, {"amount": 5000}, [5000], 10**13):
+            self.assertEqual(extra({"onDemandCap": junk}), "", repr(junk))
+
+    def test_xai_prepaid_balance(self):
+        def extra(config):
+            return quota.parse_xai({"config": config}, None).extra
+
+        self.assertEqual(extra({"prepaidBalance": {"val": 2500}}), "prepaid $25.00")
+        self.assertEqual(extra({"prepaid_balance": "1050"}), "prepaid $10.50")
+        self.assertEqual(
+            quota.parse_xai(None, {"config": {"prepaidBalance": 99}}).extra, "prepaid $0.99"
+        )
+        for none in ({"val": 0}, 0, -100, True, "x", None, 10**13):
+            self.assertEqual(extra({"prepaidBalance": none}), "", repr(none))
+        self.assertEqual(
+            extra(
+                {
+                    "productUsage": [{"product": "Api", "usagePercent": 6}],
+                    "onDemandCap": {"val": 0},
+                    "prepaidBalance": {"val": 2500},
+                }
+            ),
+            "api 6% · payg off · prepaid $25.00",
+        )
+
+    def test_xai_extras_are_on_the_account_line(self):
+        result = quota.AccountResult("a", "xai", quota.parse_xai(XAI_PRODUCTS, XAI_MONTHLY))
+        self.assertEqual(
+            quota._provider_block("xai", [result], NOW),
+            [
+                "xai · 1 account: 1 have room",
+                "a  wk 36% · mo 20% · grokbuild 30%, api 6%",
+            ],
+        )
+        # Nothing but pay-as-you-go words is not quota data.
+        bare = quota.parse_xai({"config": {"onDemandCap": {"val": 0}}}, None)
+        self.assertEqual((bare.windows, bare.pending, bare.extra), ([], [], "payg off"))
 
     def test_groups_remaining_fraction_becomes_used(self):
         windows = quota.parse_groups(AG_BODY)
@@ -404,6 +530,45 @@ class ParserTests(unittest.TestCase):
 
 
 class RequestTests(QuotaTestCase):
+    def test_extras_come_from_the_replies_already_fetched(self):
+        _CPA.files = [account("xai", 4), account("codex", 2)]
+        _CPA.by_url = {
+            (idx(4), quota.XAI_WEEKLY_URL): (200, XAI_PRODUCTS),
+            (idx(4), quota.XAI_MONTHLY_URL): (200, {"config": {"onDemandCap": {"val": 0}}}),
+        }
+        _CPA.inner[idx(2)] = (
+            200,
+            dict(
+                CODEX_PRO,
+                additional_rate_limits=[CODEX_SPARK],
+                rate_limit_reset_credits={"available_count": 2},
+            ),
+        )
+        out = self.run_quota()
+        # The same three requests as before: nothing new is sent for the extras.
+        self.assertEqual(
+            sorted(p["body"]["url"] for p in _CPA.posts),
+            sorted([quota.CODEX_USAGE_URL, quota.XAI_WEEKLY_URL, quota.XAI_MONTHLY_URL]),
+        )
+        self.assertIn("\nxai-us…@…  wk 36% · grokbuild 30%, api 6% · payg off\n", out + "\n")
+        self.assertIn(
+            "\ncodex-us…@… pro  wk 40% · gpt-5.3-codex-spark wk 12% · 2 resets banked\n",
+            out + "\n",
+        )
+
+    def test_xai_extras_alone_are_not_quota_data(self):
+        _CPA.files = [account("xai", 4)]
+        only = {"config": {"onDemandCap": {"val": 0}, "prepaidBalance": {"val": 2500}}}
+        _CPA.by_url = {
+            (idx(4), quota.XAI_WEEKLY_URL): (200, only),
+            (idx(4), quota.XAI_MONTHLY_URL): (200, only),
+        }
+        out = self.run_quota("quota pre xai")
+        self.assertIn("xai · 1 account: 0 have room · 1 failed", out)
+        self.assertIn("no quota data", out)
+        self.assertNotIn("payg", out)
+        self.assertNotIn("prepaid", out)
+
     def test_xai_two_gets_with_grok_cli_headers(self):
         _CPA.files = [account("xai", 4)]
         _CPA.by_url = {
@@ -1022,6 +1187,9 @@ class PrivacyTests(QuotaTestCase):
             "/v1/me",
             "onboardUser",
             "backend-api/subscriptions",
+            "rate-limit-reset-credits",
+            "v1/user",
+            "v1/settings",
             "credentials/download",
             "/quota/reset",
             "cooldown/reset",

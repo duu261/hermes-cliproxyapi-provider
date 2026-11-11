@@ -2,6 +2,23 @@
 
 ## 0.8.0
 
+- `/cpa quota` xAI: when xAI sends them, the account line also shows the
+  share of the weekly credits each product used (`grokbuild 30%, api 6%`),
+  pay as you go (`payg off` when the cap is 0, else spend/cap as
+  `payg $3.00/$50.00`) and a prepaid balance (`prepaid $25.00`). They come
+  from the two billing replies the run already fetches, so no request is
+  added. A product with no figure is left out, never shown as 0%, and a
+  missing cap shows nothing. As everywhere in this view the percent is what
+  is used; CPA's web UI shows the weekly figure as what is left.
+- `/cpa quota` Codex: limits on one feature or model
+  (`additional_rate_limits` in the usage reply) are shown as their own
+  windows under the vendor's name for them (`gpt-5.3-codex-spark wk 12%`),
+  at most four. A full one shows as `out: <name> wk` and never makes the
+  account `OUT`. Banked limit resets are shown as a count
+  (`2 resets banked`), from the same reply; the web UI also shows when each
+  one expires, from a second request this plugin does not send. No request
+  is added. A name that looks like a token is masked like any other text,
+  and the limit is then named by its feature or its position (`limit 2`).
 - `/cpa quota` shows the plan of Claude accounts (`team`, `max20`, `max5`,
   `max`, `pro`, `free`) and Antigravity accounts (`free`, `pro`, `ultra`,
   `ultra-lite`), as CPA's web UI does. This costs one more request per such
