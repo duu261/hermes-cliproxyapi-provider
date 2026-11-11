@@ -63,11 +63,11 @@ cliproxyapi:
 注册找到的 provider 并写入 cache，之后每次启动时直接注册，无需网络请求：
 
 - `cpa-main`：instance 上的全部 model，每个 model 走为它提供服务的 provider 的 wire
-  （Hermes 0.23.0 及以上；更早的 Hermes 仍让全部 model 走 chat wire）。
+  （Hermes 0.22.6 及以上；更早的 Hermes 仍让全部 model 走 chat wire）。
 - `cpa-main-<provider>`：每个 CPA provider 一个，例如 `cpa-main-claude`、
   `cpa-main-codex`、`cpa-main-xai`、`cpa-main-kimi`。
 
-在 Hermes 0.23.0 及以上：
+在 Hermes 0.22.6 及以上：
 
 - `hermes model` 和 Telegram `/model` 的 provider picker 为每个 instance 只显示一行，
   以该 instance 命名（`display_name`，否则为 `CLIProxyAPI main`），`cpa-main` 及其
@@ -100,7 +100,7 @@ cliproxyapi:
 可通过 `api_mode` 按 provider 覆盖（见下文）。当两个 provider 提供同一个 model id 时，它会
 同时出现在两者中，由 CPA 选择 account；此时的 wire 只是最佳匹配。
 
-在 Hermes 0.23.0 及以上，instance 级 provider（`cpa-main`）按 model 使用同一张表：
+在 Hermes 0.22.6 及以上，instance 级 provider（`cpa-main`）按 model 使用同一张表：
 Claude、Kimi 或 Kiro model 走 `anthropic_messages`，Codex、xAI 或 Meta model 走
 `codex_responses`，其余走
 `chat_completions`。由两种不同 wire 的 provider 同时提供的 model，以及 plugin 尚未列出的

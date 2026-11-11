@@ -247,7 +247,7 @@ class CLIProxyAPIProfile(ProviderProfile):
         value = self._cpa_instance.catalog.meta.get(model or "", {}).get("max_output_tokens")
         return value if isinstance(value, int) and value > 0 else self.default_max_tokens
 
-    # Hermes 0.23.0 and later call the two hooks below; older Hermes never does.
+    # Hermes 0.22.6 and later call the two hooks below; older Hermes never does.
 
     def missing_credentials_hint(self) -> str | None:
         """Which key the variable takes; Hermes adds it to its "no credentials" message."""
@@ -277,7 +277,7 @@ class CLIProxyAPIProfile(ProviderProfile):
 class CLIProxyAPIWideProfile(CLIProxyAPIProfile):
     """The instance-wide provider: every model of the instance.
 
-    Hermes 0.23.0 and later ask ``api_mode_for_model`` and send each model on
+    Hermes 0.22.6 and later ask ``api_mode_for_model`` and send each model on
     the wire of the CPA provider that serves it. Older Hermes never calls it and
     keeps every model on the chat wire. Only this profile defines the hook: a
     provider profile has one wire.
@@ -332,7 +332,7 @@ def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile
     )
     profile._cpa_instance = instance
     profile._cpa_group = group
-    # One picker row per instance on Hermes 0.23.0 and later, its providers
+    # One picker row per instance on Hermes 0.22.6 and later, its providers
     # inside. Set after construction: older Hermes has no such field, where a
     # constructor argument raises and a plain attribute is ignored.
     profile.picker_group = (spec.wide_name, base, PICKER_NOTE)
