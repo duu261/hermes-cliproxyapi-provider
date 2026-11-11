@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -445,13 +447,7 @@ class HandleTests(unittest.TestCase):
         self.assertIn("solo: no management key", out)
 
     def test_register_adds_cpa_command(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-        init = Path(__file__).resolve().parents[1] / "__init__.py"
-        spec = importlib.util.spec_from_file_location("cpa_status_plugin", init)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = _load_plugin_module()
         calls = []
 
         class Ctx:
@@ -467,7 +463,177 @@ class HandleTests(unittest.TestCase):
         self.assertTrue(description)
 
 
+def _load_plugin_module():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    init = Path(__file__).resolve().parents[1] / "__init__.py"
+    spec = importlib.util.spec_from_file_location("cpa_status_plugin", init)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _Ctx:
+    """Plugin context of Hermes 0.23.1 or later, with the rules its session-env hook enforces."""
+
+    def __init__(self, settings=None, taken=()):
+        self.settings = dict(settings or {})
+        self.taken = set(taken)  # names another plugin already holds
+        self.commands: list[str] = []
+        self.asked: list[str] = []
+        self.hidden: list[tuple[list[str], Callable[[str], dict]]] = []
+
+    def register_command(self, name, handler, description="", **kw):
+        self.commands.append(name)
+
+    def get_config(self, key, default=None):
+        return self.settings.get(key, default)
+
+    def register_session_env(self, names, resolver):
+        names = [names] if isinstance(names, str) else list(names)
+        self.asked.extend(names)
+        if not names or any(n.upper().startswith("HERMES_") for n in names):
+            raise ValueError("session env names must be valid names outside HERMES_*")
+        if self.taken & set(names):
+            raise ValueError("session env name is already registered by another plugin")
+        self.hidden.append((names, resolver))
+
+    def unset(self, session_id="session-1"):
+        """What the registered resolvers tell Hermes to do for one session."""
+        out: dict = {}
+        for _names, resolver in self.hidden:
+            out.update(resolver(session_id))
+        return out
+
+
+class ShellKeyTests(unittest.TestCase):
+    """Keys no provider declares are hidden from a chat session's commands (Hermes 0.23.1+)."""
+
+    INSTANCES = {
+        "a": {"base_url": "http://127.0.0.1:9", "key_env": "A_KEY", "mgmt_key_env": "A_MGMT"},
+        "b": {
+            "base_url": "http://127.0.0.1:9",
+            "key_env": "B_KEY",
+            "mgmt_key_env": "B_MGMT",
+            "route_via": "http://127.0.0.1:9/v1",
+            "route_key_env": "B_GATEWAY",
+        },
+        "c": {"base_url": "http://127.0.0.1:9", "key_env": "C_KEY"},
+        "d": {"base_url": "http://127.0.0.1:9", "key_env": "D_KEY", "mgmt_key_env": "A_MGMT"},
+    }
+
+    def register(self, ctx, instances=None, text=None):
+        home = Path(tempfile.mkdtemp())
+        if text is None:
+            instances = self.INSTANCES if instances is None else instances
+            text = json.dumps({"cliproxyapi": {"instances": instances}})  # JSON is valid YAML
+        (home / "config.yaml").write_text(text)
+        module = _load_plugin_module()
+        with mock.patch.object(status, "_hermes_home", return_value=home):
+            module.register(ctx)
+        return ctx
+
+    def test_management_keys_and_a_routed_cpa_key_are_hidden(self):
+        ctx = self.register(_Ctx())
+        # Not A_KEY, C_KEY, D_KEY or B_GATEWAY: a provider declares those, so Hermes strips them.
+        self.assertEqual(sorted(ctx.asked), ["A_MGMT", "B_KEY", "B_MGMT"])
+        self.assertEqual(ctx.unset(), {"A_MGMT": None, "B_KEY": None, "B_MGMT": None})
+        self.assertEqual(ctx.unset(""), ctx.unset("another-session"))
+        self.assertEqual(ctx.commands, ["cpa"])
+
+    def test_the_setting_turns_hiding_off(self):
+        for value in (False, "false", "off", "no", 0):
+            ctx = self.register(_Ctx({"hide_keys_from_shells": value}))
+            self.assertEqual((ctx.asked, ctx.commands), ([], ["cpa"]), repr(value))
+        for value in (True, "true", None, "", "maybe"):
+            ctx = self.register(_Ctx({"hide_keys_from_shells": value}))
+            self.assertEqual(sorted(ctx.asked), ["A_MGMT", "B_KEY", "B_MGMT"], repr(value))
+
+    def test_a_refused_name_does_not_stop_the_others(self):
+        instances = dict(self.INSTANCES)
+        instances["e"] = {
+            "base_url": "http://127.0.0.1:9",
+            "key_env": "E_KEY",
+            "mgmt_key_env": "HERMES_E_MGMT",
+        }
+        with self.assertLogs(level="WARNING") as logs:
+            ctx = self.register(_Ctx(taken={"B_MGMT"}), instances)
+        self.assertEqual(ctx.unset(), {"A_MGMT": None, "B_KEY": None})
+        self.assertEqual(ctx.commands, ["cpa"])
+        # Hermes keeps HERMES_* for itself: never asked, and said so.
+        self.assertNotIn("HERMES_E_MGMT", ctx.asked)
+        joined = "\n".join(logs.output)
+        self.assertEqual((joined.count("B_MGMT"), joined.count("HERMES_E_MGMT")), (1, 1))
+        self.assertNotIn("A_MGMT", joined)
+
+    def test_keys_are_read_from_config_without_a_lookup_or_a_valid_instance(self):
+        instances = {
+            # The provider skips both instances; their keys are in the environment all the same.
+            "bad-url": {"base_url": "ftp://x", "key_env": "X_KEY", "mgmt_key_env": "X_MGMT"},
+            "named": {
+                "base_url": "http://pool.example",
+                "key_env": "Y_KEY",
+                "mgmt_key_env": "Y_MGMT",
+            },
+            "bad-name": {
+                "base_url": "http://127.0.0.1:9",
+                "key_env": "Z",
+                "mgmt_key_env": "not a name",
+            },
+            "not-a-mapping": "x",
+        }
+        with mock.patch("socket.getaddrinfo", side_effect=AssertionError("address lookup")):
+            ctx = self.register(_Ctx(), instances)
+        self.assertEqual(sorted(ctx.asked), ["X_MGMT", "Y_MGMT"])
+
+    def test_nothing_to_hide_registers_only_the_command(self):
+        for text in (
+            "model: {}\n",
+            "cliproxyapi: 7\n",
+            "cliproxyapi:\n  instances: []\n",
+        ):
+            with self.assertNoLogs(level="WARNING"):
+                ctx = self.register(_Ctx(), text=text)
+            self.assertEqual((ctx.asked, ctx.commands), ([], ["cpa"]), text)
+        ctx = self.register(_Ctx(), text="cliproxyapi: [unclosed\n")  # not YAML
+        self.assertEqual((ctx.asked, ctx.commands), ([], ["cpa"]))
+
+    def test_older_hermes_registers_the_command_and_says_nothing(self):
+        class Old:  # Hermes before 0.23.1: no register_session_env
+            commands: list[str] = []
+
+            def register_command(self, name, handler, description="", **kw):
+                self.commands.append(name)
+
+            def get_config(self, key, default=None):
+                raise AssertionError("the setting is read only when Hermes can hide a key")
+
+        with self.assertNoLogs(level="WARNING"):
+            ctx = self.register(Old())
+        self.assertEqual(ctx.commands, ["cpa"])
+
+    def test_a_failing_hook_never_costs_the_command(self):
+        class Broken(_Ctx):
+            def get_config(self, key, default=None):
+                raise RuntimeError("settings unavailable")
+
+        try:
+            with self.assertLogs(level="WARNING") as logs:
+                ctx = self.register(Broken())
+        except RuntimeError:
+            self.fail("register() raised: the plugin would not load and /cpa would be gone")
+        self.assertEqual((ctx.asked, ctx.commands), ([], ["cpa"]))
+        self.assertIn("RuntimeError", "\n".join(logs.output))
+
+
 class VersionTests(unittest.TestCase):
+    def test_manifest_setting_is_declared(self):
+        manifest = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
+        self.assertIn(
+            "config_schema:\n  hide_keys_from_shells:\n    type: bool\n    default: true\n",
+            manifest,
+        )
+
     def test_manifest_version_matches_code(self):
         manifest = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
         self.assertIn(f"version: {cpa.VERSION}\n", manifest)

@@ -61,8 +61,17 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   account index, the Codex account id, the Antigravity project id and the CPA
   plugin id are used only to build the quota requests, never shown or stored.
 - Idle chats only: sent during an agent turn it goes to Hermes' busy handling.
-- The management key is full admin on CPA, and Hermes does not strip it from
-  agent shells. CPA bans an IP after five failed management keys in a row; a
+- The management key is full admin on CPA. On Hermes 0.23.1 or later this
+  plugin removes each `mgmt_key_env`, and the CPA `key_env` of an instance
+  with `route_via`, from the environment of the commands a chat session runs
+  (checked on the local terminal backend only). It does not protect the file
+  the keys are loaded from, and a process Hermes starts with no session bound
+  keeps them. Setting `hide_keys_from_shells`, on by default and read when
+  the plugin loads; turn it off with
+  `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`.
+  On older Hermes nothing is hidden. Details and limits:
+  [Security](../README.md#security).
+- CPA bans an IP after five failed management keys in a row; a
   rejected key is never sent again (salted HMAC in
   `$HERMES_HOME/cache/cliproxyapi/locks/rejected.json`). Read
   [Never get locked out of CPA](../README.md#never-get-locked-out-of-cpa).

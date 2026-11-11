@@ -161,8 +161,9 @@ CPA 自己的 provider 映射和 model 定义。
 
 当每个 model 有一个 provider、且 CPA 的厂商标签与 provider 一致时，公开模式就够用。
 management 模式是精确模式，代价是 key。CPA management key 可以修改配置、添加或删除
-account。plugin 只发送下列读取，但 Hermes 不会从 agent shell 中剥离 `mgmt_key_env`
-（见“安全”），所以任何能读取你环境变量的 agent 工具也都能读到它。
+account。plugin 只发送下列读取，但 Hermes 不会从 agent shell 中剥离 `mgmt_key_env`，
+所以任何能读取你环境变量的 agent 工具也都能读到它，除非 `cpa-status` plugin 将它隐藏
+（Hermes 0.23.1 及以上，见“安全”）。
 
 management 模式发送：
 
@@ -228,9 +229,10 @@ cliproxyapi:
 - gateway 可能故障转移到它以同一 model 名出售的其他渠道。plugin 无法察觉也无法阻止。
 - plugin 只使用 gateway 的 client endpoint，绝不使用其管理、渠道、定价或计费 API。
 - 已知限制：Hermes 只会从 agent 子进程中剥离已注册 provider 所声明的 key 名。路由
-  provider 声明的是 gateway key，因此在启用路由的 instance 上，CPA 的 `key_env`（discovery 需要）
-  对 agent shell 仍然可见。`mgmt_key_env` 从不在 provider 上声明，所以无论是否启用
-  路由都不会被剥离。Hermes 目前还没有 plugin hook 可以声明一个 secret 而不把它变成 inference credential。
+  provider 声明的是 gateway key，因此在启用路由的 instance 上，Hermes 让 CPA 的 `key_env`
+  （discovery 需要）对 agent shell 仍然可见。`mgmt_key_env` 从不在 provider 上声明，所以
+  无论是否启用路由，Hermes 都不会剥离它。在 Hermes 0.23.1 及以上，`cpa-status` plugin 会
+  对 chat session 运行的命令隐藏这两者；“安全”一节说明它覆盖什么、不覆盖什么。
 
 ## 元数据
 
@@ -256,8 +258,18 @@ providers:
 
 - key 通过环境变量名引用，由 Hermes 解析。
 - Hermes 只会从 agent 子进程中剥离已注册 provider 所声明的环境变量名。每个 profile
-  声明其 inference key（`key_env`，或启用路由的 instance 上的 gateway key），因此 `mgmt_key_env`，
-  以及启用路由的 instance 上 CPA 的 `key_env`，对 agent shell 仍然可读。
+  声明其 inference key（`key_env`，或启用路由的 instance 上的 gateway key），因此 Hermes 让
+  `mgmt_key_env`，以及启用路由的 instance 上 CPA 的 `key_env`，对 agent shell 仍然可读。
+- 在 Hermes 0.23.1 及以上，`cpa-status` plugin 会隐藏这些变量。它把这些变量从 chat session
+  运行的命令的环境中移除：前台和后台的 terminal 命令，以及 Hermes 为该 session 启动的辅助
+  进程。仅在 local terminal backend 上核对过。它只隐藏环境变量，不隐藏其他任何东西：能读取
+  Hermes 加载 key 的文件（`~/.hermes/.env`）的命令仍然能读到 key。Hermes 在没有绑定 session
+  时启动的进程仍保留这些变量。名称以 `HERMES_` 开头的变量，或已由其他 plugin 管理的变量，
+  仍然可见，并且会有一条 log 警告写出它的名称。在更早的 Hermes 上，或未启用 `cpa-status`
+  时，不会隐藏任何东西。
+- 隐藏默认开启。你通过 agent 运行的脚本如果读取其中某个变量，将不再能找到它。要关闭隐藏，
+  请运行 `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
+  并重启 Hermes。
 - 只有当主机解析出的每个地址都属于 loopback、RFC 1918、100.64/10 或 IPv6 ULA 时，
   才允许使用 plain `http://`。其他情况必须使用 `https://`。
 - 不跟随重定向，限制 response 大小，失败只报告 HTTP 状态码和错误类别，绝不包含 body、

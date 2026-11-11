@@ -181,8 +181,8 @@ Public mode is enough when each model has one provider and CPA's vendor labels
 match its providers. Management mode is the precise one; its cost is the key.
 A CPA management key can change config and add or remove accounts. The plugin
 only sends the reads below, but Hermes does not strip `mgmt_key_env` from agent
-shells (see Security), so any agent tool that can read your environment can
-read it too.
+shells, so any agent tool that can read your environment can read it too,
+unless the `cpa-status` plugin hides it (Hermes 0.23.1 or later, see Security).
 
 What management mode sends:
 
@@ -261,10 +261,12 @@ cliproxyapi:
   channel, pricing or billing APIs.
 - Known limit: Hermes strips from agent subprocesses only the key names a
   registered provider declares. Routed providers declare the gateway key, so
-  the CPA `key_env` (needed for discovery) stays visible to agent shells on a
-  routed instance. `mgmt_key_env` is never declared on a provider, so it is
-  not stripped on routed or unrouted instances. Hermes has no plugin hook to
-  declare a secret without making it an inference credential yet.
+  Hermes leaves the CPA `key_env` (needed for discovery) visible to agent
+  shells on a routed instance. `mgmt_key_env` is never declared on a provider,
+  so Hermes does not strip it on routed or unrouted instances. The
+  `cpa-status` plugin hides both from the commands of a chat session on
+  Hermes 0.23.1 or later; Security says what that covers and what it does
+  not.
 
 ## Metadata
 
@@ -293,8 +295,22 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
 - Keys are referenced by environment variable name and resolved by Hermes.
 - Hermes strips from agent subprocesses only the env names a registered
   provider declares. Every profile declares its inference key (`key_env`, or
-  the gateway key on a routed instance), so `mgmt_key_env`, and on a routed
-  instance the CPA `key_env`, stay readable by agent shells.
+  the gateway key on a routed instance), so Hermes leaves `mgmt_key_env`, and
+  on a routed instance the CPA `key_env`, readable by agent shells.
+- The `cpa-status` plugin hides those variables on Hermes 0.23.1 or later. It
+  removes them from the environment of the commands a chat session runs:
+  terminal commands in the foreground and background, and the helper
+  processes Hermes starts for that session. Checked on the local terminal
+  backend only. It hides environment variables and nothing else: a command
+  that can read the file Hermes loads keys from (`~/.hermes/.env`) can still
+  read them. A process Hermes starts with no session bound keeps them. A
+  variable whose name starts with `HERMES_`, or that another plugin already
+  manages, stays visible, and a log warning names it. On older Hermes, or
+  without `cpa-status` enabled, nothing is hidden.
+- Hiding is on by default. A script you run through the agent that reads one
+  of these variables stops finding it. To turn hiding off, run
+  `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
+  and restart Hermes.
 - Plain `http://` is allowed only when every address the host resolves to is
   loopback, RFC 1918, 100.64/10 or IPv6 ULA. Anything else needs `https://`.
 - No redirects, capped responses, and failures reported as an HTTP status and
