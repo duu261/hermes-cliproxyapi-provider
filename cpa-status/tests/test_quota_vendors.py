@@ -262,6 +262,73 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(account(body(0.8, 0), per_model=False).out_until()[0])
         self.assertIsNone(account(body(0.8, 0), per_model=False).full_groups())
 
+    def test_antigravity_one_line_per_model_group(self):
+        def block(gemini, claude, per_model=True):
+            payload = {
+                "groups": [
+                    {
+                        "displayName": "Gemini Models",
+                        "buckets": [
+                            {
+                                "window": "weekly",
+                                "remainingFraction": gemini,
+                                "resetTime": iso(3000),
+                            },
+                            {"window": "5h", "remainingFraction": 1, "resetTime": iso(60)},
+                        ],
+                    },
+                    {
+                        "displayName": "Claude and GPT models",
+                        "buckets": [
+                            {
+                                "window": "weekly",
+                                "remainingFraction": claude,
+                                "resetTime": iso(600),
+                            },
+                            {"window": "5h", "remainingFraction": 0.75, "resetTime": iso(60)},
+                        ],
+                    },
+                ]
+            }
+            usage = quota.Usage(windows=quota.parse_groups(payload, per_model=per_model))
+            return quota._provider_block(
+                "antigravity", [quota.AccountResult("ag-01", "antigravity", usage)], NOW
+            )
+
+        late = quota._when(NOW + timedelta(minutes=3000), NOW)
+        soon = quota._when(NOW + timedelta(minutes=600), NOW)
+        self.assertEqual(
+            block(0.01, 0.5),
+            [
+                "antigravity · 1 account: 1 have room",
+                "ag-01",
+                f"  gemini          5h 0% · wk 99% → {late}",
+                "  claude and gpt  5h 25% · wk 50%",
+            ],
+        )
+        # One full group: the account still serves the other, and says which is out.
+        self.assertEqual(
+            block(0.01, 0)[1:],
+            [
+                "ag-01  out: claude and gpt",
+                f"  gemini          5h 0% · wk 99% → {late}",
+                f"  claude and gpt  5h 25% · wk 100% → {soon}",
+            ],
+        )
+        # Every group full: OUT, with the group lines under the account name.
+        self.assertEqual(
+            block(0, 0)[1:],
+            [
+                "OUT ag-01",
+                f"      gemini          5h 0% · wk 100% → {late}",
+                f"      claude and gpt  5h 25% · wk 100% → {soon}",
+            ],
+        )
+        # CPA plugin quota has no per-model rule: it stays on one line.
+        flat = block(0.01, 0.5, per_model=False)
+        self.assertEqual(len(flat), 2)
+        self.assertIn("Gemini Models 5h 0% · Gemini Models wk 99%", flat[1])
+
     def test_plugin_kiro_shape(self):
         usage = quota.parse_plugin(KIRO_BODY)
         self.assertEqual(usage.plan, "kiro_pro")
@@ -359,7 +426,7 @@ class RequestTests(QuotaTestCase):
                     "user-agent": "grok-pager/1.0.70 grok-shell/1.0.70 (macos; aarch64)",
                 },
             )
-        self.assertIn("  wk 42% → ", out)
+        self.assertIn("  wk 42% · mo 20%", out)  # no reset time below 80%
         self.assertNotIn("supergrok", out)
         self.assertIn("mo 20%", out)
 
@@ -384,7 +451,8 @@ class RequestTests(QuotaTestCase):
                 "User-Agent": "antigravity/hub/2.23.0 darwin/arm64",
             },
         )
-        self.assertIn("Gemini Pro 5h 60%", out)
+        self.assertIn("\n  gemini pro  5h 60% · wk 25%\n", out)
+        self.assertIn("\n  claude      5h 100%", out)
         self.assertNotIn(PROJECT, out)
 
     def test_antigravity_stops_at_first_good_url(self):
@@ -502,7 +570,8 @@ class RequestTests(QuotaTestCase):
         out = self.run_quota()
         for name in ("claude ·", "xai ·", "antigravity ·", "kiro ·"):
             self.assertIn(name, out)
-        self.assertNotIn("gemini", out)
+        self.assertNotIn("gemini ·", out)  # the gemini provider has no live quota
+        self.assertNotIn("gemini-us", out)
         self.assertLess(out.index("claude ·"), out.index("kiro ·"))
 
 

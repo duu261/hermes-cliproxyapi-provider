@@ -391,11 +391,17 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
 
 ```
 pre quota · live 21:40
+
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-codex-xy…@…  plus  5h 100% → 22:10 · wk 60% → Nov 02  OUT
-codex-bd…@…  pro  wk 31% → Oct 30
-codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
-codex-cu…@…  pro  wk 40% → Nov 01
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+    codex-cu…@… pro   wk 40%
+    codex-bd…@… pro   wk 31%
+
+antigravity · 1 account: 1 have room
+antigravity-01…@…  out: claude and gpt
+  gemini          5h 0% · wk 12%
+  claude and gpt  5h 100% → 23:10 · wk 64%
 ```
 
 `/cpa quota <pool>` asks each vendor how much of each account is used, the way
@@ -421,13 +427,20 @@ identity and plan lookups, downloading account files, and every reset.
 
 The headers, including each vendor's CLI `User-Agent`, are the web UI's. The
 percent is what is used (vendors that report what is left are converted);
-there are no totals across plans. An account is `OUT` when a window is at 100%
-or the vendor says it is blocked. Antigravity is per model group: CPA holds back
-only the models that ran out, so an account is `OUT` only when every group is
-full; otherwise the full groups show as `out: <group>`. Claude's model-scoped
-weekly limits (Fable, Opus, Sonnet, apps, Cowork) work the same way: a full one
-shows as `out: fable` and the account keeps serving other models.
+there are no totals across plans. A window shows when it resets (`→ 22:10`)
+only at 80% used or more. An account is `OUT`, at the start of its line, when
+a window is at 100% or the vendor says it is blocked. Antigravity is per model
+group, one line per group under the account (`gemini`, `claude and gpt`): CPA
+holds back only the models that ran out, so an account is `OUT` only when
+every group is full; otherwise the full groups show as `out: <group>`.
+Claude's model-scoped weekly limits (Fable, Opus, Sonnet, apps, Cowork) work
+the same way: a full one shows as `out: fable` and the account keeps serving
+other models.
 
+- On Telegram, Discord, Slack, Matrix and Mattermost the reply is sent as a
+  code block, so the columns line up. This needs Hermes 0.22.3 or later, which
+  tells the command the platform; elsewhere, and on older Hermes, the reply is
+  plain text.
 - Only when you type it. At most 20 accounts and 3 requests per account per
   run. The first request goes alone, then at most 4 at a time; a repeat within
   60 seconds answers from memory. Disabled accounts are skipped. A run sends

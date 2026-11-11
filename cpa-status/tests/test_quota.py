@@ -381,7 +381,9 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(lines[1].endswith("  out: fable"), lines)
         usage.windows[1].used = 100
         self.assertTrue(result.out_until()[0])
-        self.assertTrue(quota._provider_block("claude", [result], NOW)[1].endswith("  OUT"))
+        line = quota._provider_block("claude", [result], NOW)[1]
+        self.assertTrue(line.startswith("OUT a  5h 10%"), line)
+        self.assertNotIn("out:", line)
 
     def test_codex_pro_weekly_primary_only(self):
         usage = quota.parse_codex(CODEX_PRO, NOW)
@@ -767,7 +769,7 @@ class RunControlTests(QuotaTestCase):
         _CPA.delay = 0.05
         out = self.run_quota()
         self.assertEqual(len(_CPA.posts), 20)
-        self.assertIn("+5 more not checked", out)
+        self.assertEqual(out.splitlines()[-2:], ["", "+5 more not checked (at most 20 per run)"])
         self.assertLessEqual(_CPA.peak, quota.MAX_IN_FLIGHT)
         self.assertGreater(_CPA.peak, 1)
 
@@ -928,7 +930,8 @@ class UntilTests(QuotaTestCase):
         ]
         out = self.run_quota("quota pre codex")
         self.assertIn(f"pro until {self.shown(past)} (past)  wk 40%", out)
-        self.assertIn(f"plus until {self.shown(far)} 2027  5h 100%", out)
+        # The plan column is as wide as the longest plan in the block.
+        self.assertIn(f"plus until {self.shown(far)} 2027   5h 100%", out)
         self.assertNotIn("2027 (past)", out)
 
 
@@ -942,11 +945,104 @@ class ViewTests(QuotaTestCase):
         self.assertIn("claude · 1 account: 1 have room", out)
         self.assertIn("codex · 2 accounts: 1 have room · 1 out (next free", out)
         self.assertIn("5h 55%", out)
-        self.assertIn("pro  wk 40%", out)
+        self.assertIn("pro   wk 40%", out)
         lines = out.splitlines()
         codex = lines[lines.index(next(line for line in lines if line.startswith("codex ·"))) + 1 :]
-        self.assertTrue(codex[0].endswith("OUT"))  # out first
+        self.assertTrue(codex[0].startswith("OUT "))  # out first
         self.assertIn("plus  5h 100%", codex[0])
+
+    def test_blank_line_between_provider_blocks(self):
+        lines = self.run_quota().splitlines()
+        self.assertTrue(lines[0].startswith("pre quota · live"))
+        heads = [i for i, line in enumerate(lines) if line.startswith(("claude ·", "codex ·"))]
+        self.assertEqual(len(heads), 2)
+        for index in heads:
+            self.assertEqual(lines[index - 1], "", lines)
+        self.assertEqual(lines.count(""), 2, lines)
+        self.assertTrue(lines[-1])
+
+    def test_out_starts_the_line_and_columns_line_up(self):
+        lines = self.run_quota().splitlines()
+        start = lines.index(next(line for line in lines if line.startswith("codex ·")))
+        free = quota._when(NOW + timedelta(minutes=70), NOW)
+        self.assertEqual(
+            lines[start + 1 : start + 3],
+            [
+                f"OUT codex-us…@… plus  5h 100% → {free} · wk 60%",
+                "    codex-us…@… pro   wk 40%",
+            ],
+        )
+        # A block with no account out is not indented.
+        claude = lines[lines.index(next(line for line in lines if line.startswith("claude ·"))) + 1]
+        self.assertTrue(claude.startswith("claude-us…@…  5h 55%"), claude)
+
+    def test_columns_are_as_wide_as_the_longest_value_up_to_a_cap(self):
+        def one(name, used, plan=""):
+            usage = quota.Usage(plan=plan, windows=[quota.Window("wk", used)])
+            return quota.AccountResult(name, "codex", usage)
+
+        failed = quota.AccountResult("abc", "codex", error="timeout")
+        block = quota._provider_block("codex", [one("ab", 5, "pro"), one("abcdef", 7), failed], NOW)
+        self.assertEqual(block[1:], ["abc     timeout", "abcdef      wk 7%", "ab     pro  wk 5%"])
+        # A very long name or plan is shown whole; the others stop at the cap.
+        block = quota._provider_block("codex", [one("n" * 50, 9), one("ab", 5, "pro")], NOW)
+        self.assertEqual(block[1], "n" * 50 + "      wk 9%")
+        self.assertEqual(block[2], "ab" + " " * (quota._NAME_PAD - 2) + " pro  wk 5%")
+        block = quota._provider_block("codex", [one("ab", 9, "p" * 32), one("cd", 5, "pro")], NOW)
+        self.assertEqual(block[1], "ab " + "p" * 32 + "  wk 9%")
+        self.assertEqual(block[2], "cd pro" + " " * (quota._PLAN_PAD - 3) + "  wk 5%")
+
+    def test_reset_time_only_on_a_window_that_is_nearly_full(self):
+        soon = NOW + timedelta(hours=2)
+        when = quota._when(soon, NOW)
+        for used, shown in ((0, False), (79.9, False), (80, True), (100, True)):
+            text = quota._window_text(quota.Window("wk", used, soon), NOW)
+            self.assertEqual(text, f"wk {int(used)}%" + (f" → {when}" if shown else ""), used)
+        gone = quota.Window("wk", 100, NOW - timedelta(hours=1))
+        self.assertEqual(quota._window_text(gone, NOW), "wk 100%")
+        # No figure yet: the reset time is all there is to show, so it stays.
+        self.assertEqual(
+            quota._pending_text(quota.Window("wk", 0, soon), NOW), f"wk no figure yet → {when}"
+        )
+
+    def test_view_is_a_code_block_only_where_one_renders(self):
+        def run(args="quota pre", platform=None):
+            status.reset_state()  # a repeat would say "cached", not "live"
+            return status.report(
+                args,
+                config=self.config(),
+                home=self.home,
+                secret=self.env.get,
+                now=NOW,
+                platform=platform,
+            )
+
+        plain = run()
+        for platform in ("telegram", "discord", "slack", "matrix", "mattermost", "Telegram"):
+            self.assertEqual(run(platform=platform), "```\n" + plain + "\n```", platform)
+        for platform in (None, "", "cli", "tui", "local", "sms", "feishu", "email"):
+            self.assertEqual(run(platform=platform), plain, platform)
+        self.assertNotIn("`", plain)
+        # Help, errors and the plain /cpa views are sentences, not a table.
+        for args in ("quota", "quota nope", "quota pre meta", "", "pre codex"):
+            self.assertNotIn("`", run(args, platform="telegram"), args)
+
+    def test_code_block_survives_the_size_cap_and_a_backtick(self):
+        _CPA.files = [account("codex", n, label=f"we```ird`{n}") for n in range(2, 22)]
+        with mock.patch.object(status, "OUTPUT_LIMIT", 400):
+            out = status.report(
+                "quota pre",
+                config=self.config(),
+                home=self.home,
+                secret=self.env.get,
+                now=NOW,
+                platform="telegram",
+            )
+        self.assertLessEqual(len(out), 400)
+        self.assertTrue(out.startswith("```\n") and out.endswith("\n```"), out[-40:])
+        self.assertEqual(out.count("`"), 6)  # the two fences and nothing else
+        self.assertIn("we'''ird'", out)
+        self.assertRegex(out.splitlines()[-2], r"^… \d+ more lines$")
 
     def test_provider_filter_is_case_insensitive(self):
         out = self.run_quota("quota PRE Codex")

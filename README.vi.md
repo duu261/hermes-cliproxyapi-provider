@@ -391,11 +391,17 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
 
 ```
 pre quota · live 21:40
+
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-codex-xy…@…  plus  5h 100% → 22:10 · wk 60% → Nov 02  OUT
-codex-bd…@…  pro  wk 31% → Oct 30
-codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
-codex-cu…@…  pro  wk 40% → Nov 01
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+    codex-cu…@… pro   wk 40%
+    codex-bd…@… pro   wk 31%
+
+antigravity · 1 account: 1 have room
+antigravity-01…@…  out: claude and gpt
+  gemini          5h 0% · wk 12%
+  claude and gpt  5h 100% → 23:10 · wk 64%
 ```
 
 `/cpa quota <pool>` hỏi từng vendor xem mỗi account đã dùng bao nhiêu, giống
@@ -422,13 +428,19 @@ tác reset.
 
 Các header, kể cả `User-Agent` CLI của từng vendor, lấy từ web UI. Phần trăm là
 phần đã dùng (vendor nào báo phần còn lại thì được đổi lại); không cộng gộp
-giữa các plan. Một account là `OUT` khi có window ở 100% hoặc vendor báo nó
-đang bị chặn. Antigravity tính theo model group: CPA chỉ tạm ngưng các model đã
-hết, nên account chỉ là `OUT` khi mọi group đều đầy; nếu không, group đầy hiện
-là `out: <group>`. Các giới hạn tuần theo model của Claude
+giữa các plan. Một window chỉ hiện giờ reset (`→ 22:10`) khi đã dùng từ 80%
+trở lên. Một account là `OUT`, ghi ở đầu dòng của nó, khi có window ở 100%
+hoặc vendor báo nó đang bị chặn. Antigravity tính theo model group, mỗi group
+một dòng dưới account (`gemini`, `claude and gpt`): CPA chỉ tạm ngưng các model
+đã hết, nên account chỉ là `OUT` khi mọi group đều đầy; nếu không, group đầy
+hiện là `out: <group>`. Các giới hạn tuần theo model của Claude
 (Fable, Opus, Sonnet, apps, Cowork) cũng vậy: cái nào đầy hiện là `out: fable`
 và account vẫn phục vụ các model khác.
 
+- Trên Telegram, Discord, Slack, Matrix và Mattermost, câu trả lời được gửi
+  dưới dạng code block để các cột thẳng hàng. Cần Hermes 0.22.3 trở lên, bản
+  này báo cho lệnh biết platform; ở nơi khác và trên Hermes cũ hơn, câu trả
+  lời là plain text.
 - Chỉ khi bạn gõ lệnh. Mỗi lần chạy tối đa 20 account và 3 request cho mỗi
   account. Request đầu gửi một mình, sau đó tối đa 4 request cùng lúc; gõ lại
   trong 60 giây sẽ trả từ bộ nhớ. Bỏ qua account đã tắt. Sau 60 giây, một lượt

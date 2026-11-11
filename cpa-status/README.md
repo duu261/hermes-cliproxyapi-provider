@@ -39,7 +39,8 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   web UI's fixed requests (the account's token filled in by CPA), and for
   other providers through their CPA quota plugin (e.g. Kiro). A Codex line
   also shows the day the subscription ends (`until Nov 16`) when CPA's
-  listing has it, at no extra request. Nothing paid,
+  listing has it, at no extra request. On Telegram, Discord, Slack, Matrix
+  and Mattermost the reply is a code block (Hermes 0.22.3 or later). Nothing paid,
   no downloads, no resets; the full request list is in the
   [README](../README.md#cpa-quota-live-usage). At most 20 accounts and 3
   requests per account per run, first request alone, then 4 at a time;

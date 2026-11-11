@@ -344,11 +344,17 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
 
 ```
 pre quota · live 21:40
+
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-codex-xy…@…  plus  5h 100% → 22:10 · wk 60% → Nov 02  OUT
-codex-bd…@…  pro  wk 31% → Oct 30
-codex-ab…@…  plus  5h 23% → 22:40 · wk 69% → Oct 29
-codex-cu…@…  pro  wk 40% → Nov 01
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+    codex-cu…@… pro   wk 40%
+    codex-bd…@… pro   wk 31%
+
+antigravity · 1 account: 1 have room
+antigravity-01…@…  out: claude and gpt
+  gemini          5h 0% · wk 12%
+  claude and gpt  5h 100% → 23:10 · wk 64%
 ```
 
 `/cpa quota <pool>` 向各厂商查询每个 account 已用了多少，做法与 CPA 自带 web UI 的
@@ -371,12 +377,17 @@ quota 页面相同。对内置的厂商，CPA 的 `api-call` 路由带着该 acc
 account 会显示 billing 错误）、身份和 plan 查询、下载 account 文件，以及任何 reset。
 
 header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已用量（报告剩余量的
-厂商会被换算）；不跨 plan 汇总。某个 window 达到 100% 或厂商标记该 account 为 blocked
-时，该 account 显示 `OUT`。Antigravity 按 model group 计算：CPA 只暂停用完的
-model，所以只有每个 group 都满时 account 才显示 `OUT`；否则满的 group 显示为
-`out: <group>`。Claude 按 model 划分的每周限额（Fable、Opus、Sonnet、apps、Cowork）
-同样如此：满的那个显示为 `out: fable`，account 继续提供其他 model。
+厂商会被换算）；不跨 plan 汇总。window 只有在已用 80% 或以上时才显示 reset 时间
+（`→ 22:10`）。某个 window 达到 100% 或厂商标记该 account 为 blocked 时，该 account
+在它那一行的开头显示 `OUT`。Antigravity 按 model group 计算，每个 group 在 account
+下面占一行（`gemini`、`claude and gpt`）：CPA 只暂停用完的 model，所以只有每个 group
+都满时 account 才显示 `OUT`；否则满的 group 显示为 `out: <group>`。Claude 按 model
+划分的每周限额（Fable、Opus、Sonnet、apps、Cowork）同样如此：满的那个显示为
+`out: fable`，account 继续提供其他 model。
 
+- 在 Telegram、Discord、Slack、Matrix 和 Mattermost 上，回复以 code block 发送，
+  让各列对齐。这需要 Hermes 0.22.3 或更高版本，它会把 platform 告诉命令；在其他地方
+  以及更旧的 Hermes 上，回复是 plain text。
 - 只在你输入时运行。每次最多 20 个 account，每个 account 最多 3 个请求。第一个请求
   单独发送，之后最多 4 个并发；60 秒内重复输入直接用内存结果。跳过已禁用的 account。
   一次运行在 60 秒后不再发送新请求；没轮到的 account 显示 `not checked`。

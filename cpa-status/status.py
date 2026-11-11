@@ -695,11 +695,21 @@ def quota_text(entry: dict[str, Any], now: datetime) -> str:
     return text
 
 
-def handle(raw_args: str = "") -> str:
-    """Hermes command handler (sync: Hermes runs it off the event loop)."""
+def handle(raw_args: str = "", *, platform: str | None = None) -> str:
+    """Hermes command handler (sync: Hermes runs it off the event loop).
+
+    Hermes 0.22.3 and later pass ``platform`` (``telegram``, ``cli``, ...) to a
+    handler that names it; older Hermes calls with the text only.
+    """
     try:
         home = _hermes_home()
-        return report(raw_args, config=_read_config(home), home=home, secret=_read_secret)
+        return report(
+            raw_args,
+            config=_read_config(home),
+            home=home,
+            secret=_read_secret,
+            platform=platform,
+        )
     except Exception as exc:  # noqa: BLE001 - never raise into the gateway, never echo details
         logger.warning("cpa-status: /cpa failed (%s)", type(exc).__name__)
         return f"cpa-status: internal error ({type(exc).__name__})"
@@ -1114,11 +1124,14 @@ def report(
     home: Path,
     secret: Callable[[str], str | None],
     now: datetime | None = None,
+    platform: str | None = None,
 ) -> str:
     args = (raw_args or "").split()
     if args[:1] == ["quota"]:
         # Reserved word: a pool literally named "quota" is "/cpa quota quota".
-        return _quota().report(args[1:], config=config, home=home, secret=secret, now=now)
+        return _quota().report(
+            args[1:], config=config, home=home, secret=secret, now=now, platform=platform
+        )
     if args[:1] in (["help"], ["-h"], ["--help"]) or len(args) > 2:
         return USAGE
     now = now or datetime.now(timezone.utc)

@@ -1083,6 +1083,17 @@ USAGE = (
 )
 
 
+RESET_FROM = 80.0  # percent used from which a window shows its reset time
+# The account and plan columns are as wide as the longest value in a provider
+# block, up to these widths; a longer value is shown whole and breaks the column.
+_NAME_PAD = 40
+_PLAN_PAD = 28
+# Chat platforms whose Hermes adapter renders a Markdown code block. The view
+# is a table, so it is sent as one there. Anywhere else it stays plain text:
+# the CLI and the TUI print a command's reply as it is.
+_FENCE_PLATFORMS = frozenset({"telegram", "discord", "slack", "matrix", "mattermost"})
+
+
 def _when(moment: datetime, now: datetime) -> str:
     local = moment.astimezone()
     if (moment - now).total_seconds() > 20 * 3600:
@@ -1090,9 +1101,10 @@ def _when(moment: datetime, now: datetime) -> str:
     return local.strftime("%H:%M")
 
 
-def _window_text(window: Window, now: datetime) -> str:
-    text = f"{window.label} {int(window.used)}%"
-    if window.resets_at is not None and window.resets_at > now:
+def _window_text(window: Window, now: datetime, label: str = "") -> str:
+    """``wk 85% → Nov 02``. The reset time is shown only on a nearly full window."""
+    text = f"{label or window.label} {int(window.used)}%"
+    if window.used >= RESET_FROM and window.resets_at is not None and window.resets_at > now:
         text += f" → {_when(window.resets_at, now)}"
     return text
 
@@ -1158,46 +1170,106 @@ def _provider_block(provider: str, items: list[AccountResult], now: datetime) ->
     if not_checked:
         parts.append(f"{not_checked} not checked")
     lines = [f"{provider} · {len(items)} {noun}: " + " · ".join(parts)]
-    for item in sorted(items, key=_sort_key):
+    rows = sorted(items, key=_sort_key)
+    any_out = out > 0
+    name_width = min(max((len(item.name) for item in rows), default=0), _NAME_PAD)
+    plans = {
+        id(item): _plan_words(item, now)
+        for item in rows
+        if not item.error and item.usage is not None
+    }
+    plan_width = min(max((len(text) for text in plans.values()), default=0), _PLAN_PAD)
+    for item in rows:
+        is_out, _ = item.out_until()
+        # OUT leads the line; the other accounts of the block are indented to match.
+        lead = "OUT " if is_out else "    " if any_out else ""
         if item.error or item.usage is None:
-            lines.append(f"{item.name}  {item.error}")
+            lines.append(f"{lead}{item.name.ljust(name_width)}  {item.error}".rstrip())
             continue
-        text = " · ".join(
-            [_window_text(w, now) for w in item.usage.windows]
+        plan = plans[id(item)]
+        groups = item.full_groups()
+        suffix = ""
+        if not is_out and groups:
+            suffix = "  out: " + ", ".join(sorted(_short_group(key) for key in groups))
+        elif not is_out and item.scoped_full():
+            suffix = "  out: " + ", ".join(item.scoped_full())
+        grouped = [w for w in item.usage.windows if w.group]
+        rest = (
+            [_window_text(w, now) for w in item.usage.windows if not w.group]
             + [_pending_text(w, now) for w in item.usage.pending]
             + ([item.usage.extra] if item.usage.extra else [])
         )
-        words = [item.usage.plan] if item.usage.plan else []
-        if isinstance(item.until, datetime):
-            words.append(_until_text(item.until, now))
-        plan = "  " + " ".join(words) if words else ""
-        is_out, _ = item.out_until()
-        groups = item.full_groups()
-        suffix = "  OUT" if is_out else ""
-        if not is_out and groups:
-            suffix = "  out: " + ", ".join(sorted(g.split(":", 1)[-1] for g in groups))
-        elif not is_out and item.scoped_full():
-            suffix = "  out: " + ", ".join(item.scoped_full())
-        lines.append(f"{item.name}{plan}  {text}{suffix}")
+        if grouped:
+            # One line per model group under the account: CPA cools per group.
+            head = item.name + (f" {plan}" if plan else "")
+            lines.append(lead + "  ".join(x for x in (head, " · ".join(rest)) if x) + suffix)
+            keys = list(dict.fromkeys(w.group for w in grouped))
+            width = max(len(_short_group(key)) for key in keys)
+            for key in keys:
+                name = key.split(":", 1)[-1]
+                texts = [
+                    _window_text(w, now, w.label.removeprefix(name).strip())
+                    for w in grouped
+                    if w.group == key
+                ]
+                label = _short_group(key).ljust(width)
+                lines.append(f"{' ' * len(lead)}  {label}  {' · '.join(texts)}")
+            continue
+        head = item.name.ljust(name_width)
+        if plan_width:
+            head += " " + plan.ljust(plan_width)
+        lines.append((lead + "  ".join(x for x in (head, " · ".join(rest)) if x) + suffix).rstrip())
     return lines
 
 
-def render(pool: str, result: QuotaRun, cached: bool, selector: str, now: datetime) -> str:
+def _plan_words(item: AccountResult, now: datetime) -> str:
+    """``pro until Nov 16``: the plan and, for Codex, the day the subscription ends."""
+    words = [item.usage.plan] if item.usage is not None and item.usage.plan else []
+    if isinstance(item.until, datetime):
+        words.append(_until_text(item.until, now))
+    return " ".join(words)
+
+
+def _short_group(key: str) -> str:
+    """``0:Gemini Models`` -> ``gemini``: a model group's label in the view."""
+    name = key.split(":", 1)[-1]
+    return name.lower().removesuffix(" models").strip() or name
+
+
+def _fenced(text: str, platform: str | None) -> str:
+    """The view as a Markdown code block where the chat renders one, so columns line up."""
+    if not isinstance(platform, str) or platform.strip().lower() not in _FENCE_PLATFORMS:
+        return text
+    return "```\n" + text.replace("`", "'") + "\n```"
+
+
+def render(
+    pool: str,
+    result: QuotaRun,
+    cached: bool,
+    selector: str,
+    now: datetime,
+    platform: str | None = None,
+) -> str:
     when = result.when or now
     stamp = f"cached {int(time.monotonic() - result.at)}s" if cached else "live"
     lines = [f"{pool} quota · {stamp} {when.astimezone().strftime('%H:%M')}"]
     if result.timed_out:  # second line, so the size cap can never hide it
         lines.append(f"stopped after {RUN_SECONDS:g} s (slow replies); the rest is not checked")
+    head = len(lines)
     seen = {a.provider for a in result.accounts}
     order = [p for p in BUILTINS if p in seen] + sorted(seen - set(BUILTINS))
     for provider in order:
         items = [a for a in result.accounts if a.provider == provider]
+        lines.append("")  # a blank line in front of every provider block
         lines.extend(_provider_block(provider, items, now))
-    if len(lines) == 1 + result.timed_out:
+    if len(lines) == head:
         lines.append(f"no {selector + ' ' if selector else ''}accounts with live quota")
     if result.skipped:
+        if len(lines) > head + 1:
+            lines.append("")
         lines.append(f"+{result.skipped} more not checked (at most {MAX_ACCOUNTS} per run)")
-    return status._cap(lines)
+    return _fenced(status._cap(lines), platform)
 
 
 def report(
@@ -1207,6 +1279,7 @@ def report(
     home: Path,
     secret: Callable[[str], str | None],
     now: datetime | None = None,
+    platform: str | None = None,
 ) -> str:
     if not args or len(args) > 2 or args[0] in ("help", "-h", "--help"):
         return USAGE
@@ -1243,4 +1316,4 @@ def report(
             f" ({result.detail})" if result.detail else ""
         )
         return f"{spec.name}: {text}"
-    return render(spec.name, result, cached, selector, now)
+    return render(spec.name, result, cached, selector, now, platform)

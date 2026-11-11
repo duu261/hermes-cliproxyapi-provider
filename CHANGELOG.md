@@ -2,6 +2,15 @@
 
 ## 0.8.0
 
+- `/cpa quota` layout. A blank line separates the provider blocks. `OUT` is at
+  the start of the account's line, and the account and plan columns of a
+  block line up. An Antigravity account has one line per model group under
+  it, with short group names (`gemini`, `claude and gpt`). A window shows
+  when it resets only at 80% used or more (`no figure yet` keeps its reset
+  time). On Telegram, Discord, Slack, Matrix and Mattermost the reply is sent
+  as a code block so the columns line up; this needs Hermes 0.22.3 or later,
+  which tells the command the platform. Elsewhere, and on older Hermes, the
+  reply is plain text as before.
 - `/cpa <pool> <provider>`: a cooling account shows why in words, not as
   CPA's code: `vendor limit reached` (`quota`), `vendor limit reached, all
   models` (`credential_quota`), `vendor rate limited`

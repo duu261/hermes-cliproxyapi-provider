@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import sys
 import tempfile
 import unittest
@@ -370,6 +371,23 @@ class HandleTests(unittest.TestCase):
         ):
             out = status.handle("")
         self.assertEqual(out, "cpa-status: internal error (ValueError)")
+
+    def test_handle_takes_the_platform_hermes_passes(self):
+        # Hermes 0.22.3+ passes `platform` to a handler that names it as a
+        # keyword; older Hermes calls the handler with the text only.
+        home = Path(tempfile.mkdtemp())
+        with (
+            mock.patch.object(status, "_hermes_home", return_value=home),
+            mock.patch.object(status, "report", return_value="ok") as report,
+        ):
+            self.assertEqual(status.handle("quota pre", platform="telegram"), "ok")
+            self.assertEqual(status.handle("quota pre"), "ok")
+        self.assertEqual(
+            [call.kwargs.get("platform") for call in report.call_args_list], ["telegram", None]
+        )
+        params = list(inspect.signature(status.handle).parameters.values())
+        self.assertEqual([p.name for p in params], ["raw_args", "platform"])
+        self.assertIs(params[1].kind, inspect.Parameter.KEYWORD_ONLY)
 
     @unittest.skipUnless(
         importlib.util.find_spec("ruamel") or importlib.util.find_spec("yaml"),
