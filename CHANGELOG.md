@@ -132,6 +132,9 @@ Ideas that are parked. None of them is in any release, and none is promised.
   command answer `internal error`. It is now shown as the date as sent
   (`until 9999-12-31`). A reset given as a number of seconds too large to
   add to a time is left out.
+- Fix, `/cpa`: a last-seen usage figure above the limit is shown as `100%`
+  (it could read `5h 103%`), as `/cpa quota` already does. One cooling
+  model reads `1 model cooling`, not `1 models cooling`.
 
 ## 0.7.4
 

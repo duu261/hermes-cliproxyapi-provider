@@ -127,6 +127,32 @@ class ViewTests(unittest.TestCase):
             lines[2], "codex-al…@…  active · prio 3 · 1h 3/1 · total 250/8 · 5h 63% (4m ago)"
         )
 
+    def test_last_seen_percent_stops_at_100(self):
+        # A vendor can report more than the limit. The account is full either way.
+        signals = {"X-Codex-Primary-Used-Percent": "103", "X-Codex-Secondary-Used-Percent": "250.9"}
+        over = dict(LISTING[0], quota={"observed_at": iso(-4), "signals": signals})
+        self.assertEqual(
+            self.provider_lines(over)[1:],
+            ["codex-al…@…  limited · 1h 3/1 · 5h 100% · wk 100% (4m ago)"],
+        )
+
+    def test_one_model_cooling_is_singular(self):
+        def line(count, **extra):
+            items = [
+                {"scope": "model", "model_key": f"m{n}", "retry_at": iso(10)} for n in range(count)
+            ]
+            return self.provider_lines(dict(LISTING[0], cooldowns=items, **extra))[1]
+
+        full = {"observed_at": iso(-4), "signals": {"X-Codex-Primary-Used-Percent": "100"}}
+        tail = " · 1h 3/1 · 5h 63% (4m ago)"
+        self.assertEqual(line(0), "codex-al…@…  active" + tail)
+        self.assertEqual(line(1), "codex-al…@…  active · 1 model cooling" + tail)
+        self.assertEqual(line(2), "codex-al…@…  active · 2 models cooling" + tail)
+        tail = " · 1h 3/1 · 5h 100% (4m ago)"
+        self.assertEqual(line(0, quota=full), "codex-al…@…  limited" + tail)
+        self.assertEqual(line(1, quota=full), "codex-al…@…  limited · 1 model cooling" + tail)
+        self.assertEqual(line(2, quota=full), "codex-al…@…  limited · 2 models cooling" + tail)
+
     def test_priority_an_operator_can_set(self):
         for value in (0, -5):
             lines = self.provider_lines(dict(LISTING[0], priority=value))

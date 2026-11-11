@@ -662,6 +662,24 @@ class QuotaTests(unittest.TestCase):
         }
         self.assertEqual(status.quota_text(entry, NOW), "5h 41% · wk 7% (1h ago)")
 
+    def test_percent_above_100_is_shown_as_100(self):
+        codex = {
+            "provider": "codex",
+            "quota": {"signals": {"X-Codex-Primary-Used-Percent": "100.9"}},
+        }
+        claude = {
+            "provider": "claude",
+            "quota": {
+                "signals": {
+                    "Anthropic-Ratelimit-Unified-5h-Utilization": "1.03",
+                    "Anthropic-Ratelimit-Unified-7d-Utilization": "0.999",
+                }
+            },
+        }
+        self.assertEqual(status.quota_text(codex, NOW), "5h 100%")
+        self.assertEqual(status.quota_text(claude, NOW), "5h 100% · wk 99%")
+        self.assertEqual([w.used for w in status.quota_windows(claude)], [100, 99])
+
     def test_other_providers_show_nothing(self):
         entry = {
             "provider": "xai",

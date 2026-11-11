@@ -579,7 +579,7 @@ def _percent(raw: Any, scale: float) -> int | None:
         return None
     if math.isnan(value) or math.isinf(value) or value < 0:
         return None
-    return int(value)
+    return min(int(value), 100)  # a vendor can report more than the limit
 
 
 def _number(raw: Any) -> float | None:
@@ -1116,6 +1116,10 @@ def _state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> st
     return f"{text} · sign in again ({note})"
 
 
+def _models_cooling(count: int) -> str:
+    return f"{count} model{'' if count == 1 else 's'} cooling"
+
+
 def _plain_state_text(entry: dict[str, Any], state: AccountState, now: datetime) -> str:
     if state.kind == "cooling":
         text = f"cooling until {clock(state.until, now)}" if state.until else "cooling"
@@ -1126,9 +1130,10 @@ def _plain_state_text(entry: dict[str, Any], state: AccountState, now: datetime)
         return "error" + (f": {message}" if message else "")
     if state.kind == "limited":
         text = f"limited until {clock(state.until, now)}" if state.until else "limited"
-        return text + (f" · {state.models_cooling} models cooling" if state.models_cooling else "")
+        cooling = state.models_cooling
+        return text + (f" · {_models_cooling(cooling)}" if cooling else "")
     if state.kind == "ready" and state.models_cooling:
-        return f"active · {state.models_cooling} models cooling"
+        return f"active · {_models_cooling(state.models_cooling)}"
     return "active" if state.kind == "ready" else state.kind
 
 
