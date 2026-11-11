@@ -21,6 +21,12 @@ import cpa  # noqa: E402
 
 NOW = datetime(2026, 10, 27, 9, 0, tzinfo=timezone.utc)
 
+# The plain CI job has no YAML parser, so a test that reads config.yaml runs in the Hermes job.
+needs_yaml = unittest.skipUnless(
+    importlib.util.find_spec("ruamel") or importlib.util.find_spec("yaml"),
+    "no YAML parser (runs in the Hermes CI job)",
+)
+
 
 def iso(minutes: float) -> str:
     return (NOW + timedelta(minutes=minutes)).isoformat()
@@ -431,10 +437,7 @@ class HandleTests(unittest.TestCase):
         self.assertEqual([p.name for p in params], ["raw_args", "platform"])
         self.assertIs(params[1].kind, inspect.Parameter.KEYWORD_ONLY)
 
-    @unittest.skipUnless(
-        importlib.util.find_spec("ruamel") or importlib.util.find_spec("yaml"),
-        "no YAML parser (runs in the Hermes CI job)",
-    )
+    @needs_yaml
     def test_handle_reads_config_from_hermes_home(self):
         home = Path(tempfile.mkdtemp())
         (home / "config.yaml").write_text(
@@ -533,6 +536,7 @@ class ShellKeyTests(unittest.TestCase):
             module.register(ctx)
         return ctx
 
+    @needs_yaml
     def test_management_keys_and_a_routed_cpa_key_are_hidden(self):
         ctx = self.register(_Ctx())
         # Not A_KEY, C_KEY, D_KEY or B_GATEWAY: a provider declares those, so Hermes strips them.
@@ -541,6 +545,7 @@ class ShellKeyTests(unittest.TestCase):
         self.assertEqual(ctx.unset(""), ctx.unset("another-session"))
         self.assertEqual(ctx.commands, ["cpa"])
 
+    @needs_yaml
     def test_the_setting_turns_hiding_off(self):
         for value in (False, "false", "off", "no", 0):
             ctx = self.register(_Ctx({"hide_keys_from_shells": value}))
@@ -549,6 +554,7 @@ class ShellKeyTests(unittest.TestCase):
             ctx = self.register(_Ctx({"hide_keys_from_shells": value}))
             self.assertEqual(sorted(ctx.asked), ["A_MGMT", "B_KEY", "B_MGMT"], repr(value))
 
+    @needs_yaml
     def test_a_refused_name_does_not_stop_the_others(self):
         instances = dict(self.INSTANCES)
         instances["e"] = {
@@ -566,6 +572,7 @@ class ShellKeyTests(unittest.TestCase):
         self.assertEqual((joined.count("B_MGMT"), joined.count("HERMES_E_MGMT")), (1, 1))
         self.assertNotIn("A_MGMT", joined)
 
+    @needs_yaml
     def test_keys_are_read_from_config_without_a_lookup_or_a_valid_instance(self):
         instances = {
             # The provider skips both instances; their keys are in the environment all the same.
@@ -586,6 +593,7 @@ class ShellKeyTests(unittest.TestCase):
             ctx = self.register(_Ctx(), instances)
         self.assertEqual(sorted(ctx.asked), ["X_MGMT", "Y_MGMT"])
 
+    @needs_yaml
     def test_nothing_to_hide_registers_only_the_command(self):
         for text in (
             "model: {}\n",
