@@ -16,9 +16,11 @@ An instance may send inference through a billing gateway the operator runs in
 front of the same CPA (New API or similar, see Billing route). CPA stays the
 only source of what is served; the gateway only carries and bills requests.
 
-The repo also ships `cpa-status/`, a separate `kind: standalone` plugin whose
-only job is the `/cpa` status command (see `/cpa status` below). Model-provider
-plugins cannot register commands, hence two plugins in one repo.
+The repo also ships `cpa-status/`, a separate `kind: standalone` plugin. It
+registers the `/cpa` status command (see `/cpa status` below) and, on Hermes
+0.23.1 or later, hides from a chat session's terminal commands the key
+variables that no provider declares (setting `hide_keys_from_shells`). A
+model-provider plugin has no `register`, hence two plugins in one repo.
 
 ## Grouping (which models belong to which provider)
 
