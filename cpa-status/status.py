@@ -534,7 +534,8 @@ def priority_of(entry: dict[str, Any]) -> int | None:
 
 # ── Last-seen quota ─────────────────────────────────────────────────────────
 # Header names from CPA v8.0.44: sdk/cliproxy/auth/quota_signals.go
-# (isQuotaSignalHeaderForProvider: claude and codex),
+# (isQuotaSignalHeaderForProvider: claude and codex; devin is listed as
+# observable but no header is accepted for it, see _DEVIN_WINDOWS),
 # internal/runtime/executor/helps/codex_quota.go (per window: Used-Percent,
 # Window-Minutes, Reset-At or Reset-After-Seconds) and
 # internal/runtime/executor/helps/claude_ratelimit.go (utilization is 0..1,
@@ -547,6 +548,13 @@ def priority_of(entry: dict[str, Any]) -> int | None:
 _CODEX_WINDOWS = (("Primary", "5h"), ("Secondary", "wk"))
 _CLAUDE_WINDOWS = (("5h", "5h"), ("7d", "wk"))
 _MINUTE_LABELS = {300: "5h", 10080: "wk"}
+# Devin signals are not headers. CPA writes them itself when it refreshes the
+# account's status (v7.3.0 and later: internal/runtime/executor/devin_executor.go
+# Refresh, internal/auth/devin/record.go): percent LEFT as "55%", reset time as
+# RFC 3339. It writes "0%" also when Devin sent no figure, so 0% counts only
+# together with a reset time.
+_DEVIN_WINDOWS = (("daily", "day"), ("weekly", "wk"))
+_DEVIN_PERCENT_RE = re.compile(r"\s*(\d{1,3})\s*%?\s*")
 
 
 @dataclass
@@ -609,8 +617,17 @@ def _minutes_label(minutes: int) -> str:
     return f"{minutes}m"
 
 
+def _devin_left(raw: Any) -> int | None:
+    """Percent left from a Devin signal such as ``55%``; None when it is not 0..100."""
+    match = _DEVIN_PERCENT_RE.fullmatch(raw) if isinstance(raw, str) else None
+    if match is None:
+        return None
+    value = int(match.group(1))
+    return value if value <= 100 else None
+
+
 def quota_windows(entry: dict[str, Any]) -> list[Window]:
-    """Usage windows CPA last saw for this account (claude and codex only)."""
+    """Usage windows CPA last saw for this account (claude, codex and devin only)."""
     quota = entry.get("quota")
     if not isinstance(quota, dict):
         return []
@@ -644,6 +661,13 @@ def quota_windows(entry: dict[str, Any]) -> list[Window]:
             used = _percent(lower.get(prefix + "utilization"), 100.0)
             if used is not None:
                 out.append(Window(label, used, _unix(lower.get(prefix + "reset"))))
+    elif provider == "devin":
+        for name, label in _DEVIN_WINDOWS:
+            left = _devin_left(lower.get(f"{name}_quota_remaining_percent"))
+            reset = parse_time(lower.get(f"{name}_quota_reset_at"))
+            if left is None or (left == 0 and reset is None):
+                continue
+            out.append(Window(label, 100 - left, reset))
     return out
 
 

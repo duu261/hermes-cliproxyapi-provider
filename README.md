@@ -383,9 +383,12 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
   from CPA's own update route (`GET /v8/management/server/latest-version`,
   which asks GitHub): one request per Hermes process every 6 hours, 10
   minutes after a failure. A failure only hides the line.
-- Last-seen quota (5h and weekly) comes from what CPA recorded on real traffic
-  for Claude and Codex accounts. CPA records none for other providers. Plain
-  `/cpa` never asks CPA to check quota upstream; `/cpa quota` does.
+- Last-seen quota comes from what CPA recorded. For Claude and Codex accounts
+  (5h and weekly) CPA records it on real traffic. For Devin accounts (day and
+  week) CPA records it when the account signs in and when CPA refreshes the
+  account's status, so a Devin figure can be old; the line shows its age. CPA
+  records none for other providers. Plain `/cpa` never asks CPA to check quota
+  upstream; `/cpa quota` does.
 - `/cpa pre codex` also shows each account's priority when CPA lists one
   (`prio 1`) and its successful/failed requests: `1h` is the last hour,
   `total` is since CPA started. CPA keeps the totals in memory only, so they
@@ -503,6 +506,7 @@ newer CPA:
 | Model definitions for plugin providers (Kiro and others) | v8.0.34+ |
 | `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
 | `/cpa` last-seen quota | v7.2.142+ |
+| `/cpa` last-seen quota for Devin | v7.3.0+ |
 | `/cpa` CPA version | v6.3.36+ |
 | `/cpa` update hint | v6.5.42+ |
 | `/cpa quota` built-in vendors (`api-call` with `$TOKEN$`) | v6.6.63+ |

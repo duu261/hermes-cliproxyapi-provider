@@ -679,6 +679,75 @@ class QuotaTests(unittest.TestCase):
     def test_no_quota(self):
         self.assertEqual(status.quota_text({"provider": "codex"}, NOW), "")
 
+    # ── Devin: CPA's own account status refresh, percent LEFT per day and week ──
+
+    def devin(self, signals, **extra):
+        quota = {"observed_at": iso(-4), "signals": signals}
+        return {"provider": "devin", "status": "active", "quota": quota, **extra}
+
+    def test_devin_windows_show_percent_used(self):
+        entry = self.devin(
+            {
+                "plan": "Pro",
+                "daily_quota_remaining_percent": "55%",
+                "weekly_quota_remaining_percent": "88%",
+                "daily_quota_reset_at": iso(120),
+                "weekly_quota_reset_at": iso(3000),
+                "plan_end": iso(9000),
+            }
+        )
+        self.assertEqual(status.quota_text(entry, NOW), "day 45% · wk 12% (4m ago)")
+        self.assertEqual(status.classify(entry, NOW).kind, "ready")
+        # Only a Devin account is read this way.
+        self.assertEqual(status.quota_text({**entry, "provider": "xai"}, NOW), "")
+
+    def test_devin_used_up_window_is_limited_until_its_reset(self):
+        reset = NOW + timedelta(hours=3)
+        entry = self.devin(
+            {
+                "daily_quota_remaining_percent": "0%",
+                "daily_quota_reset_at": iso(180),
+                "weekly_quota_remaining_percent": "40%",
+            }
+        )
+        state = status.classify(entry, NOW)
+        self.assertEqual((state.kind, state.until), ("limited", reset))
+        self.assertEqual(
+            status.quota_text(entry, NOW),
+            f"day 100% until {status.clock(reset, NOW)} · wk 60% (4m ago)",
+        )
+        # The reset time has passed: the figure is old, the account is not full.
+        past = self.devin({"daily_quota_remaining_percent": "0%", "daily_quota_reset_at": iso(-30)})
+        self.assertEqual(status.quota_text(past, NOW), "day 100% (4m ago)")
+        self.assertEqual(status.classify(past, NOW).kind, "ready")
+
+    def test_devin_zero_with_no_reset_time_is_no_figure(self):
+        # CPA writes 0% when Devin sent no figure at all, so 0% alone proves nothing.
+        entry = self.devin(
+            {"daily_quota_remaining_percent": "0%", "weekly_quota_remaining_percent": "0%"}
+        )
+        self.assertEqual(status.quota_windows(entry), [])
+        self.assertEqual(status.quota_text(entry, NOW), "")
+        self.assertEqual(status.classify(entry, NOW).kind, "ready")
+        # An unreadable reset time is no reset time.
+        bad = self.devin(
+            {"daily_quota_remaining_percent": "0%", "daily_quota_reset_at": "tomorrow"}
+        )
+        self.assertEqual(status.quota_windows(bad), [])
+        # A figure above 0 needs no reset time.
+        some = self.devin({"weekly_quota_remaining_percent": "100%"})
+        self.assertEqual(status.quota_text(some, NOW), "wk 0% (4m ago)")
+
+    def test_devin_bad_percent_is_ignored(self):
+        for raw in ("101%", "-5%", "5.5%", "abc", "", "%", "55 %%", 55, None, True, "1000%"):
+            entry = self.devin(
+                {"daily_quota_remaining_percent": raw, "daily_quota_reset_at": iso(60)}
+            )
+            self.assertEqual(status.quota_windows(entry), [], repr(raw))
+        for raw, used in (("7", 93), (" 30% ", 70), ("100%", 0), ("1%", 99)):
+            entry = self.devin({"weekly_quota_remaining_percent": raw})
+            self.assertEqual(status.quota_windows(entry), [status.Window("wk", used)], repr(raw))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -337,8 +337,10 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
   `/cpa` 总览上，`CPA <version> available` 来自 CPA 自己的 update route
   （`GET /v8/management/server/latest-version`，会问 GitHub）：每个 Hermes
   进程每 6 小时一次 request，失败后 10 分钟。失败只隐藏该行。
-- 最近一次的 quota（`5h` 和 `wk`）来自 CPA 在真实流量中为 Claude 和 Codex account
-  记录的数据，其他 provider CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询 quota；
+- 最近一次的 quota 来自 CPA 已记录的数据。对 Claude 和 Codex account（`5h` 和 `wk`），
+  CPA 在真实流量中记录。对 Devin account（`day` 和 `wk`），CPA 在 account 登录时以及
+  CPA refresh 该 account 的状态时记录，所以 Devin 的数字可能已经过时；该行会显示它的
+  时间。其他 provider CPA 不记录。普通的 `/cpa` 从不让 CPA 去上游查询 quota；
   `/cpa quota` 会。
 - `/cpa pre codex` 还会显示每个 account 的 priority（只在 CPA 列出时显示，`prio 1`）
   以及成功/失败的 request 数：`1h` 是最近一小时，`total` 是自 CPA 启动以来。
@@ -438,6 +440,7 @@ header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已�
 | plugin provider 的 model 定义（Kiro 等） | v8.0.34+ |
 | `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
 | `/cpa` 最近一次的 quota | v7.2.142+ |
+| `/cpa` Devin 最近一次的 quota | v7.3.0+ |
 | `/cpa` CPA 版本 | v6.3.36+ |
 | `/cpa` update 提示 | v6.5.42+ |
 | `/cpa quota` 内置厂商 (`api-call` 带 `$TOKEN$`) | v6.6.63+ |

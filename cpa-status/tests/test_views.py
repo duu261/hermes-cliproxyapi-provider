@@ -244,6 +244,46 @@ class ViewTests(unittest.TestCase):
         self.assertTrue(lines[2].startswith("codex-al…@…  active"), lines)
         self.assertTrue(lines[3].startswith("codex-ol…@…  active"), lines)
 
+    def test_devin_last_seen_quota_in_the_views(self):
+        reset = NOW + timedelta(hours=3)
+        room = {
+            "provider": "devin",
+            "name": "devin-ivy@example.com.json",
+            "status": "active",
+            "quota": {
+                "observed_at": iso(-4),
+                "signals": {
+                    "daily_quota_remaining_percent": "55%",
+                    "daily_quota_reset_at": iso(180),
+                    "weekly_quota_remaining_percent": "88%",
+                },
+            },
+        }
+        used_up = {
+            "provider": "devin",
+            "name": "devin-joe@example.com.json",
+            "status": "active",
+            "quota": {
+                "observed_at": iso(-90),
+                "signals": {
+                    "daily_quota_remaining_percent": "0%",
+                    "daily_quota_reset_at": iso(180),
+                    "weekly_quota_remaining_percent": "40%",
+                },
+            },
+        }
+        self.fetch.return_value = (status.Fetched("ok", files=[room, used_up]), False)
+        until = status.clock(reset, NOW)
+        self.assertIn(f"  devin 2: 1 active · 1 limited (next {until})", self.run_cpa())
+        lines = self.run_cpa("pre devin").splitlines()
+        self.assertEqual(
+            lines[1:3],
+            [
+                f"devin-jo…@…  limited until {until} · day 100% until {until} · wk 60% (1h ago)",
+                "devin-iv…@…  active · day 45% · wk 12% (4m ago)",
+            ],
+        )
+
     def test_sign_in_note_on_pool_lines(self):
         serving = {
             "provider": "codex",

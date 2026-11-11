@@ -16,6 +16,13 @@
   you pick. To start sessions on the wire of the model, run
   `hermes config unset model.api_mode`, or pick the model in a chat with
   `/model <id> --global`. Older Hermes is unchanged.
+- `/cpa`: Devin accounts show last-seen quota, like Claude and Codex accounts:
+  percent used per day and week (`day 45% · wk 12% (4m ago)`), from the
+  figures CPA v7.3.0 or later already lists. CPA records them when the account
+  signs in and when it refreshes the account's status, not on each request, so
+  the figure can be old. An account whose day or week is used up shows as
+  `limited` until its reset time. A 0% left with no reset time is not shown,
+  because CPA also writes 0% when Devin sent no figure. No new request.
 - `/cpa quota` xAI: when xAI sends them, the account line also shows the
   share of the weekly credits each product used (`grokbuild 30%, api 6%`),
   pay as you go (`payg off` when the cap is 0, else spend/cap as

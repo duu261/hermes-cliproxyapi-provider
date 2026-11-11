@@ -382,9 +382,12 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
   đến từ update route của chính CPA (`GET /v8/management/server/latest-version`,
   hỏi GitHub): một request cho mỗi tiến trình Hermes mỗi 6 giờ, 10 phút
   sau khi thất bại. Thất bại chỉ ẩn dòng đó.
-- Quota gần nhất (5h và tuần) là số CPA ghi lại từ traffic thật của account
-  Claude và Codex. CPA không ghi cho provider khác. `/cpa` (không có `quota`)
-  không bao giờ bảo CPA kiểm tra quota với upstream; `/cpa quota` thì có.
+- Quota gần nhất là số CPA đã ghi lại. Với account Claude và Codex (5h và
+  tuần), CPA ghi từ traffic thật. Với account Devin (ngày và tuần), CPA ghi khi
+  account đăng nhập và khi CPA refresh trạng thái của account, nên số của Devin
+  có thể đã cũ; dòng đó hiện tuổi của nó. CPA không ghi cho provider khác.
+  `/cpa` (không có `quota`) không bao giờ bảo CPA kiểm tra quota với upstream;
+  `/cpa quota` thì có.
 - `/cpa pre codex` còn hiện priority của từng account khi CPA có liệt kê
   (`prio 1`) và số request thành công/thất bại: `1h` là 1 giờ qua, `total` là
   từ lúc CPA khởi động. CPA chỉ giữ các số total trong bộ nhớ, nên chúng đếm
@@ -501,6 +504,7 @@ năng cần CPA mới hơn:
 | Định nghĩa model cho plugin provider (Kiro và các plugin khác) | v8.0.34+ |
 | `/cpa` | v5.0.0+ (v0 `auth-files`; v8 `credentials` from v8.0.0) |
 | `/cpa` quota gần nhất | v7.2.142+ |
+| `/cpa` quota gần nhất cho Devin | v7.3.0+ |
 | `/cpa` phiên bản CPA | v6.3.36+ |
 | `/cpa` gợi ý update | v6.5.42+ |
 | `/cpa quota` vendor có sẵn (`api-call` với `$TOKEN$`) | v6.6.63+ |

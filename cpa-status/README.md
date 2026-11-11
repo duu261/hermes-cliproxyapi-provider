@@ -30,8 +30,9 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
 
 - `/cpa`: one read-only `GET /v8/management/credentials` per instance, only
   when you type it. No timers, no retries; repeats within 20 seconds use
-  memory. Last-seen 5h and weekly quota for Claude and Codex accounts, as CPA
-  recorded it on real traffic. `/cpa <pool> <provider>` also shows each
+  memory. Last-seen quota as CPA recorded it: 5h and weekly for Claude and
+  Codex accounts (on real traffic), day and week for Devin accounts (at
+  sign-in and at CPA's status refresh). `/cpa <pool> <provider>` also shows each
   account's priority when CPA lists one (`prio 1`) and its successful/failed
   requests since CPA started (`total 2140/96`).
 - `/cpa quota`: like CPA's web UI quota page, for Claude, Codex, xAI,
