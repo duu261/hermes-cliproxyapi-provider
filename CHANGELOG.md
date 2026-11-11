@@ -16,6 +16,18 @@
   you pick. To start sessions on the wire of the model, run
   `hermes config unset model.api_mode`, or pick the model in a chat with
   `/model <id> --global`. Older Hermes is unchanged.
+- Provider, on Hermes 0.23.0 or later (older Hermes is unchanged):
+  - The provider pickers of `hermes model` and Telegram `/model` show one row
+    per instance, with `cpa-<instance>` and its providers inside, instead of
+    one row per provider. Display only: typed provider names and saved
+    configs are unchanged. This changes the picker for everyone.
+  - `hermes model --refresh` and `/model --refresh` also drop the plugin's 30
+    second memo of the model list, so the next listing reads CPA again. The
+    hook sends nothing itself, keeps the on-disk cache and does not bring the
+    management pass forward.
+  - Hermes' "No usable credentials" message for a `cpa-*` provider also says
+    which key the variable takes: a CPA client key, not the management key;
+    with a billing route, the gateway key variable and the CPA one.
 - `/cpa`: Devin accounts show last-seen quota, like Claude and Codex accounts:
   percent used per day and week (`day 45% · wk 12% (4m ago)`), from the
   figures CPA v7.3.0 or later already lists. CPA records them when the account

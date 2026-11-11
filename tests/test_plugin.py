@@ -303,6 +303,60 @@ class PluginTests(unittest.TestCase):
         # gemini serves it on chat, mine on Messages: no single wire, so chat.
         self.assertEqual(wide.api_mode_for_model("gemini-3.8-flash-high"), "chat_completions")
 
+    # ── Picker row, key hint and refresh (Hermes 0.23.0 and later) ──
+
+    def test_profiles_of_one_instance_share_one_picker_group(self):
+        self.write_config(
+            {
+                "t": {
+                    "base_url": self.root,
+                    "key_env": "T_KEY",
+                    "groups": {"picks": {"models": ["gpt-*"], "display_name": "Picks"}},
+                },
+                "u": {"base_url": self.root, "key_env": "T_KEY", "display_name": "Second"},
+            }
+        )
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=API_KEY)
+        profiles["cpa-u"].fetch_models(api_key=API_KEY)
+        note = "every model, or one CPA provider"
+        self.assertIn("cpa-t-picks", profiles)
+        self.assertIn("cpa-u-claude", profiles)
+        for name, profile in profiles.items():
+            second = name == "cpa-u" or name.startswith("cpa-u-")
+            want = ("cpa-u", "Second", note) if second else ("cpa-t", "CLIProxyAPI t", note)
+            self.assertEqual(profile.picker_group, want, name)
+
+    def test_missing_key_hint_names_the_variable_and_the_kind_of_key(self):
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=API_KEY)
+        want = "T_KEY takes a CPA client key (one of CPA's api-keys), not the management key."
+        for name in ("cpa-t", "cpa-t-claude"):
+            self.assertEqual(profiles[name].missing_credentials_hint(), want, name)
+
+    def test_model_refresh_asks_cpa_again_but_not_management(self):
+        os.environ["T_MGMT"] = MGMT_KEY
+        self.write_config(
+            {"t": {"base_url": self.root, "key_env": "T_KEY", "mgmt_key_env": "T_MGMT"}}
+        )
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        wide.fetch_models(api_key=API_KEY)
+        self.assertTrue(_mgmt(_Gateway.seen))
+        _Gateway.seen = []
+        wide.fetch_models(api_key=API_KEY)
+        self.assertEqual(_Gateway.seen, [])  # one listing serves 30 seconds
+        cache = cpa.cache_path(self.home, "t")
+        before = cache.read_text()
+        # Hermes calls the hook on every profile; any profile of the instance counts.
+        self.assertIsNone(profiles["cpa-t-claude"].invalidate_catalog_cache())
+        self.assertEqual(_Gateway.seen, [])  # the hook sends nothing
+        self.assertEqual(cache.read_text(), before)  # startup still registers from it
+        self.assertTrue(wide.fetch_models(api_key=API_KEY))
+        self.assertIn("/v1/models", {r["path"] for r in _Gateway.seen})
+        # The management pass keeps its own 15 minute pace.
+        self.assertEqual(_mgmt(_Gateway.seen), [])
+
     def test_hyphen_name_collision_is_refused(self):
         self.write_config(
             {
@@ -544,6 +598,31 @@ class BillingRouteTests(unittest.TestCase):
         self.assertEqual(wide.api_mode_for_model("claude-opus-5-5"), "anthropic_messages")
         self.assertEqual(wide.api_mode_for_model("grok-4.6"), "chat_completions")
         self.assertEqual(wide.base_url, self.gw_root + "/v1")
+
+    def test_missing_key_hint_names_the_gateway_key_and_the_cpa_key(self):
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
+        for name, env_name in (("cpa-t", "GW_A"), ("cpa-t-claude", "GW_A"), ("cpa-t-xai", "GW_B")):
+            self.assertEqual(
+                profiles[name].missing_credentials_hint(),
+                f"{env_name} takes the billing gateway's key; T_KEY takes the CPA client key.",
+                name,
+            )
+
+    def test_model_refresh_reads_cpa_and_the_gateway_again(self):
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
+        _Gateway.seen, _BillingGateway.seen = [], []
+        profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
+        self.assertEqual((_Gateway.seen, _BillingGateway.seen), ([], []))
+        profiles["cpa-t-xai"].invalidate_catalog_cache()
+        self.assertEqual((_Gateway.seen, _BillingGateway.seen), ([], []))
+        profiles["cpa-t"].fetch_models(api_key=GW_KEY_A)
+        # Each key still goes only to its own side.
+        self.assertTrue(_Gateway.seen)
+        self.assertTrue(all(r["auth"] == f"Bearer {API_KEY}" for r in _Gateway.seen))
+        gw_auth = {r["auth"] for r in _BillingGateway.seen}
+        self.assertEqual(gw_auth, {f"Bearer {GW_KEY_A}", f"Bearer {GW_KEY_B}"})
 
     def test_restart_uses_cached_gateway_lists_without_network(self):
         _, first = self.load()

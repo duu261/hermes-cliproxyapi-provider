@@ -76,6 +76,22 @@ so later runs register them at startup with no network calls:
 - `cpa-main-<provider>`: one per CPA provider, for example `cpa-main-claude`,
   `cpa-main-codex`, `cpa-main-xai`, `cpa-main-kimi`.
 
+On Hermes 0.23.0 or later:
+
+- The provider pickers of `hermes model` and Telegram `/model` show one row
+  per instance, named after it (`display_name`, else `CLIProxyAPI main`), with
+  `cpa-main` and its providers inside. Before the first listing an instance
+  has only `cpa-main`, which stays a plain row. Typed provider names are
+  unchanged.
+- `hermes model --refresh` and `/model --refresh` also drop the plugin's own
+  memo of the model list, so the next listing reads CPA again. Without it,
+  one listing serves every provider of the instance for 30 seconds. The
+  management pass keeps its 15 minute pace.
+- When the key variable is empty, Hermes' "No usable credentials" message
+  also says which key it takes: a CPA client key, not the management key.
+  With a billing route (`route_via`) it names the gateway key variable and the
+  CPA one.
+
 `hermes doctor` and multi-process setups (`plugins.isolation: host`) see
 providers that appeared after startup only after a restart.
 

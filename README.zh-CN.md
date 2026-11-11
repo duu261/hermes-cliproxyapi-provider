@@ -67,6 +67,19 @@ cliproxyapi:
 - `cpa-main-<provider>`：每个 CPA provider 一个，例如 `cpa-main-claude`、
   `cpa-main-codex`、`cpa-main-xai`、`cpa-main-kimi`。
 
+在 Hermes 0.23.0 及以上：
+
+- `hermes model` 和 Telegram `/model` 的 provider picker 为每个 instance 只显示一行，
+  以该 instance 命名（`display_name`，否则为 `CLIProxyAPI main`），`cpa-main` 及其
+  provider 都在这一行里面。首次列出 model 之前，instance 只有 `cpa-main`，它仍是普通的
+  一行。手动输入的 provider 名称不变。
+- `hermes model --refresh` 和 `/model --refresh` 也会清除 plugin 自己保存的 model 列表
+  memo，因此下一次列出 model 时会重新读取 CPA。否则，一次列出的结果在 30 秒内供该
+  instance 的全部 provider 共用。management 请求仍保持 15 分钟的节奏。
+- 当存放 key 的变量为空时，Hermes 的 "No usable credentials" 提示还会说明该变量需要
+  哪种 key：CPA client key，而不是 management key。使用 billing route（`route_via`）时，
+  它会指出存放 gateway key 的变量和存放 CPA key 的变量。
+
 `hermes doctor` 和多进程部署（`plugins.isolation: host`）只有在重启后才能看到启动后
 新出现的 provider。
 

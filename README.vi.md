@@ -77,6 +77,22 @@ các lần chạy sau đăng ký chúng ngay lúc khởi động mà không cầ
 - `cpa-main-<provider>`: một provider cho mỗi provider CPA, ví dụ
   `cpa-main-claude`, `cpa-main-codex`, `cpa-main-xai`, `cpa-main-kimi`.
 
+Trên Hermes 0.23.0 trở lên:
+
+- Provider picker của `hermes model` và Telegram `/model` hiện một dòng cho
+  mỗi instance, mang tên của instance (`display_name`, nếu không có thì
+  `CLIProxyAPI main`), bên trong là `cpa-main` và các provider của nó. Trước
+  lần liệt kê đầu tiên, instance chỉ có `cpa-main`, và nó vẫn là một dòng
+  thường. Tên provider gõ tay không đổi.
+- `hermes model --refresh` và `/model --refresh` cũng xóa memo danh sách model
+  của chính plugin, nên lần liệt kê kế tiếp đọc lại CPA. Nếu không, một lần
+  liệt kê dùng chung cho mọi provider của instance trong 30 giây. Lượt
+  management vẫn giữ nhịp 15 phút.
+- Khi biến chứa key bị trống, thông báo "No usable credentials" của Hermes nói
+  thêm biến đó nhận key nào: CPA client key, không phải management key. Với
+  billing route (`route_via`), nó nêu tên biến chứa key của gateway và biến
+  của CPA.
+
 `hermes doctor` và các thiết lập nhiều tiến trình (`plugins.isolation: host`) chỉ
 thấy provider xuất hiện sau lúc khởi động khi đã khởi động lại.
 

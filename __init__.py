@@ -31,6 +31,9 @@ except ImportError:  # pragma: no cover - direct import in tests
 
 logger = logging.getLogger(__name__)
 
+# Shown beside an instance's row in the Hermes provider pickers.
+PICKER_NOTE = "every model, or one CPA provider"
+
 
 def _hermes_home() -> Path:
     try:
@@ -244,6 +247,32 @@ class CLIProxyAPIProfile(ProviderProfile):
         value = self._cpa_instance.catalog.meta.get(model or "", {}).get("max_output_tokens")
         return value if isinstance(value, int) and value > 0 else self.default_max_tokens
 
+    # Hermes 0.23.0 and later call the two hooks below; older Hermes never does.
+
+    def missing_credentials_hint(self) -> str | None:
+        """Which key the variable takes; Hermes adds it to its "no credentials" message."""
+        spec = self._cpa_instance.spec
+        if spec.routed:
+            gateway_env = spec.route_key_for(self._cpa_group)
+            return (
+                f"{gateway_env} takes the billing gateway's key; "
+                f"{spec.key_env} takes the CPA client key."
+            )
+        return (
+            f"{spec.key_env} takes a CPA client key (one of CPA's api-keys), "
+            "not the management key."
+        )
+
+    def invalidate_catalog_cache(self) -> None:
+        """``/model --refresh``: the next listing asks CPA again. Sends nothing itself.
+
+        Only the 30 second memo is dropped. The management pass keeps its own
+        pace and the on-disk cache stays, so startup still registers from it.
+        """
+        # No lock: Hermes calls this on every profile, and a refresh in flight
+        # must not hold it up. That refresh is fresh anyway.
+        self._cpa_instance.refreshed_at = 0.0
+
 
 class CLIProxyAPIWideProfile(CLIProxyAPIProfile):
     """The instance-wide provider: every model of the instance.
@@ -303,6 +332,10 @@ def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile
     )
     profile._cpa_instance = instance
     profile._cpa_group = group
+    # One picker row per instance on Hermes 0.23.0 and later, its providers
+    # inside. Set after construction: older Hermes has no such field, where a
+    # constructor argument raises and a plain attribute is ignored.
+    profile.picker_group = (spec.wide_name, base, PICKER_NOTE)
     profile._cpa_sync()
     return profile
 
