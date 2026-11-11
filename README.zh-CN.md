@@ -62,7 +62,8 @@ cliproxyapi:
 然后运行一次 `hermes model`（或任何会列出 model 的命令）。plugin 会读取该 instance 的 model 列表，
 注册找到的 provider 并写入 cache，之后每次启动时直接注册，无需网络请求：
 
-- `cpa-main`：instance 上的全部 model，走 chat wire。
+- `cpa-main`：instance 上的全部 model，每个 model 走为它提供服务的 provider 的 wire
+  （Hermes 0.23.0 及以上；更早的 Hermes 仍让全部 model 走 chat wire）。
 - `cpa-main-<provider>`：每个 CPA provider 一个，例如 `cpa-main-claude`、
   `cpa-main-codex`、`cpa-main-xai`、`cpa-main-kimi`。
 
@@ -85,6 +86,20 @@ cliproxyapi:
 
 可通过 `api_mode` 按 provider 覆盖（见下文）。当两个 provider 提供同一个 model id 时，它会
 同时出现在两者中，由 CPA 选择 account；此时的 wire 只是最佳匹配。
+
+在 Hermes 0.23.0 及以上，instance 级 provider（`cpa-main`）按 model 使用同一张表：
+Claude model 走 `anthropic_messages`，Codex 或 xAI model 走 `codex_responses`，其余走
+`chat_completions`。由两种不同 wire 的 provider 同时提供的 model，以及 plugin 尚未列出的
+model，保持 `chat_completions`。provider 上的 `api_mode` 覆盖在这里同样生效。用 `models`
+pattern 建立的 group，只有在它设置了 `api_mode`，或者与表中某个非 chat wire 的 provider
+同名时，才决定 model 的 wire。更早的 Hermes 让 `cpa-main` 的全部 model 走
+`chat_completions`。
+
+Hermes 会把一个 wire 和默认 model 一起保存（`model.api_mode`），并在启动 session 时使用
+已保存的 wire。无论你选择哪个 model，`hermes model` 都为 `cpa-main` 保存
+`chat_completions`。要让 session 启动时使用该 model 的 wire，请运行
+`hermes config unset model.api_mode`，或者在聊天中用 `/model <id> --global` 选择 model，
+这条命令会保存该 model 的 wire。
 
 请让 `xai` 保持 `codex_responses`。Grok 4.7 以加密条目的形式返回推理内容，客户端
 必须在下一轮把它原样发回

@@ -240,6 +240,69 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(picks.display_name, "Picks")
         self.assertEqual(picks.api_mode, "chat_completions")
 
+    # ── Wire per model on the instance-wide provider (Hermes 0.23.0 and later) ──
+
+    def test_instance_wide_provider_names_each_models_wire(self):
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        # Nothing listed yet: every model stays on the chat wire.
+        self.assertEqual(wide.api_mode_for_model("claude-opus-5-5"), "chat_completions")
+        wide.fetch_models(api_key=API_KEY)
+        self.assertEqual(wide.api_mode, "chat_completions")
+        self.assertEqual(wide.base_url, self.root + "/v1")
+        for model, mode in (
+            ("claude-opus-5-5", "anthropic_messages"),
+            ("gpt-5.6", "codex_responses"),
+            ("grok-4.6", "codex_responses"),
+            ("gemini-3.8-flash-high", "chat_completions"),
+            ("glm-5.3", "chat_completions"),
+            # Never None: Hermes keeps a saved wire when a profile gives none.
+            ("not-served", "chat_completions"),
+            ("", "chat_completions"),
+        ):
+            self.assertEqual(wide.api_mode_for_model(model), mode, model)
+            self.assertEqual(wide.api_mode_for_model(model, api_key=API_KEY), mode, model)
+
+    def test_only_the_instance_wide_provider_picks_a_wire_per_model(self):
+        from providers.base import ProviderProfile
+
+        _, profiles = self.load()
+        profiles["cpa-t"].fetch_models(api_key=API_KEY)
+        # Hermes treats a profile that overrides the hook as one that serves
+        # several wires; a provider profile has one wire and must not.
+        base = getattr(ProviderProfile, "api_mode_for_model", None)
+        for name, profile in profiles.items():
+            own = getattr(type(profile), "api_mode_for_model", None)
+            self.assertEqual(own is not base, name == "cpa-t", name)
+
+    def test_wire_per_model_follows_overrides_and_shared_ids(self):
+        self.write_config(
+            {
+                "t": {
+                    "base_url": self.root,
+                    "key_env": "T_KEY",
+                    "groups": {
+                        "xai": {"api_mode": "chat_completions"},
+                        "picks": {"models": ["gpt-*", "glm-*"]},
+                        "mine": {
+                            "models": ["claude-*", "gemini-*"],
+                            "api_mode": "anthropic_messages",
+                        },
+                    },
+                }
+            }
+        )
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        wide.fetch_models(api_key=API_KEY)
+        self.assertEqual(wide.api_mode_for_model("grok-4.6"), "chat_completions")
+        # picks is a named list on the default wire: gpt-5.6 is still a codex model.
+        self.assertEqual(profiles["cpa-t-picks"].api_mode, "chat_completions")
+        self.assertEqual(wide.api_mode_for_model("gpt-5.6"), "codex_responses")
+        self.assertEqual(wide.api_mode_for_model("claude-opus-5-5"), "anthropic_messages")
+        # gemini serves it on chat, mine on Messages: no single wire, so chat.
+        self.assertEqual(wide.api_mode_for_model("gemini-3.8-flash-high"), "chat_completions")
+
     def test_hyphen_name_collision_is_refused(self):
         self.write_config(
             {
@@ -465,6 +528,22 @@ class BillingRouteTests(unittest.TestCase):
         self.assertEqual(xai.api_mode, "chat_completions")
         self.assertEqual(xai.env_vars[0], "GW_B")
         self.assertEqual(xai.fallback_models, ("grok-4.6",))
+
+    def test_wide_wire_comes_from_the_provider_not_from_the_key_that_sells_it(self):
+        config = json.loads((self.home / "config.yaml").read_text())
+        config["cliproxyapi"]["instances"]["t"]["groups"]["codex"] = {"route_key_env": "GW_B"}
+        (self.home / "config.yaml").write_text(json.dumps(config))
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        ids = wide.fetch_models(api_key=GW_KEY_A)
+        # Key B does not sell gpt-5.6, so there is no codex profile; the
+        # instance key does, and the model is still a codex model.
+        self.assertIn("gpt-5.6", ids)
+        self.assertNotIn("cpa-t-codex", profiles)
+        self.assertEqual(wide.api_mode_for_model("gpt-5.6"), "codex_responses")
+        self.assertEqual(wide.api_mode_for_model("claude-opus-5-5"), "anthropic_messages")
+        self.assertEqual(wide.api_mode_for_model("grok-4.6"), "chat_completions")
+        self.assertEqual(wide.base_url, self.gw_root + "/v1")
 
     def test_restart_uses_cached_gateway_lists_without_network(self):
         _, first = self.load()

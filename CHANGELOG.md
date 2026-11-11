@@ -2,6 +2,20 @@
 
 ## 0.8.0
 
+- Provider: on Hermes 0.23.0 or later the instance-wide provider
+  (`cpa-<instance>`) sends each model on the wire of the CPA provider that
+  serves it, from the wire table: Claude, Kimi and Kiro models on
+  `anthropic_messages`, Codex, xAI and Meta models on `codex_responses`, the
+  rest on `chat_completions`. Before, it sent every model on
+  `chat_completions`, where Grok 4.7 stops reasoning after a few tool rounds.
+  This changes the default for everyone who uses `cpa-<instance>`. A model
+  that providers on two different wires serve, and a model not listed yet,
+  stay on `chat_completions`. A provider's `api_mode` override applies. Hermes
+  uses a wire saved in `model.api_mode` when it starts a session, and
+  `hermes model` saves `chat_completions` for `cpa-<instance>` whatever model
+  you pick. To start sessions on the wire of the model, run
+  `hermes config unset model.api_mode`, or pick the model in a chat with
+  `/model <id> --global`. Older Hermes is unchanged.
 - `/cpa quota` xAI: when xAI sends them, the account line also shows the
   share of the weekly credits each product used (`grokbuild 30%, api 6%`),
   pay as you go (`payg off` when the cap is 0, else spend/cap as

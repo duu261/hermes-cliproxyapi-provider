@@ -70,7 +70,9 @@ Then run `hermes model` (or anything that lists models) once. The plugin reads
 the instance's model lists, registers the providers it finds, and caches them,
 so later runs register them at startup with no network calls:
 
-- `cpa-main`: every model on the instance, on the chat wire.
+- `cpa-main`: every model on the instance, each on the wire of the provider
+  that serves it (Hermes 0.23.0 or later; older Hermes keeps every model on
+  the chat wire).
 - `cpa-main-<provider>`: one per CPA provider, for example `cpa-main-claude`,
   `cpa-main-codex`, `cpa-main-xai`, `cpa-main-kimi`.
 
@@ -95,6 +97,22 @@ listing. It writes its own cache after its first successful listing.
 Override per provider with `api_mode` (see below). When two providers serve the
 same model id, it appears in both and CPA picks the account; the wire is then a
 best match.
+
+The instance-wide provider (`cpa-main`) uses the same table per model on
+Hermes 0.23.0 or later: a Claude model goes out on `anthropic_messages`, a
+Codex or xAI model on `codex_responses`, the rest on `chat_completions`. A
+model that providers on two different wires serve, and a model the plugin has
+not listed yet, stay on `chat_completions`. An `api_mode` override on a
+provider applies here too. A group built from `models` patterns decides a
+model's wire only when the group sets `api_mode`, or has the name of a
+provider with a non-chat wire in the table. Older Hermes sends every model of
+`cpa-main` on `chat_completions`.
+
+Hermes saves a wire with the default model (`model.api_mode`) and uses a saved
+wire when it starts a session. `hermes model` saves `chat_completions` for
+`cpa-main`, whatever model you pick. To get the wire of the model at session
+start, run `hermes config unset model.api_mode`, or pick the model in a chat
+with `/model <id> --global`, which saves the wire of that model.
 
 Keep `xai` on `codex_responses`. Grok 4.7 returns its reasoning as an
 encrypted item that the client must send back on the next turn

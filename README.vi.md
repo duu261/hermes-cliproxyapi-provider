@@ -71,7 +71,9 @@ Sau đó chạy `hermes model` (hoặc bất kỳ lệnh nào liệt kê model) 
 đọc danh sách model của instance, đăng ký các provider tìm thấy và lưu cache, nên
 các lần chạy sau đăng ký chúng ngay lúc khởi động mà không cần gọi mạng:
 
-- `cpa-main`: mọi model trên instance, trên chat wire.
+- `cpa-main`: mọi model trên instance, mỗi model đi trên wire của provider
+  phục vụ nó (Hermes 0.23.0 trở lên; Hermes cũ hơn giữ mọi model trên chat
+  wire).
 - `cpa-main-<provider>`: một provider cho mỗi provider CPA, ví dụ
   `cpa-main-claude`, `cpa-main-codex`, `cpa-main-xai`, `cpa-main-kimi`.
 
@@ -96,6 +98,21 @@ liệt kê model. Nó chỉ ghi cache riêng sau lần liệt kê thành công �
 Ghi đè theo từng provider bằng `api_mode` (xem bên dưới). Khi hai provider
 phục vụ cùng một model id, id đó xuất hiện ở cả hai và CPA chọn account; khi đó
 wire là lựa chọn phù hợp nhất.
+
+Provider toàn instance (`cpa-main`) dùng cùng bảng này cho từng model trên
+Hermes 0.23.0 trở lên: model Claude đi trên `anthropic_messages`, model Codex
+hoặc xAI đi trên `codex_responses`, phần còn lại trên `chat_completions`. Model
+được các provider trên hai wire khác nhau phục vụ, và model mà plugin chưa liệt
+kê, ở lại `chat_completions`. Ghi đè `api_mode` trên một provider cũng áp dụng ở
+đây. Một group tạo từ các pattern `models` chỉ quyết định wire của model khi
+group đó đặt `api_mode`, hoặc mang tên một provider có wire khác chat trong
+bảng. Hermes cũ hơn gửi mọi model của `cpa-main` trên `chat_completions`.
+
+Hermes lưu một wire cùng với model mặc định (`model.api_mode`) và dùng wire đã
+lưu khi khởi động một session. `hermes model` lưu `chat_completions` cho
+`cpa-main`, dù bạn chọn model nào. Để session khởi động trên wire của model, hãy
+chạy `hermes config unset model.api_mode`, hoặc chọn model trong một cuộc chat
+bằng `/model <id> --global`, lệnh này lưu wire của model đó.
 
 Giữ `xai` trên `codex_responses`. Grok 4.7 trả về phần reasoning dưới dạng một
 mục đã mã hóa, và client phải gửi lại mục này ở lượt tiếp theo

@@ -215,6 +215,33 @@ def wire_for(group: str, override: GroupOverride | None = None) -> str:
     return PROVIDER_WIRE.get(group, DEFAULT_WIRE)
 
 
+def model_wires(
+    groups: dict[str, list[str]], overrides: dict[str, GroupOverride] | None = None
+) -> dict[str, str]:
+    """Model id -> wire, for the ids whose providers all use one wire.
+
+    An id served on two different wires is left out: CPA picks the account, so
+    no single wire is right for it and the caller keeps its default. A group an
+    operator builds from ``models`` patterns is a named list, not a CPA
+    provider: it counts only when its wire is stated (``api_mode``, or the name
+    of a provider in the wire map).
+    """
+    wires: dict[str, str] = {}
+    mixed: set[str] = set()
+    for group, ids in groups.items():
+        override = (overrides or {}).get(group)
+        if override and override.models and not override.api_mode and group not in PROVIDER_WIRE:
+            continue
+        wire = wire_for(group, override)
+        for model_id in ids:
+            if model_id in mixed:
+                continue
+            if wires.setdefault(model_id, wire) != wire:
+                del wires[model_id]
+                mixed.add(model_id)
+    return wires
+
+
 def base_url_for(root: str, api_mode: str) -> str:
     # The Anthropic SDK appends /v1/messages itself; OpenAI clients need /v1.
     return root if api_mode == ANTHROPIC else root + "/v1"

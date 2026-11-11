@@ -196,6 +196,66 @@ class WireMapTests(unittest.TestCase):
         self.assertEqual(cpa.base_url_for("http://h", "codex_responses"), "http://h/v1")
         self.assertEqual(cpa.base_url_for("http://h", "chat_completions"), "http://h/v1")
 
+    def test_model_wires_one_wire_per_model(self):
+        groups = {
+            "claude": ["claude-opus-5-5"],
+            "codex": ["gpt-5.6"],
+            "xai": ["grok-4.6"],
+            "gemini": ["gemini-3.8-flash-high"],
+            "devin": ["claude-opus-5-5", "gemini-3.8-flash-high"],
+            "kiro": ["claude-sonnet-5.5", "claude-opus-5-5"],
+        }
+        # claude-opus-5-5 is served on two wires (claude and kiro agree, devin
+        # does not), so it has no single wire, whatever order the groups come in.
+        self.assertEqual(
+            cpa.model_wires(groups),
+            {
+                "gpt-5.6": "codex_responses",
+                "grok-4.6": "codex_responses",
+                "gemini-3.8-flash-high": "chat_completions",
+                "claude-sonnet-5.5": "anthropic_messages",
+            },
+        )
+        overrides = {
+            "devin": cpa.GroupOverride(api_mode="anthropic_messages"),
+            "xai": cpa.GroupOverride(api_mode="chat_completions"),
+        }
+        # devin now agrees with claude and kiro, and disagrees with gemini.
+        self.assertEqual(
+            cpa.model_wires(groups, overrides),
+            {
+                "claude-opus-5-5": "anthropic_messages",
+                "gpt-5.6": "codex_responses",
+                "grok-4.6": "chat_completions",
+                "claude-sonnet-5.5": "anthropic_messages",
+            },
+        )
+        self.assertEqual(cpa.model_wires({}), {})
+
+    def test_model_wires_pattern_groups_count_only_with_a_stated_wire(self):
+        groups = {
+            "codex": ["gpt-5.6"],
+            "gemini": ["gemini-3.8-flash-high"],
+            "picks": ["gpt-5.6", "glm-5.3"],
+            "kimi": ["kimi-k2"],
+            "mine": ["gemini-3.8-flash-high", "claude-opus-5-5"],
+        }
+        overrides = {
+            # A named list with no wire of its own says nothing about gpt-5.6.
+            "picks": cpa.GroupOverride(models=("gpt-*", "glm-*")),
+            # A pattern group under a provider's name has that provider's wire.
+            "kimi": cpa.GroupOverride(models=("kimi-*",)),
+            "mine": cpa.GroupOverride(models=("g*", "c*"), api_mode="anthropic_messages"),
+        }
+        self.assertEqual(
+            cpa.model_wires(groups, overrides),
+            {
+                "gpt-5.6": "codex_responses",
+                "kimi-k2": "anthropic_messages",
+                "claude-opus-5-5": "anthropic_messages",
+            },
+        )
+
     def test_owner_and_provider_normalization(self):
         self.assertEqual(cpa.provider_for_owner("anthropic"), "claude")
         self.assertEqual(cpa.provider_for_owner("openai"), "codex")
