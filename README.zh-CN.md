@@ -101,7 +101,8 @@ cliproxyapi:
 同时出现在两者中，由 CPA 选择 account；此时的 wire 只是最佳匹配。
 
 在 Hermes 0.23.0 及以上，instance 级 provider（`cpa-main`）按 model 使用同一张表：
-Claude model 走 `anthropic_messages`，Codex 或 xAI model 走 `codex_responses`，其余走
+Claude、Kimi 或 Kiro model 走 `anthropic_messages`，Codex、xAI 或 Meta model 走
+`codex_responses`，其余走
 `chat_completions`。由两种不同 wire 的 provider 同时提供的 model，以及 plugin 尚未列出的
 model，保持 `chat_completions`。provider 上的 `api_mode` 覆盖在这里同样生效。用 `models`
 pattern 建立的 group，只有在它设置了 `api_mode`，或者与表中某个非 chat wire 的 provider
@@ -261,12 +262,16 @@ providers:
   声明其 inference key（`key_env`，或启用路由的 instance 上的 gateway key），因此 Hermes 让
   `mgmt_key_env`，以及启用路由的 instance 上 CPA 的 `key_env`，对 agent shell 仍然可读。
 - 在 Hermes 0.23.1 及以上，`cpa-status` plugin 会隐藏这些变量。它把这些变量从 chat session
-  运行的命令的环境中移除：前台和后台的 terminal 命令，以及 Hermes 为该 session 启动的辅助
-  进程。仅在 local terminal backend 上核对过。它只隐藏环境变量，不隐藏其他任何东西：能读取
-  Hermes 加载 key 的文件（`~/.hermes/.env`）的命令仍然能读到 key。Hermes 在没有绑定 session
-  时启动的进程仍保留这些变量。名称以 `HERMES_` 开头的变量，或已由其他 plugin 管理的变量，
-  仍然可见，并且会有一条 log 警告写出它的名称。在更早的 Hermes 上，或未启用 `cpa-status`
-  时，不会隐藏任何东西。
+  运行的命令的环境中移除：前台和后台的 terminal 命令（包括 `execute_code` 启动的命令），以及
+  Hermes 用其清理过的环境启动的辅助进程（language server、lint、text to speech 等）。它不覆盖
+  shell hook、cron job 的脚本、Hermes 带着 profile 的 credential 启动的进程（例如 `key_cmd`
+  helper），以及任何在没有绑定 session 时启动的进程：这些进程仍然可能看到这些变量。仅在
+  local terminal backend 上、使用一个 profile 核对过。remote backend（docker、ssh 等）不应用
+  隐藏：被 forward 到那里的变量在那里不会被隐藏。它只隐藏环境变量，不隐藏其他任何东西：能读取
+  Hermes 加载 key 的文件（`~/.hermes/.env`）的命令仍然能读到 key。名称以 `HERMES_` 开头的
+  变量，或已由其他 plugin 管理的变量，仍然可见，并且会有一条 log 警告写出它的名称。变量名在
+  plugin 加载时读取，因此之后添加的 `mgmt_key_env` 或 `route_via` 只有在下一次重启 Hermes
+  之后才会被隐藏。在更早的 Hermes 上，或未启用 `cpa-status` 时，不会隐藏任何东西。
 - 隐藏默认开启。你通过 agent 运行的脚本如果读取其中某个变量，将不再能找到它。要关闭隐藏，
   请运行 `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
   并重启 Hermes。

@@ -63,10 +63,11 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
 - Idle chats only: sent during an agent turn it goes to Hermes' busy handling.
 - The management key is full admin on CPA. On Hermes 0.23.1 or later this
   plugin removes each `mgmt_key_env`, and the CPA `key_env` of an instance
-  with `route_via`, from the environment of the commands a chat session runs
-  (checked on the local terminal backend only). It does not protect the file
-  the keys are loaded from, and a process Hermes starts with no session bound
-  keeps them. Setting `hide_keys_from_shells`, on by default and read when
+  with `route_via`, from the environment of the terminal commands a chat
+  session runs (checked on the local terminal backend only). It does not
+  protect the file the keys are loaded from, and shell hooks, cron job
+  scripts and any process Hermes starts with no session bound can still see
+  them. Setting `hide_keys_from_shells`, on by default and read when
   the plugin loads; turn it off with
   `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`.
   On older Hermes nothing is hidden. Details and limits:

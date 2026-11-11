@@ -43,19 +43,22 @@ Ideas that are parked. None of them is in any release, and none is promised.
   - Hermes' "No usable credentials" message for a `cpa-*` provider also says
     which key the variable takes: a CPA client key, not the management key;
     with a billing route, the gateway key variable and the CPA one.
-- `cpa-status`, on Hermes 0.23.1 or later: hides from the commands a chat
-  session runs the key variables that no provider declares: every
+- `cpa-status`, on Hermes 0.23.1 or later: hides from the terminal commands a
+  chat session runs the key variables that no provider declares: every
   `mgmt_key_env`, and the CPA `key_env` of an instance with `route_via`.
   Before, Hermes left them readable by agent shells. On by default, so this
   changes behavior for everyone who has `cpa-status` enabled: a script you run
   through the agent that reads one of these variables stops finding it. Turn
   it off with
   `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
-  and restart Hermes. Limits: checked on the local terminal backend only; it
-  hides environment variables, not the file the keys are loaded from; a
-  process Hermes starts with no session bound keeps them; a name that starts
-  with `HERMES_`, or that another plugin already manages, stays visible and is
-  named in a log warning. Older Hermes is unchanged.
+  and restart Hermes. Limits: checked on the local terminal backend with one
+  profile only, and remote backends (docker, ssh and others) do not apply it;
+  it hides environment variables, not the file the keys are loaded from;
+  shell hooks, cron job scripts, processes Hermes starts with the profile's
+  credentials and any process started with no session bound can still see
+  them; a name that starts with `HERMES_`, or that another plugin already
+  manages, stays visible and is named in a log warning. Older Hermes is
+  unchanged.
 - `/cpa`: Devin accounts show last-seen quota, like Claude and Codex accounts:
   percent used per day and week (`day 45% · wk 12% (4m ago)`), from the
   figures CPA v7.3.0 or later already lists. CPA records them when the account

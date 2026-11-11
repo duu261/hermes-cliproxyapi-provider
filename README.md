@@ -115,8 +115,9 @@ same model id, it appears in both and CPA picks the account; the wire is then a
 best match.
 
 The instance-wide provider (`cpa-main`) uses the same table per model on
-Hermes 0.23.0 or later: a Claude model goes out on `anthropic_messages`, a
-Codex or xAI model on `codex_responses`, the rest on `chat_completions`. A
+Hermes 0.23.0 or later: a Claude, Kimi or Kiro model goes out on
+`anthropic_messages`, a Codex, xAI or Meta model on `codex_responses`, the
+rest on `chat_completions`. A
 model that providers on two different wires serve, and a model the plugin has
 not listed yet, stay on `chat_completions`. An `api_mode` override on a
 provider applies here too. A group built from `models` patterns decides a
@@ -299,14 +300,22 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
   on a routed instance the CPA `key_env`, readable by agent shells.
 - The `cpa-status` plugin hides those variables on Hermes 0.23.1 or later. It
   removes them from the environment of the commands a chat session runs:
-  terminal commands in the foreground and background, and the helper
-  processes Hermes starts for that session. Checked on the local terminal
-  backend only. It hides environment variables and nothing else: a command
-  that can read the file Hermes loads keys from (`~/.hermes/.env`) can still
-  read them. A process Hermes starts with no session bound keeps them. A
-  variable whose name starts with `HERMES_`, or that another plugin already
-  manages, stays visible, and a log warning names it. On older Hermes, or
-  without `cpa-status` enabled, nothing is hidden.
+  terminal commands in the foreground and background, the ones `execute_code`
+  starts included, and the helper processes Hermes starts from its cleaned
+  environment (language servers, lint, text to speech and similar). It does
+  not cover shell hooks, cron job scripts, processes Hermes starts with the
+  profile's credentials (a `key_cmd` helper, for example), or any process
+  started with no session bound: those can still see the variables. Checked
+  on the local terminal backend with one profile only. Remote backends
+  (docker, ssh and others) do not apply the hiding: a variable that is
+  forwarded to one is not hidden there. It hides environment variables and
+  nothing else: a command that can read the file Hermes loads keys from
+  (`~/.hermes/.env`) can still read them. A variable whose name starts with
+  `HERMES_`, or that another plugin already manages, stays visible, and a log
+  warning names it. The names are read when the plugin loads, so a
+  `mgmt_key_env` or `route_via` added later is hidden only after the next
+  Hermes restart. On older Hermes, or without `cpa-status` enabled, nothing
+  is hidden.
 - Hiding is on by default. A script you run through the agent that reads one
   of these variables stops finding it. To turn hiding off, run
   `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`

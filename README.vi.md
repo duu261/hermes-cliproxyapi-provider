@@ -116,8 +116,9 @@ phục vụ cùng một model id, id đó xuất hiện ở cả hai và CPA ch�
 wire là lựa chọn phù hợp nhất.
 
 Provider toàn instance (`cpa-main`) dùng cùng bảng này cho từng model trên
-Hermes 0.23.0 trở lên: model Claude đi trên `anthropic_messages`, model Codex
-hoặc xAI đi trên `codex_responses`, phần còn lại trên `chat_completions`. Model
+Hermes 0.23.0 trở lên: model Claude, Kimi hoặc Kiro đi trên
+`anthropic_messages`, model Codex, xAI hoặc Meta đi trên `codex_responses`,
+phần còn lại trên `chat_completions`. Model
 được các provider trên hai wire khác nhau phục vụ, và model mà plugin chưa liệt
 kê, ở lại `chat_completions`. Ghi đè `api_mode` trên một provider cũng áp dụng ở
 đây. Một group tạo từ các pattern `models` chỉ quyết định wire của model khi
@@ -301,13 +302,21 @@ Thứ tự ưu tiên, cao nhất trước: `model_overrides` của bạn, plugin
   trên instance có định tuyến là `key_env` của CPA, vẫn đọc được từ shell của agent.
 - Plugin `cpa-status` ẩn các biến đó trên Hermes 0.23.1 trở lên. Nó gỡ chúng khỏi
   môi trường của các lệnh mà một chat session chạy: lệnh terminal chạy foreground
-  và background, và các tiến trình phụ trợ mà Hermes khởi chạy cho session đó. Chỉ
-  mới kiểm tra trên local terminal backend. Nó chỉ ẩn biến môi trường, không ẩn gì
-  khác: một lệnh đọc được file mà Hermes nạp key từ đó (`~/.hermes/.env`) thì vẫn
-  đọc được key. Tiến trình mà Hermes khởi chạy khi không có session nào được gắn
-  vẫn giữ các biến này. Biến có tên bắt đầu bằng `HERMES_`, hoặc đã do plugin khác
-  quản lý, vẫn hiện, và một cảnh báo trong log nêu tên nó. Trên Hermes cũ hơn,
-  hoặc khi không bật `cpa-status`, không có gì bị ẩn.
+  và background, kể cả lệnh do `execute_code` khởi chạy, và các tiến trình phụ trợ
+  mà Hermes khởi chạy từ môi trường đã được làm sạch của nó (language server,
+  lint, text to speech và tương tự). Nó không bao gồm shell hook, script của cron
+  job, tiến trình mà Hermes khởi chạy kèm credential của profile (ví dụ một helper
+  `key_cmd`), và mọi tiến trình được khởi chạy khi không có session nào được gắn:
+  các tiến trình đó vẫn có thể thấy các biến này. Chỉ mới kiểm tra trên local
+  terminal backend với một profile. Các remote backend (docker, ssh và các
+  backend khác) không áp dụng việc ẩn: một biến được forward tới đó thì không bị
+  ẩn ở đó. Nó chỉ ẩn biến môi trường, không ẩn gì khác: một lệnh đọc được file mà
+  Hermes nạp key từ đó (`~/.hermes/.env`) thì vẫn đọc được key. Biến có tên bắt
+  đầu bằng `HERMES_`, hoặc đã do plugin khác quản lý, vẫn hiện, và một cảnh báo
+  trong log nêu tên nó. Tên các biến được đọc khi plugin được nạp, nên một
+  `mgmt_key_env` hoặc `route_via` thêm vào sau đó chỉ được ẩn sau lần khởi động
+  lại Hermes kế tiếp. Trên Hermes cũ hơn, hoặc khi không bật `cpa-status`, không
+  có gì bị ẩn.
 - Việc ẩn được bật mặc định. Script bạn chạy qua agent mà đọc một trong các biến
   này sẽ không còn thấy nó. Để tắt việc ẩn, chạy
   `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
