@@ -2,6 +2,16 @@
 
 ## Unreleased (planned, not built)
 
+### Fixed
+
+- Provider: emit clamped top-level `reasoning_effort` on `chat_completions`
+  requests via `build_api_kwargs_extras` (Hermes skips its generic reasoning
+  fallback for registered `ProviderProfile`s) and pass clamped
+  `extra_body.reasoning` for auxiliary adapters on non-chat wires, guarded
+  across Hermes 0.21.7–0.23.1.
+
+### Planned
+
 Ideas that are parked. None of them is in any release, and none is promised.
 
 - `/cpa quota` Antigravity: the AI credit balance. The plan lookup already
