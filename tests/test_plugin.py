@@ -428,6 +428,122 @@ class PluginTests(unittest.TestCase):
             self.assertIs(type(profile).create_client, ProviderProfile.create_client)
             self.assertNotIn("User-Agent", profile.default_headers or {})
 
+    # ── Reasoning effort projection ──
+
+    def test_chat_wire_emits_and_clamps_reasoning_effort(self):
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        wide.fetch_models(api_key=API_KEY)
+        gemini = profiles["cpa-t-gemini"]
+        claude = profiles["cpa-t-claude"]
+
+        # Unset or empty reasoning config adds nothing (server owns default).
+        self.assertEqual(gemini.build_api_kwargs_extras(model="gemini-3.8-flash-high"), ({}, {}))
+        self.assertEqual(
+            gemini.build_api_kwargs_extras(
+                reasoning_config={"enabled": True}, model="gemini-3.8-flash-high"
+            ),
+            ({}, {}),
+        )
+        # Disabling thinking emits reasoning_effort="none" even when "none" is omitted from catalog.
+        self.assertEqual(
+            gemini.build_api_kwargs_extras(
+                reasoning_config={"enabled": False, "effort": "none"},
+                model="gemini-3.8-flash-high",
+            ),
+            ({}, {"reasoning_effort": "none"}),
+        )
+        self.assertEqual(
+            gemini.build_api_kwargs_extras(
+                reasoning_config={"enabled": False}, model="gemini-3.8-flash-high"
+            ),
+            ({}, {"reasoning_effort": "none"}),
+        )
+        # Catalog efforts ("low", "high", "max") clamp medium down to nearest weaker ("low").
+        wide._cpa_instance.catalog.meta["gemini-3.8-flash-high"]["reasoning_efforts"] = [
+            "minimal",
+            "high",
+        ]
+        self.assertEqual(
+            gemini.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "medium"},
+                model="gemini-3.8-flash-high",
+            ),
+            ({}, {"reasoning_effort": "minimal"}),
+        )
+        # Below-minimum clamps up to weakest supported.
+        wide._cpa_instance.catalog.meta["gemini-3.8-flash-high"]["reasoning_efforts"] = [
+            "low",
+            "medium",
+            "high",
+        ]
+        self.assertEqual(
+            gemini.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "minimal"},
+                model="gemini-3.8-flash-high",
+            ),
+            ({}, {"reasoning_effort": "low"}),
+        )
+        # Unlisted model keeps OpenAI-compat levels while clamping Hermes-internal "ultra".
+        self.assertEqual(
+            wide.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "xhigh"}, model="not-in-catalog"
+            ),
+            ({}, {"reasoning_effort": "xhigh"}),
+        )
+        self.assertEqual(
+            wide.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "ultra"}, model="not-in-catalog"
+            ),
+            ({}, {"reasoning_effort": "max"}),
+        )
+        # Models explicitly marked non-reasoning emit nothing.
+        wide._cpa_instance.catalog.meta["plain-model"] = {"supports_reasoning": False}
+        self.assertEqual(
+            wide.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "high"}, model="plain-model"
+            ),
+            ({}, {}),
+        )
+        # Extra Hermes context kwargs (present and future) are accepted without error.
+        self.assertEqual(
+            gemini.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "high"},
+                model="gemini-3.8-flash-high",
+                cache_scope_id="scope-1",
+                lmstudio_reasoning_options=["low", "high"],
+            ),
+            ({}, {"reasoning_effort": "high"}),
+        )
+        # Non-chat auxiliary calls pass extra_body.reasoning on both Hermes versions.
+        self.assertEqual(
+            claude.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "medium"}, model="claude-opus-5-5"
+            ),
+            ({"reasoning": {"enabled": True, "effort": "low"}}, {}),
+        )
+        self.assertEqual(
+            profiles["cpa-t-codex"].build_api_kwargs_extras(
+                reasoning_config={"enabled": False}, model="gpt-5.6"
+            ),
+            ({"reasoning": {"enabled": False, "effort": "none"}}, {}),
+        )
+
+    def test_wide_profile_respects_hermes_per_model_wire_capability(self):
+        from providers.base import ProviderProfile
+
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        wide.fetch_models(api_key=API_KEY)
+        has_hook = hasattr(ProviderProfile, "api_mode_for_model")
+        got = wide.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"}, model="claude-opus-5-5"
+        )
+        if has_hook:
+            self.assertEqual(got, ({"reasoning": {"enabled": True, "effort": "low"}}, {}))
+        else:
+            self.assertEqual(got, ({}, {"reasoning_effort": "low"}))
+
     def test_reads_config_without_pyyaml(self):
         # The Hermes interpreter ships ruamel.yaml, not PyYAML.
         saved = sys.modules.get("yaml")

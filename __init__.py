@@ -196,6 +196,29 @@ class _Instance:
         return [i for i in self.catalog.ids if i in keep]
 
 
+_OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = tuple(
+    lvl for lvl in cpa.EFFORT_LADDER if lvl != "ultra"
+)
+
+
+def _clamp_effort(effort: str, supported: tuple[str, ...]) -> str:
+    requested = effort.strip().lower()
+    if not requested or not supported:
+        return effort
+    ladder = cpa.EFFORT_LADDER
+    supported_norm = [lvl for lvl in (str(s).strip().lower() for s in supported) if lvl in ladder]
+    if not supported_norm or requested in supported_norm:
+        return requested
+    if requested not in ladder:
+        return requested
+    candidates = [lvl for lvl in supported_norm if lvl != "none"]
+    if not candidates:
+        return requested
+    req_idx = ladder.index(requested)
+    below = [lvl for lvl in candidates if ladder.index(lvl) < req_idx]
+    return max(below, key=ladder.index) if below else min(candidates, key=ladder.index)
+
+
 class CLIProxyAPIProfile(ProviderProfile):
     """One CPA provider on one CPA instance, or the instance-wide chat provider.
 
@@ -242,6 +265,54 @@ class CLIProxyAPIProfile(ProviderProfile):
     def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
         efforts = self._cpa_instance.catalog.meta.get(model or "", {}).get("reasoning_efforts")
         return tuple(efforts) if efforts else None
+
+    def build_api_kwargs_extras(
+        self,
+        *,
+        reasoning_config: dict[str, Any] | None = None,
+        model: str | None = None,
+        **context: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Project Hermes' reasoning_config onto CPA's wire.
+
+        Hermes skips its generic reasoning fallback whenever a provider registers
+        a ProviderProfile, so chat_completions models need top-level
+        ``reasoning_effort`` emitted here (clamped to CPA's supported levels).
+        Main-loop Anthropic/Codex transports do not call this hook; only
+        ``auxiliary_client`` does, and its Anthropic/Codex adapters read
+        ``extra_body.reasoning``.
+        """
+        if not isinstance(reasoning_config, dict) or not reasoning_config:
+            return {}, {}
+        meta = self._cpa_instance.catalog.meta.get(model or "", {})
+        if meta.get("supports_reasoning") is False:
+            return {}, {}
+        if hasattr(ProviderProfile, "api_mode_for_model") and callable(
+            getattr(self, "api_mode_for_model", None)
+        ):
+            wire = self.api_mode_for_model(model or "") or self.api_mode
+        else:
+            wire = self.api_mode
+        supported = self.supported_reasoning_efforts(model)
+        disabled = reasoning_config.get("enabled") is False
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        if wire != cpa.CHAT:
+            if disabled or effort == "none":
+                return {"reasoning": {"enabled": False, "effort": "none"}}, {}
+            if not effort:
+                return {"reasoning": dict(reasoning_config)}, {}
+            clamped = _clamp_effort(
+                effort, supported if supported is not None else _OPENAI_COMPAT_WIRE_EFFORTS
+            )
+            return {"reasoning": {**reasoning_config, "effort": clamped}}, {}
+        if disabled or effort == "none":
+            return {}, {"reasoning_effort": "none"}
+        if not effort:
+            return {}, {}
+        clamped = _clamp_effort(
+            effort, supported if supported is not None else _OPENAI_COMPAT_WIRE_EFFORTS
+        )
+        return {}, {"reasoning_effort": clamped} if clamped else {}
 
     def get_max_tokens(self, model: str | None) -> int | None:
         value = self._cpa_instance.catalog.meta.get(model or "", {}).get("max_output_tokens")
