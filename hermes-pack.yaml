@@ -1,11 +1,11 @@
 name: cliproxyapi
 description: CLIProxyAPI pools as Hermes model providers, plus /cpa pool health and quota
 author: duu261
-version: 0.8.3
+version: 0.8.4
 plugins:
   - repo: duu261/hermes-cliproxyapi-provider
-    ref: 174c6096efd973ceebb0d329beae4f428f728fce
+    ref: cddea32f5b5416a44b162a8bfebd93906681740f
   - repo: duu261/hermes-cliproxyapi-provider
-    ref: 174c6096efd973ceebb0d329beae4f428f728fce
+    ref: cddea32f5b5416a44b162a8bfebd93906681740f
     subdir: cpa-status
 skills: []
