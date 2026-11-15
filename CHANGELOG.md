@@ -2,16 +2,6 @@
 
 ## Unreleased (planned, not built)
 
-### Fixed
-
-- Provider: emit clamped top-level `reasoning_effort` on `chat_completions`
-  requests via `build_api_kwargs_extras` (Hermes skips its generic reasoning
-  fallback for registered `ProviderProfile`s) and pass clamped
-  `extra_body.reasoning` for auxiliary adapters on non-chat wires, guarded
-  across Hermes 0.21.7–0.23.1.
-
-### Planned
-
 Ideas that are parked. None of them is in any release, and none is promised.
 
 - `/cpa quota` Antigravity: the AI credit balance. The plan lookup already
@@ -24,6 +14,46 @@ Ideas that are parked. None of them is in any release, and none is promised.
   today both plugins only read.
 - Address masking in `/cpa` (hosts, IPs, paths in error text): drop it, or
   make it a setting. Emails, tokens and project ids stay masked either way.
+
+## 0.8.4
+
+- Provider: the reasoning effort set in Hermes now reaches CPA on the chat
+  wire ([#25](https://github.com/duu261/hermes-cliproxyapi-provider/pull/25),
+  by [@RakhimAbdulkhanov](https://github.com/RakhimAbdulkhanov)). Hermes
+  leaves the reasoning fields of a request to a registered provider, and the
+  plugin sent none. A chat request from the main loop carried no effort at
+  any setting, so CPA used its own default. An auxiliary call carried the
+  effort as a nested `reasoning` object, which CPA's chat parser does not
+  read. Now a chat request carries a top-level `reasoning_effort`.
+- What this changes:
+  - It applies to models on `chat_completions`: the `gemini`, `antigravity`
+    and OpenAI-compatible groups and every other chat group, a group set to
+    that wire with `api_mode`, and the chat models of `cpa-<instance>` (every
+    model there on Hermes older than 0.22.6).
+  - With no effort set in Hermes, nothing is sent and CPA's default applies,
+    as before.
+  - Reasoning switched off is sent as `none`.
+  - A level the model does not list becomes the nearest lower listed level,
+    or the lowest listed one when none is lower. The levels are the ones CPA
+    publishes (see Metadata in the README).
+  - For a model with no published levels the level goes out as set, except
+    that Hermes' own `ultra` goes out as `max`. CPA checks the level on its
+    side: it drops the field for a model without reasoning and can answer 400
+    for a level the model does not have (read in CPA v8.0.73 source, not
+    run). Set a level the model has.
+  - Main-loop requests on the Messages and Responses wires are unchanged:
+    Hermes builds their reasoning fields itself.
+  - For a model CPA serves on one of those two wires, the plugin now gives
+    both forms whenever Hermes asks it: the nested object Hermes' own
+    adapters read, and the top-level key. Hermes asks on every auxiliary
+    call, and in the main loop of `cpa-<instance>` on Hermes older than
+    0.22.6. Such a request can go out through a plain chat client, where CPA
+    reads only the top-level key, so the effort was lost there: a Claude
+    model of `cpa-<instance>` named in an auxiliary task, or a model of
+    `cpa-<instance>-codex`.
+- The plugin sends no new request; only fields of Hermes' own inference
+  requests change. `/cpa` is unchanged; both plugins carry the same version.
+  Restart Hermes to load the provider.
 
 ## 0.8.3
 

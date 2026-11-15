@@ -196,6 +196,8 @@ class _Instance:
         return [i for i in self.catalog.ids if i in keep]
 
 
+# The next two mirror Hermes' agent/reasoning_effort.py (OPENAI_COMPAT_WIRE_EFFORTS
+# and clamp_effort); a plugin cannot import that module.
 _OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = tuple(
     lvl for lvl in cpa.EFFORT_LADDER if lvl != "ultra"
 )
@@ -273,46 +275,37 @@ class CLIProxyAPIProfile(ProviderProfile):
         model: str | None = None,
         **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Project Hermes' reasoning_config onto CPA's wire.
+        """The reasoning effort Hermes is set to, in the shape the model's wire reads.
 
-        Hermes skips its generic reasoning fallback whenever a provider registers
-        a ProviderProfile, so chat_completions models need top-level
-        ``reasoning_effort`` emitted here (clamped to CPA's supported levels).
-        Main-loop Anthropic/Codex transports do not call this hook; only
-        ``auxiliary_client`` does, and its Anthropic/Codex adapters read
-        ``extra_body.reasoning``.
+        Hermes leaves reasoning to a registered profile: without this hook a
+        chat request carries no effort and CPA applies its own default. CPA's
+        chat parser reads only a top-level ``reasoning_effort``. Hermes' main
+        Messages and Responses transports never call this hook; its auxiliary
+        client calls it on every wire. No effort set sends nothing.
         """
         if not isinstance(reasoning_config, dict) or not reasoning_config:
             return {}, {}
-        meta = self._cpa_instance.catalog.meta.get(model or "", {})
-        if meta.get("supports_reasoning") is False:
-            return {}, {}
-        if hasattr(ProviderProfile, "api_mode_for_model") and callable(
-            getattr(self, "api_mode_for_model", None)
-        ):
-            wire = self.api_mode_for_model(model or "") or self.api_mode
-        else:
-            wire = self.api_mode
-        supported = self.supported_reasoning_efforts(model)
-        disabled = reasoning_config.get("enabled") is False
+        # The wire CPA serves the model on. Only the instance-wide profile has
+        # one per model, and it knows it on a Hermes that never asks for it too.
+        per_model = getattr(self, "api_mode_for_model", None)
+        wire = (per_model(model or "") if callable(per_model) else None) or self.api_mode
         effort = str(reasoning_config.get("effort") or "").strip().lower()
-        if wire != cpa.CHAT:
-            if disabled or effort == "none":
-                return {"reasoning": {"enabled": False, "effort": "none"}}, {}
-            if not effort:
-                return {"reasoning": dict(reasoning_config)}, {}
-            clamped = _clamp_effort(
-                effort, supported if supported is not None else _OPENAI_COMPAT_WIRE_EFFORTS
-            )
-            return {"reasoning": {**reasoning_config, "effort": clamped}}, {}
-        if disabled or effort == "none":
-            return {}, {"reasoning_effort": "none"}
-        if not effort:
-            return {}, {}
-        clamped = _clamp_effort(
-            effort, supported if supported is not None else _OPENAI_COMPAT_WIRE_EFFORTS
-        )
-        return {}, {"reasoning_effort": clamped} if clamped else {}
+        if reasoning_config.get("enabled") is False or effort == "none":
+            level, nested = "none", {"enabled": False, "effort": "none"}
+        elif effort:
+            listed = self.supported_reasoning_efforts(model) or _OPENAI_COMPAT_WIRE_EFFORTS
+            level = _clamp_effort(effort, listed)
+            nested = {**reasoning_config, "effort": level}
+        else:
+            level, nested = "", dict(reasoning_config)
+        top = {"reasoning_effort": level} if level else {}
+        if wire == cpa.CHAT:
+            return {}, top
+        # Hermes reaches a model on another wire through its Anthropic or Codex
+        # adapter, which read ``extra_body.reasoning``, or through a plain chat
+        # client, where CPA reads only the top-level key. The hook cannot tell
+        # which. Each reads one of the two shapes and ignores the other.
+        return {"reasoning": nested}, top
 
     def get_max_tokens(self, model: str | None) -> int | None:
         value = self._cpa_instance.catalog.meta.get(model or "", {}).get("max_output_tokens")
