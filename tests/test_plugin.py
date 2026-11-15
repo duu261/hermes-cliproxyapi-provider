@@ -466,6 +466,206 @@ class PluginTests(unittest.TestCase):
             self.assertIs(type(profile).create_client, ProviderProfile.create_client)
             self.assertNotIn("User-Agent", profile.default_headers or {})
 
+    # ── Reasoning effort ──
+
+    GEMINI = "gemini-3.8-flash-high"  # chat wire; the fake CPA lists no levels for it
+    CLAUDE = "claude-opus-5-5"  # Messages wire; the fake CPA lists low, high and max
+    CODEX = "gpt-5.6"  # Responses wire; no levels listed
+
+    def effort_profiles(self, levels=None):
+        """Profiles after one listing. ``levels`` sets what CPA lists per model."""
+        _, profiles = self.load()
+        wide = profiles["cpa-t"]
+        wide.fetch_models(api_key=API_KEY)
+        for model, listed in (levels or {}).items():
+            wide._cpa_instance.catalog.meta.setdefault(model, {})["reasoning_efforts"] = listed
+        return profiles
+
+    @staticmethod
+    def extras(profile, model, effort):
+        return profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort}, model=model
+        )
+
+    @staticmethod
+    def top(level):
+        """The chat shape: nothing in extra_body, the level as a top-level key."""
+        return {}, {"reasoning_effort": level}
+
+    def test_chat_wire_sends_nothing_without_an_effort(self):
+        gemini = self.effort_profiles()["cpa-t-gemini"]
+        for config in (None, {}, {"enabled": True}):
+            with self.subTest(config=config):
+                self.assertEqual(
+                    gemini.build_api_kwargs_extras(reasoning_config=config, model=self.GEMINI),
+                    ({}, {}),
+                )
+
+    def test_chat_wire_sends_none_when_reasoning_is_off(self):
+        # "none" is not among the listed levels and is still sent as it is.
+        gemini = self.effort_profiles({self.GEMINI: ["low", "high"]})["cpa-t-gemini"]
+        for config in (
+            {"enabled": False},
+            {"enabled": False, "effort": "high"},
+            {"enabled": True, "effort": "none"},
+        ):
+            with self.subTest(config=config):
+                self.assertEqual(
+                    gemini.build_api_kwargs_extras(reasoning_config=config, model=self.GEMINI),
+                    self.top("none"),
+                )
+
+    def test_chat_wire_clamps_to_the_nearest_weaker_listed_level(self):
+        # CPA's own clamp takes the nearest level in either direction and would
+        # turn medium into high here. Hermes' rule never raises the effort.
+        gemini = self.effort_profiles({self.GEMINI: ["minimal", "high"]})["cpa-t-gemini"]
+        asked = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+        self.assertEqual(
+            {effort: self.extras(gemini, self.GEMINI, effort) for effort in asked},
+            {
+                "minimal": self.top("minimal"),
+                "low": self.top("minimal"),
+                "medium": self.top("minimal"),
+                "high": self.top("high"),
+                "xhigh": self.top("high"),
+                "max": self.top("high"),
+                "ultra": self.top("high"),
+            },
+        )
+
+    def test_chat_wire_goes_up_only_when_nothing_weaker_is_listed(self):
+        # "none" is listed and weaker, but switching reasoning off is never a
+        # clamp target for an effort that was asked for.
+        gemini = self.effort_profiles({self.GEMINI: ["none", "low", "medium"]})["cpa-t-gemini"]
+        self.assertEqual(self.extras(gemini, self.GEMINI, "minimal"), self.top("low"))
+
+    def test_chat_wire_without_listed_levels_sends_the_effort_as_set(self):
+        # Only Hermes' own "ultra" is replaced: no OpenAI-compatible wire has it.
+        profiles = self.effort_profiles()
+        glm = profiles["cpa-t-opencode-go"]
+        asked = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+        self.assertEqual(
+            {effort: self.extras(glm, "glm-5.3", effort) for effort in asked},
+            {
+                "minimal": self.top("minimal"),
+                "low": self.top("low"),
+                "medium": self.top("medium"),
+                "high": self.top("high"),
+                "xhigh": self.top("xhigh"),
+                "max": self.top("max"),
+                "ultra": self.top("max"),
+            },
+        )
+        # A model CPA does not list at all, on the instance-wide profile.
+        self.assertEqual(
+            self.extras(profiles["cpa-t"], "not-in-catalog", "xhigh"), self.top("xhigh")
+        )
+
+    def test_chat_wire_passes_an_unknown_effort_name_through(self):
+        # Hermes accepts a made-up level name in the dict form of the setting.
+        gemini = self.effort_profiles({self.GEMINI: ["low", "high"]})["cpa-t-gemini"]
+        self.assertEqual(self.extras(gemini, self.GEMINI, "Turbo"), self.top("turbo"))
+
+    def test_effort_hook_accepts_other_hermes_keywords(self):
+        # Hermes passes more keywords than the plugin reads, and adds new ones.
+        gemini = self.effort_profiles()["cpa-t-gemini"]
+        self.assertEqual(
+            gemini.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "high"},
+                model=self.GEMINI,
+                supports_reasoning=True,
+                cache_scope_id="scope-1",
+                lmstudio_reasoning_options=["low", "high"],
+            ),
+            self.top("high"),
+        )
+
+    def test_chat_transport_sends_the_effort(self):
+        # The hook alone proves nothing: this is the request Hermes builds.
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        levels = {self.GEMINI: ["low", "medium", "high"]}
+        gemini = self.effort_profiles(levels)["cpa-t-gemini"]
+
+        def sent(reasoning_config):
+            kwargs = ChatCompletionsTransport().build_kwargs(
+                self.GEMINI,
+                [{"role": "user", "content": "hi"}],
+                provider_profile=gemini,
+                provider_name=gemini.name,
+                base_url=gemini.base_url,
+                reasoning_config=reasoning_config,
+                supports_reasoning=True,
+            )
+            return kwargs.get("reasoning_effort"), (kwargs.get("extra_body") or {}).get("reasoning")
+
+        configs = {
+            "unset": None,
+            "medium": {"enabled": True, "effort": "medium"},
+            "xhigh": {"enabled": True, "effort": "xhigh"},
+            "off": {"enabled": False},
+        }
+        self.assertEqual(
+            {name: sent(config) for name, config in configs.items()},
+            {
+                "unset": (None, None),
+                "medium": ("medium", None),
+                "xhigh": ("high", None),
+                "off": ("none", None),
+            },
+        )
+
+    def test_provider_on_another_wire_sends_both_shapes(self):
+        # Hermes reaches these models through its Anthropic or Codex adapter, which
+        # read extra_body.reasoning, or through a plain chat client, where CPA reads
+        # only the top-level key. The hook cannot tell which; each ignores the other.
+        profiles = self.effort_profiles()
+        claude, codex = profiles["cpa-t-claude"], profiles["cpa-t-codex"]
+        self.assertEqual(
+            self.extras(claude, self.CLAUDE, "medium"),
+            ({"reasoning": {"enabled": True, "effort": "low"}}, {"reasoning_effort": "low"}),
+        )
+        self.assertEqual(
+            {
+                "unset": codex.build_api_kwargs_extras(model=self.CODEX),
+                "no level": codex.build_api_kwargs_extras(
+                    reasoning_config={"enabled": True}, model=self.CODEX
+                ),
+                "off": codex.build_api_kwargs_extras(
+                    reasoning_config={"enabled": False}, model=self.CODEX
+                ),
+            },
+            {
+                "unset": ({}, {}),
+                "no level": ({"reasoning": {"enabled": True}}, {}),
+                "off": (
+                    {"reasoning": {"enabled": False, "effort": "none"}},
+                    {"reasoning_effort": "none"},
+                ),
+            },
+        )
+
+    def test_wide_profile_shape_follows_the_wire_of_each_model(self):
+        # The same on every Hermes. Older Hermes sends all of these on the chat
+        # wire, where CPA reads the top-level key and ignores the nested one.
+        wide = self.effort_profiles()["cpa-t"]
+        models = (self.CLAUDE, self.CODEX, self.GEMINI, "not-in-catalog")
+        self.assertEqual(
+            {model: self.extras(wide, model, "medium") for model in models},
+            {
+                self.CLAUDE: (
+                    {"reasoning": {"enabled": True, "effort": "low"}},
+                    {"reasoning_effort": "low"},
+                ),
+                self.CODEX: (
+                    {"reasoning": {"enabled": True, "effort": "medium"}},
+                    {"reasoning_effort": "medium"},
+                ),
+                self.GEMINI: self.top("medium"),
+                "not-in-catalog": self.top("medium"),
+            },
+        )
+
     def test_reads_config_without_pyyaml(self):
         # The Hermes interpreter ships ruamel.yaml, not PyYAML.
         saved = sys.modules.get("yaml")

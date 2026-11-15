@@ -293,6 +293,12 @@ model list, which covers every model. CPA writes 64,000 there for a model with
 no limit, so the plugin treats exactly 64,000 as unknown and Hermes falls back
 to models.dev; a model whose real limit is 64,000 loses it the same way.
 
+On the `chat_completions` wire the plugin sends the reasoning effort set in
+Hermes (`agent.reasoning_effort`) as `reasoning_effort`. A level the model does
+not list becomes the nearest lower listed level, or the lowest listed one when
+none is lower. With no effort set, nothing is sent and CPA's default applies.
+On the other wires the main loop of Hermes builds the effort itself.
+
 Hermes `/model` shows max output, PDF and structured output only from
 models.dev; a plugin cannot set them, and CPA's model definitions have no PDF
 or structured-output field. To see them, add vendor metadata from models.dev:

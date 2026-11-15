@@ -294,6 +294,13 @@ bố thì giữ là chưa biết. Không có management key, max output lấy t�
 không có giới hạn, nên plugin coi đúng 64.000 là chưa biết và Hermes fallback về
 models.dev; model có giới hạn thật là 64.000 cũng mất giá trị theo cách đó.
 
+Trên wire `chat_completions`, plugin gửi mức reasoning effort đặt trong Hermes
+(`agent.reasoning_effort`) dưới dạng `reasoning_effort`. Mức mà model không liệt kê
+sẽ thành mức thấp hơn gần nhất có trong danh sách, hoặc mức thấp nhất trong danh sách
+khi không có mức nào thấp hơn. Khi chưa đặt effort, plugin không gửi gì và mặc định
+của CPA được áp dụng. Trên các wire khác, main loop (vòng lặp chính) của Hermes tự
+tạo effort.
+
 Lệnh `/model` của Hermes chỉ hiện max output, PDF và structured output từ models.dev;
 plugin không đặt được các giá trị này, và định nghĩa model của CPA không có trường
 PDF hay structured output. Để thấy chúng, bổ sung metadata vendor từ

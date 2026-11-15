@@ -196,6 +196,31 @@ class _Instance:
         return [i for i in self.catalog.ids if i in keep]
 
 
+# The next two mirror Hermes' agent/reasoning_effort.py (OPENAI_COMPAT_WIRE_EFFORTS
+# and clamp_effort); a plugin cannot import that module.
+_OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = tuple(
+    lvl for lvl in cpa.EFFORT_LADDER if lvl != "ultra"
+)
+
+
+def _clamp_effort(effort: str, supported: tuple[str, ...]) -> str:
+    requested = effort.strip().lower()
+    if not requested or not supported:
+        return effort
+    ladder = cpa.EFFORT_LADDER
+    supported_norm = [lvl for lvl in (str(s).strip().lower() for s in supported) if lvl in ladder]
+    if not supported_norm or requested in supported_norm:
+        return requested
+    if requested not in ladder:
+        return requested
+    candidates = [lvl for lvl in supported_norm if lvl != "none"]
+    if not candidates:
+        return requested
+    req_idx = ladder.index(requested)
+    below = [lvl for lvl in candidates if ladder.index(lvl) < req_idx]
+    return max(below, key=ladder.index) if below else min(candidates, key=ladder.index)
+
+
 class CLIProxyAPIProfile(ProviderProfile):
     """One CPA provider on one CPA instance, or the instance-wide chat provider.
 
@@ -242,6 +267,45 @@ class CLIProxyAPIProfile(ProviderProfile):
     def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
         efforts = self._cpa_instance.catalog.meta.get(model or "", {}).get("reasoning_efforts")
         return tuple(efforts) if efforts else None
+
+    def build_api_kwargs_extras(
+        self,
+        *,
+        reasoning_config: dict[str, Any] | None = None,
+        model: str | None = None,
+        **context: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The reasoning effort Hermes is set to, in the shape the model's wire reads.
+
+        Hermes leaves reasoning to a registered profile: without this hook a
+        chat request carries no effort and CPA applies its own default. CPA's
+        chat parser reads only a top-level ``reasoning_effort``. Hermes' main
+        Messages and Responses transports never call this hook; its auxiliary
+        client calls it on every wire. No effort set sends nothing.
+        """
+        if not isinstance(reasoning_config, dict) or not reasoning_config:
+            return {}, {}
+        # The wire CPA serves the model on. Only the instance-wide profile has
+        # one per model, and it knows it on a Hermes that never asks for it too.
+        per_model = getattr(self, "api_mode_for_model", None)
+        wire = (per_model(model or "") if callable(per_model) else None) or self.api_mode
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        if reasoning_config.get("enabled") is False or effort == "none":
+            level, nested = "none", {"enabled": False, "effort": "none"}
+        elif effort:
+            listed = self.supported_reasoning_efforts(model) or _OPENAI_COMPAT_WIRE_EFFORTS
+            level = _clamp_effort(effort, listed)
+            nested = {**reasoning_config, "effort": level}
+        else:
+            level, nested = "", dict(reasoning_config)
+        top = {"reasoning_effort": level} if level else {}
+        if wire == cpa.CHAT:
+            return {}, top
+        # Hermes reaches a model on another wire through its Anthropic or Codex
+        # adapter, which read ``extra_body.reasoning``, or through a plain chat
+        # client, where CPA reads only the top-level key. The hook cannot tell
+        # which. Each reads one of the two shapes and ignores the other.
+        return {"reasoning": nested}, top
 
     def get_max_tokens(self, model: str | None) -> int | None:
         value = self._cpa_instance.catalog.meta.get(model or "", {}).get("max_output_tokens")
