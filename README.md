@@ -297,7 +297,7 @@ On the `chat_completions` wire the plugin sends the reasoning effort set in
 Hermes (`agent.reasoning_effort`) as `reasoning_effort`. A level the model does
 not list becomes the nearest lower listed level, or the lowest listed one when
 none is lower. With no effort set, nothing is sent and CPA's default applies.
-On the other wires Hermes sends the effort itself.
+On the other wires the main loop of Hermes builds the effort itself.
 
 Hermes `/model` shows max output, PDF and structured output only from
 models.dev; a plugin cannot set them, and CPA's model definitions have no PDF

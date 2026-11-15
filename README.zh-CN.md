@@ -256,7 +256,7 @@ Hermes fallback 到 models.dev；真实上限恰为 64,000 的 model 也会因�
 在 `chat_completions` wire 上，plugin 会把 Hermes 中设置的 reasoning effort
 （`agent.reasoning_effort`）作为 `reasoning_effort` 发送。model 未列出的级别会变为列表中最接近的
 较低级别；没有更低级别时，取列表中最低的级别。未设置 effort 时不发送任何内容，沿用 CPA 的
-默认值。在其他 wire 上，由 Hermes 自行发送 effort。
+默认值。在其他 wire 上，由 Hermes 的 main loop（主循环）自行构建 effort。
 
 Hermes 的 `/model` 只从 models.dev 显示 max output、PDF 和结构化输出；plugin 无法设置
 它们，CPA 的 model 定义也没有 PDF 或结构化输出字段。要显示它们，可从 models.dev 补充
