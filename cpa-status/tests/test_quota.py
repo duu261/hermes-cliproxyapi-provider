@@ -1283,33 +1283,45 @@ class ViewTests(QuotaTestCase):
             return quota.AccountResult(name, "codex", usage)
 
         no_figure = quota.Usage(pending=[quota.Window("wk", 0.0, late)])
+        # Only a limit on one feature: no account-wide figure either.
+        scoped_only = quota.Usage(windows=[quota.Window("spark wk", 3, scoped=True)])
         items = [
             quota.AccountResult("unread", "codex", error="not checked"),
+            quota.AccountResult("missed", "codex", error="not checked"),
             one("late", 100, late),
             quota.AccountResult("x-fail", "codex", error="timeout"),
+            quota.AccountResult("a-fail", "codex", error="timeout"),
             one("busy", 85),
             one("stuck", 100),
             one("edge", 100, edge),
             quota.AccountResult("nofig", "codex", no_figure),
+            quota.AccountResult("model", "codex", scoped_only),
             one("soon", 100, soon),
+            one("again", 100, soon),
             one("open", 5),
         ]
         self.assertEqual(
             quota._provider_block("codex", items, NOW),
             [
-                "codex · 9 accounts: 3 have room · 4 out"
-                f" (next free {quota._when(soon, NOW)}) · 1 failed · 1 not checked",
-                # Room first, the least used on top; no figure counts as room, last.
+                "codex · 13 accounts: 4 have room · 5 out"
+                f" (next free {quota._when(soon, NOW)}) · 2 failed · 2 not checked",
+                # Room first, the least used on top. An account with no
+                # account-wide figure counts as room and comes last, by name.
                 "    open    wk 5%",
                 "    busy    wk 85%",
+                "    model   spark wk 3%",
                 f"    nofig   wk no figure yet → {quota._when(late, NOW)}",
-                # Then the accounts that are out: the next to free first.
+                # Then the accounts that are out: the next to free first, by
+                # name when they free together, no reset time last.
+                f"OUT again   wk 100% → {quota._when(soon, NOW)}",
                 f"OUT soon    wk 100% → {quota._when(soon, NOW)}",
                 f"OUT late    wk 100% → {quota._when(late, NOW)}",
                 "OUT edge    wk 100% → 9999-12-31",
                 "OUT stuck   wk 100%",
-                # Then the ones with no answer: failed, then not reached (not by name).
+                # Then the ones with no answer: failed, then not reached, each by name.
+                "    a-fail  timeout",
                 "    x-fail  timeout",
+                "    missed  not checked",
                 "    unread  not checked",
             ],
         )

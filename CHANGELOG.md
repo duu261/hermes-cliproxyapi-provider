@@ -21,8 +21,8 @@ Ideas that are parked. None of them is in any release, and none is promised.
   first. Accounts with room lead, the least used on top; then the accounts
   that are out, the next to free first and one with no reset time last; then
   the accounts that failed; then the ones the run did not reach. Before, the
-  accounts that were out led and the fullest account came next, so the
-  emptiest one was at the bottom.
+  accounts that were out led, then the ones that failed, then the rest from
+  the fullest down, so the emptiest one was at the bottom.
   - "Least used" goes by the fullest window of the account. A limit on one
     model or feature does not count. An account with no figure yet comes
     after the ones that have one.
