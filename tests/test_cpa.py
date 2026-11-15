@@ -47,12 +47,53 @@ class ParseConfigTests(unittest.TestCase):
 
     def test_no_instances_gives_default_local(self):
         for config in ({}, None, {"cliproxyapi": None}, {"cliproxyapi": {"instances": {}}}):
-            specs, errors = cpa.parse_config(config)
-            self.assertEqual(errors, [])
-            self.assertEqual([s.name for s in specs], ["local"])
-            self.assertEqual(specs[0].root, cpa.DEFAULT_ROOT)
-            self.assertEqual(specs[0].key_env, cpa.DEFAULT_KEY_ENV)
-            self.assertEqual(specs[0].url_env, cpa.DEFAULT_URL_ENV)
+            for unset in (None, "", "  "):
+                specs, errors = cpa.parse_config(config, env=lambda name, v=unset: v)
+                self.assertEqual(errors, [])
+                self.assertEqual([s.name for s in specs], ["local"])
+                self.assertEqual(specs[0].root, cpa.DEFAULT_ROOT)
+                self.assertEqual(specs[0].key_env, cpa.DEFAULT_KEY_ENV)
+
+    def test_default_local_url_env_is_normalized_to_root(self):
+        asked = []
+
+        def env(name, value=""):
+            asked.append(name)
+            return value
+
+        for raw in (
+            "http://127.0.0.1:9000",
+            "http://127.0.0.1:9000/",
+            "http://127.0.0.1:9000/v1",
+            " http://127.0.0.1:9000/v1/ ",
+        ):
+            specs, errors = cpa.parse_config({}, env=lambda name, v=raw: env(name, v))
+            self.assertEqual(errors, [], raw)
+            self.assertEqual(
+                [(s.name, s.root) for s in specs], [("local", "http://127.0.0.1:9000")]
+            )
+        self.assertEqual(set(asked), {cpa.DEFAULT_URL_ENV})
+
+    def test_default_local_bad_url_env_is_skipped_without_leaking(self):
+        for raw in ("http://8.8.8.8:8317", "https://user:pw@cpa.example", "not-a-url"):
+            specs, errors = cpa.parse_config({}, env=lambda name, v=raw: v)
+            self.assertEqual(specs, [], raw)
+            self.assertEqual(len(errors), 1, raw)
+            self.assertIn("'local'", errors[0])
+            for secret in ("8.8.8.8", "pw", "cpa.example", "not-a-url"):
+                self.assertNotIn(secret, errors[0])
+
+    def test_url_env_is_not_read_when_instances_are_configured(self):
+        asked = []
+
+        def env(name):
+            asked.append(name)
+            return "http://127.0.0.1:9000"
+
+        specs, errors = cpa.parse_config(_instance(), env=env)
+        self.assertEqual(errors, [])
+        self.assertEqual([(s.name, s.root) for s in specs], [("a", "http://127.0.0.1:8317")])
+        self.assertEqual(asked, [])
 
     def test_management_key_and_overrides(self):
         specs, errors = cpa.parse_config(

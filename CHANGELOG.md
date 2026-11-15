@@ -15,6 +15,45 @@ Ideas that are parked. None of them is in any release, and none is promised.
 - Address masking in `/cpa` (hosts, IPs, paths in error text): drop it, or
   make it a setting. Emails, tokens and project ids stay masked either way.
 
+## 0.8.2
+
+- Provider: `CPA_LOCAL_BASE_URL` works with or without `/v1`
+  ([#26](https://github.com/duu261/hermes-cliproxyapi-provider/issues/26)).
+  Hermes used the value as typed for every `cpa-local` provider. Without
+  `/v1`, chat requests went to `<root>/chat/completions` and Responses
+  requests to `<root>/responses`, and CPA answered 404, while the model list
+  and the Anthropic wire kept working. The plugin now reads the variable
+  itself and treats it like a configured `base_url`, so each provider gets
+  the URL its wire needs. A `base_url` under `cliproxyapi.instances` was
+  already handled this way and is unchanged.
+- What this changes when `CPA_LOCAL_BASE_URL` is set:
+  - The value follows the `base_url` rules. Plain `http://` to a public
+    address, or a URL with a user name or password in it, was handed to
+    Hermes as typed. Now `cpa-local` is not registered and a warning is
+    logged.
+  - It is read when Hermes starts. Restart Hermes after changing it.
+  - `model.base_url` in `config.yaml` now wins over it for a
+    `cpa-local-<provider>` default model (and for `cpa-local` on Hermes older
+    than 0.22.6); before, the variable won. `hermes model` saved the
+    variable's value there as typed, and running it again keeps what is
+    saved. If requests still get a 404 or go to an old address after the
+    upgrade, run `hermes config unset model.base_url`.
+  - The Base URL prompt of `hermes model` no longer changes the URL of
+    `cpa-local`: Hermes no longer knows the variable and ignores what is
+    typed there. Set it in `~/.hermes/.env`.
+  - Hermes removes from the environment of agent commands only the names a
+    provider declares, so it no longer removes `CPA_LOCAL_BASE_URL`. It is a
+    URL, not a key.
+  - On a gateway that serves several Hermes profiles the plugin may load
+    before a profile's `.env` can be read, and then uses the default URL.
+    Configure a named instance there.
+- README: Hermes uses `model.base_url`, the `base_url` of a
+  `fallback_providers` entry and `--base-url` as typed, for named instances
+  too. Without `/v1` they fail the same way. No plugin hook sees these URLs,
+  so the README now says to leave them out or end them with `/v1`.
+- No new request. `/cpa` shows a config error line for a
+  `CPA_LOCAL_BASE_URL` that breaks the rules, and is otherwise unchanged.
+
 ## 0.8.1
 
 Docs and comments only. No behavior change, no new request.

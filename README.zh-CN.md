@@ -46,7 +46,11 @@ Hermes gateway，使其加载 plugin。
 
 零配置：在 `~/.hermes/.env` 中设置 `CPA_LOCAL_API_KEY`（一个 CPA client key），
 即可获得指向 `http://127.0.0.1:8317` 上 CPA 的 `cpa-local`；可用
-`CPA_LOCAL_BASE_URL` 覆盖 URL。
+`CPA_LOCAL_BASE_URL` 覆盖 URL，带不带 `/v1` 均可。plugin 在 Hermes 启动时读取它，
+修改后需重启 Hermes。它遵循下文 `base_url` 的规则：不符合规则的值（例如以明文
+`http://` 指向公网地址）会使 `cpa-local` 不被注册，并在日志中记录一条警告。在为多个
+Hermes profile 提供服务的 gateway 上，plugin 可能在 profile 的 `.env` 可读之前就已
+加载，此时会使用默认 URL：这种情况请配置具名 instance。
 
 对于具名 instance 或远程 instance，在 `~/.hermes/config.yaml` 中添加：
 
@@ -58,6 +62,12 @@ cliproxyapi:
       key_env: CPA_MAIN_API_KEY           # env var holding a CPA client key
       mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Public mode or management mode"
 ```
+
+plugin 只会给它自己读取的 URL 补上 `/v1`：上面的 `base_url` 和 `CPA_LOCAL_BASE_URL`。
+你直接交给 Hermes 的 URL 会被原样使用：`config.yaml` 中的 `model.base_url`、
+`fallback_providers` 条目的 `base_url`，以及 `--base-url`。对这些 profile 请不要设置
+它们，因为每个 profile 已自带 URL。如果一定要设置，请以 `/v1` 结尾：否则 Hermes 会请求
+`<root>/chat/completions` 或 `<root>/responses`，CPA 返回 404，而 model 列表仍能正常加载。
 
 然后运行一次 `hermes model`（或任何会列出 model 的命令）。plugin 会读取该 instance 的 model 列表，
 注册找到的 provider 并写入 cache，之后每次启动时直接注册，无需网络请求：

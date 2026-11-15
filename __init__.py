@@ -233,7 +233,7 @@ class CLIProxyAPIProfile(ProviderProfile):
                 return None
             api_key, root = cpa_key, spec.root
         else:
-            # Callers pass the effective endpoint (a user *_BASE_URL override wins).
+            # Callers pass the effective endpoint (a model.base_url override wins).
             root = cpa.root_url(base_url) if base_url else spec.root
         if not instance.refresh(api_key, root, timeout):
             return None
@@ -318,8 +318,7 @@ def _build_profile(instance: _Instance, group: str | None) -> CLIProxyAPIProfile
         root, env_vars = spec.route_root, (spec.route_key_for(group),)
         description += ", billed through a gateway"
     else:
-        root = spec.root
-        env_vars = (spec.key_env, spec.url_env) if spec.url_env else (spec.key_env,)
+        root, env_vars = spec.root, (spec.key_env,)
     profile = (CLIProxyAPIProfile if group else CLIProxyAPIWideProfile)(
         name=name,
         api_mode=api_mode,
@@ -377,7 +376,7 @@ def _register_groups(instance: _Instance) -> None:
 
 def register_all() -> list[str]:
     home = _hermes_home()
-    specs, errors = cpa.parse_config(_read_config(home))
+    specs, errors = cpa.parse_config(_read_config(home), env=_read_secret)
     for error in errors:
         logger.warning("cliproxyapi config: %s", error)
     for spec in specs:
