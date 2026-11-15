@@ -54,7 +54,13 @@ không cần bật. `cpa-status` thì cần bật (xem
 
 Không cần cấu hình: đặt `CPA_LOCAL_API_KEY` (một client key của CPA) trong
 `~/.hermes/.env`. Bạn sẽ có `cpa-local` cho CPA tại `http://127.0.0.1:8317`; đổi
-URL bằng `CPA_LOCAL_BASE_URL`.
+URL bằng `CPA_LOCAL_BASE_URL`, có hoặc không có `/v1` đều được. Plugin đọc biến
+này khi Hermes khởi động, nên hãy khởi động lại Hermes sau khi đổi. Giá trị này
+theo cùng quy tắc với `base_url` bên dưới: một giá trị vi phạm (ví dụ `http://`
+thường tới một địa chỉ công khai) khiến `cpa-local` không được đăng ký và ghi
+một cảnh báo vào log. Trên gateway phục vụ nhiều profile Hermes, plugin có thể
+được nạp trước khi đọc được `.env` của profile, khi đó nó dùng URL mặc định:
+trường hợp đó hãy cấu hình một instance có tên.
 
 Với instance có tên hoặc instance từ xa, thêm vào `~/.hermes/config.yaml`:
 
@@ -66,6 +72,14 @@ cliproxyapi:
       key_env: CPA_MAIN_API_KEY           # env var holding a CPA client key
       mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Public mode or management mode"
 ```
+
+Plugin chỉ tự thêm `/v1` vào các URL do chính nó đọc: `base_url` ở trên và
+`CPA_LOCAL_BASE_URL`. Hermes dùng nguyên văn URL mà bạn đưa thẳng cho nó:
+`model.base_url` trong `config.yaml`, `base_url` của một mục
+`fallback_providers`, và `--base-url`. Với các profile này, hãy bỏ trống những
+chỗ đó, vì mỗi profile đã mang sẵn URL của mình. Nếu vẫn đặt, hãy kết thúc URL
+bằng `/v1`: thiếu nó, Hermes gửi tới `<root>/chat/completions` hoặc
+`<root>/responses` và CPA trả 404, trong khi danh sách model vẫn tải được.
 
 Sau đó chạy `hermes model` (hoặc bất kỳ lệnh nào liệt kê model) một lần. Plugin
 đọc danh sách model của instance, đăng ký các provider tìm thấy và lưu cache, nên
@@ -453,12 +467,16 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
 pre quota · live 21:40
 
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
-    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
-    codex-cu…@… pro   wk 40%
     codex-bd…@… pro   wk 31%
+    codex-cu…@… pro   wk 40%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
 
-antigravity · 1 account: 1 have room
+antigravity · 2 accounts: 2 have room
+antigravity-02…@… pro
+  gemini          5h 0% · wk 8%
+  claude and gpt  5h 10% · wk 41%
+
 antigravity-01…@… pro  out: claude and gpt
   gemini          5h 0% · wk 12%
   claude and gpt  5h 100% → 23:10 · wk 64%
@@ -497,6 +515,14 @@ hiện là `out: <group>`. Các giới hạn tuần theo model của Claude
 (Fable, Opus, Sonnet, apps, Cowork) cũng vậy: cái nào đầy hiện là `out: fable`
 và account vẫn phục vụ các model khác. Các giới hạn của Codex cho một feature
 hoặc model cũng vậy.
+
+Trong một provider, các account còn nhận được việc đứng trước: account còn
+quota, dùng ít nhất ở trên cùng, rồi đến các account `OUT`, cái nào được mở lại
+sớm nhất đứng trước, rồi đến các account bị lỗi hoặc chưa được kiểm tra. "Dùng
+ít nhất" tính theo window đầy nhất của account; giới hạn riêng cho một model
+hoặc feature không tính, và account chưa có số liệu đứng sau các account đã
+có. Account có model group được xếp theo group còn trống nhiều nhất của nó.
+Account chiếm nhiều dòng có một dòng trống ở trên và ở dưới.
 
 - Trên Telegram, Discord, Slack, Matrix và Mattermost, câu trả lời được gửi
   dưới dạng code block để các cột thẳng hàng. Cần Hermes 0.22.3 trở lên, bản

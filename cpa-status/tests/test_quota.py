@@ -1228,8 +1228,9 @@ class ViewTests(QuotaTestCase):
         self.assertIn("pro   wk 40%", out)
         lines = out.splitlines()
         codex = lines[lines.index(next(line for line in lines if line.startswith("codex ·"))) + 1 :]
-        self.assertTrue(codex[0].startswith("OUT "))  # out first
-        self.assertIn("plus  5h 100%", codex[0])
+        self.assertTrue(codex[0].startswith("    codex-us…@… pro "), codex)  # room first
+        self.assertTrue(codex[1].startswith("OUT "), codex)  # out after it
+        self.assertIn("plus  5h 100%", codex[1])
 
     def test_blank_line_between_provider_blocks(self):
         lines = self.run_quota().splitlines()
@@ -1248,8 +1249,8 @@ class ViewTests(QuotaTestCase):
         self.assertEqual(
             lines[start + 1 : start + 3],
             [
-                f"OUT codex-us…@… plus  5h 100% → {free} · wk 60%",
                 "    codex-us…@… pro   wk 40%",
+                f"OUT codex-us…@… plus  5h 100% → {free} · wk 60%",
             ],
         )
         # A block with no account out is not indented.
@@ -1263,14 +1264,157 @@ class ViewTests(QuotaTestCase):
 
         failed = quota.AccountResult("abc", "codex", error="timeout")
         block = quota._provider_block("codex", [one("ab", 5, "pro"), one("abcdef", 7), failed], NOW)
-        self.assertEqual(block[1:], ["abc     timeout", "abcdef      wk 7%", "ab     pro  wk 5%"])
+        self.assertEqual(block[1:], ["ab     pro  wk 5%", "abcdef      wk 7%", "abc     timeout"])
         # A very long name or plan is shown whole; the others stop at the cap.
         block = quota._provider_block("codex", [one("n" * 50, 9), one("ab", 5, "pro")], NOW)
-        self.assertEqual(block[1], "n" * 50 + "      wk 9%")
-        self.assertEqual(block[2], "ab" + " " * (quota._NAME_PAD - 2) + " pro  wk 5%")
+        self.assertEqual(block[1], "ab" + " " * (quota._NAME_PAD - 2) + " pro  wk 5%")
+        self.assertEqual(block[2], "n" * 50 + "      wk 9%")
         block = quota._provider_block("codex", [one("ab", 9, "p" * 32), one("cd", 5, "pro")], NOW)
-        self.assertEqual(block[1], "ab " + "p" * 32 + "  wk 9%")
-        self.assertEqual(block[2], "cd pro" + " " * (quota._PLAN_PAD - 3) + "  wk 5%")
+        self.assertEqual(block[1], "cd pro" + " " * (quota._PLAN_PAD - 3) + "  wk 5%")
+        self.assertEqual(block[2], "ab " + "p" * 32 + "  wk 9%")
+
+    def test_accounts_with_room_come_first_and_the_most_open_on_top(self):
+        soon, late = NOW + timedelta(hours=1), NOW + timedelta(hours=3)
+        # A vendor can send any time: one at the edge of the calendar has no local form.
+        edge = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone(timedelta(hours=-12)))
+
+        def one(name, used, reset=None):
+            usage = quota.Usage(windows=[quota.Window("wk", used, reset)])
+            return quota.AccountResult(name, "codex", usage)
+
+        no_figure = quota.Usage(pending=[quota.Window("wk", 0.0, late)])
+        # Only a limit on one feature: no account-wide figure either.
+        scoped_only = quota.Usage(windows=[quota.Window("spark wk", 3, scoped=True)])
+        items = [
+            quota.AccountResult("unread", "codex", error="not checked"),
+            quota.AccountResult("missed", "codex", error="not checked"),
+            one("late", 100, late),
+            quota.AccountResult("x-fail", "codex", error="timeout"),
+            quota.AccountResult("a-fail", "codex", error="timeout"),
+            one("busy", 85),
+            one("stuck", 100),
+            one("edge", 100, edge),
+            quota.AccountResult("nofig", "codex", no_figure),
+            quota.AccountResult("model", "codex", scoped_only),
+            one("soon", 100, soon),
+            one("again", 100, soon),
+            one("open", 5),
+        ]
+        self.assertEqual(
+            quota._provider_block("codex", items, NOW),
+            [
+                "codex · 13 accounts: 4 have room · 5 out"
+                f" (next free {quota._when(soon, NOW)}) · 2 failed · 2 not checked",
+                # Room first, the least used on top. An account with no
+                # account-wide figure counts as room and comes last, by name.
+                "    open    wk 5%",
+                "    busy    wk 85%",
+                "    model   spark wk 3%",
+                f"    nofig   wk no figure yet → {quota._when(late, NOW)}",
+                # Then the accounts that are out: the next to free first, by
+                # name when they free together, no reset time last.
+                f"OUT again   wk 100% → {quota._when(soon, NOW)}",
+                f"OUT soon    wk 100% → {quota._when(soon, NOW)}",
+                f"OUT late    wk 100% → {quota._when(late, NOW)}",
+                "OUT edge    wk 100% → 9999-12-31",
+                "OUT stuck   wk 100%",
+                # Then the ones with no answer: failed, then not reached, each by name.
+                "    a-fail  timeout",
+                "    x-fail  timeout",
+                "    missed  not checked",
+                "    unread  not checked",
+            ],
+        )
+        # The same figure: by name.
+        block = quota._provider_block("codex", [one("b", 5), one("a", 5)], NOW)
+        self.assertEqual(block[1:], ["a  wk 5%", "b  wk 5%"])
+
+    def test_account_with_model_groups_ranks_by_its_most_open_group(self):
+        def grouped(name, gemini, claude):
+            windows = [
+                quota.Window("Gemini Models wk", gemini, group="0:Gemini Models"),
+                quota.Window("Claude and GPT models wk", claude, group="1:Claude and GPT models"),
+            ]
+            return quota.AccountResult(name, "antigravity", quota.Usage(windows=windows))
+
+        items = [
+            grouped("even", 50, 50),
+            grouped("full", 100, 100),
+            grouped("half", 99, 49),
+            grouped("split", 100, 0),
+            grouped("tied", 49, 60),
+        ]
+        self.assertEqual(
+            quota._provider_block("antigravity", items, NOW),
+            [
+                "antigravity · 5 accounts: 4 have room · 1 out",
+                # One group is full, the other untouched: the most open account.
+                "    split  out: gemini",
+                "      gemini          wk 100%",
+                "      claude and gpt  wk 0%",
+                "",
+                # The same most open group as `half`: the next group decides.
+                "    tied",
+                "      gemini          wk 49%",
+                "      claude and gpt  wk 60%",
+                "",
+                "    half",
+                "      gemini          wk 99%",
+                "      claude and gpt  wk 49%",
+                "",
+                "    even",
+                "      gemini          wk 50%",
+                "      claude and gpt  wk 50%",
+                "",
+                "OUT full",
+                "      gemini          wk 100%",
+                "      claude and gpt  wk 100%",
+            ],
+        )
+
+    def test_a_scoped_limit_does_not_move_an_account_down(self):
+        def claude(name, week, fable):
+            windows = [quota.Window("wk", week), quota.Window("fable", fable, scoped=True)]
+            return quota.AccountResult(name, "claude", quota.Usage(windows=windows))
+
+        # A full limit on one model leaves the account serving the rest, so the
+        # account-wide window alone places it.
+        block = quota._provider_block("claude", [claude("b", 50, 0), claude("a", 40, 100)], NOW)
+        self.assertEqual(
+            block[1:],
+            ["a  wk 40% · fable 100%  out: fable", "b  wk 50% · fable 0%"],
+        )
+
+    def test_blank_line_only_around_an_account_that_takes_several_lines(self):
+        def flat(name, used):
+            usage = quota.Usage(windows=[quota.Window("wk", used)])
+            return quota.AccountResult(name, "kiro", usage)
+
+        tall = quota.AccountResult(
+            "tall",
+            "kiro",
+            quota.Usage(
+                windows=[
+                    quota.Window("Gemini Models wk", 10, group="0:Gemini Models"),
+                    quota.Window("Other Models wk", 20, group="1:Other Models"),
+                ]
+            ),
+        )
+        items = [flat("c", 40), tall, flat("a", 5), flat("b", 30)]
+        self.assertEqual(
+            quota._provider_block("kiro", items, NOW),
+            [
+                "kiro · 4 accounts: 4 have room",
+                "a     wk 5%",
+                "",
+                "tall",
+                "  gemini  wk 10%",
+                "  other   wk 20%",
+                "",
+                "b     wk 30%",
+                "c     wk 40%",
+            ],
+        )
 
     def test_reset_time_only_on_a_window_that_is_nearly_full(self):
         soon = NOW + timedelta(hours=2)

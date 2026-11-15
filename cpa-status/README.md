@@ -46,7 +46,9 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   a prepaid balance, and a Codex line shows limits on one feature or model
   and banked limit resets, all from replies the run already fetches. On
   Telegram, Discord, Slack, Matrix and Mattermost the reply is a code block
-  (Hermes 0.22.3 or later). Nothing paid,
+  (Hermes 0.22.3 or later). Within a provider the accounts with room are
+  listed first, the least used on top, then the ones that are out, then the
+  ones that failed or were not checked. Nothing paid,
   no downloads, no resets; the full request list is in the
   [README](../README.md#cpa-quota-live-usage). At most 20 accounts and 4
   requests per account per run, first request alone, then 4 at a time;

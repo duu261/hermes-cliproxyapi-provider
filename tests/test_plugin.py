@@ -80,9 +80,10 @@ class PluginTests(unittest.TestCase):
         _Gateway.v8 = True
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
-        self._env = {k: os.environ.get(k) for k in ("HERMES_HOME", "T_MGMT")}
+        self._env = {k: os.environ.get(k) for k in ("HERMES_HOME", "T_MGMT", "CPA_LOCAL_BASE_URL")}
         os.environ["HERMES_HOME"] = str(self.home)
         os.environ.pop("T_MGMT", None)
+        os.environ.pop("CPA_LOCAL_BASE_URL", None)
         self.write_config({"t": {"base_url": self.root + "/v1", "key_env": "T_KEY"}})
 
     def tearDown(self):
@@ -204,7 +205,44 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(set(profiles), {"cpa-local"})
         local = profiles["cpa-local"]
         self.assertEqual(local.base_url, "http://127.0.0.1:8317/v1")
-        self.assertEqual(local.env_vars, ("CPA_LOCAL_API_KEY", "CPA_LOCAL_BASE_URL"))
+        # Only the key: a URL variable declared here is used raw by Hermes,
+        # skipping the /v1 each wire needs and the plain-http check.
+        self.assertEqual(local.env_vars, ("CPA_LOCAL_API_KEY",))
+
+    def test_local_base_url_env_gets_each_wire_its_url(self):
+        (self.home / "config.yaml").write_text("model: {}\n")
+        for raw in (self.root, self.root + "/v1", self.root + "/v1/"):
+            os.environ["CPA_LOCAL_BASE_URL"] = raw
+            _, profiles = self.load()
+            local = profiles["cpa-local"]
+            self.assertEqual(local.base_url, self.root + "/v1", raw)
+            self.assertEqual(local.models_url, self.root + "/v1/models", raw)
+            self.assertEqual(local.env_vars, ("CPA_LOCAL_API_KEY",), raw)
+            local.fetch_models(api_key=API_KEY)
+            self.assertEqual(profiles["cpa-local-claude"].base_url, self.root, raw)
+            self.assertEqual(profiles["cpa-local-codex"].base_url, self.root + "/v1", raw)
+
+    def test_local_base_url_env_is_read_through_hermes(self):
+        # A profile's dotenv values reach a plugin through Hermes' reader, not
+        # always through the process environment.
+        from agent import secret_scope
+
+        (self.home / "config.yaml").write_text("model: {}\n")
+        token = secret_scope.set_secret_scope({"CPA_LOCAL_BASE_URL": self.root})
+        try:
+            _, profiles = self.load()
+        finally:
+            secret_scope.reset_secret_scope(token)
+        self.assertEqual(profiles["cpa-local"].base_url, self.root + "/v1")
+
+    def test_unsafe_local_base_url_env_registers_nothing(self):
+        (self.home / "config.yaml").write_text("model: {}\n")
+        os.environ["CPA_LOCAL_BASE_URL"] = "http://8.8.8.8:8317"
+        with self.assertLogs(level="WARNING") as logs:
+            _, profiles = self.load()
+        self.assertEqual(profiles, {})
+        self.assertTrue(any("'local'" in line for line in logs.output))
+        self.assertFalse(any("8.8.8.8" in line for line in logs.output))
 
     def test_broken_instance_is_skipped_with_safe_warning(self):
         self.write_config(

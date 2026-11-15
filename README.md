@@ -53,7 +53,13 @@ they load the plugins.
 
 Zero config: set `CPA_LOCAL_API_KEY` (a CPA client key) in `~/.hermes/.env`.
 That gives `cpa-local` for a CPA at `http://127.0.0.1:8317`; override the URL
-with `CPA_LOCAL_BASE_URL`.
+with `CPA_LOCAL_BASE_URL`, with or without `/v1`. The plugin reads it when
+Hermes starts, so restart Hermes after changing it. It follows the rules of
+`base_url` below: a value that breaks them (plain `http://` to a public
+address, for example) leaves `cpa-local` unregistered and logs a warning. On a
+gateway that serves several Hermes profiles the plugin may load before a
+profile's `.env` can be read, and then uses the default URL: configure a named
+instance there.
 
 For named or remote instances, add to `~/.hermes/config.yaml`:
 
@@ -65,6 +71,14 @@ cliproxyapi:
       key_env: CPA_MAIN_API_KEY           # env var holding a CPA client key
       mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Public mode or management mode"
 ```
+
+The plugin adds `/v1` only to the URLs it reads itself: `base_url` above and
+`CPA_LOCAL_BASE_URL`. Hermes uses a URL you hand it directly exactly as typed:
+`model.base_url` in `config.yaml`, the `base_url` of a `fallback_providers`
+entry, and `--base-url`. Leave those out for these profiles, because each
+profile already carries its URL. If you set one, end it with `/v1`: without it
+Hermes posts to `<root>/chat/completions` or `<root>/responses` and CPA answers
+404, while the model list still loads.
 
 Then run `hermes model` (or anything that lists models) once. The plugin reads
 the instance's model lists, registers the providers it finds, and caches them,
@@ -455,12 +469,16 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
 pre quota · live 21:40
 
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
-    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
-    codex-cu…@… pro   wk 40%
     codex-bd…@… pro   wk 31%
+    codex-cu…@… pro   wk 40%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
 
-antigravity · 1 account: 1 have room
+antigravity · 2 accounts: 2 have room
+antigravity-02…@… pro
+  gemini          5h 0% · wk 8%
+  claude and gpt  5h 10% · wk 41%
+
 antigravity-01…@… pro  out: claude and gpt
   gemini          5h 0% · wk 12%
   claude and gpt  5h 100% → 23:10 · wk 64%
@@ -499,6 +517,14 @@ every group is full; otherwise the full groups show as `out: <group>`.
 Claude's model-scoped weekly limits (Fable, Opus, Sonnet, apps, Cowork) work
 the same way: a full one shows as `out: fable` and the account keeps serving
 other models. So do Codex limits on one feature or model.
+
+Within a provider the accounts that can take work come first: the ones with
+room, the least used on top, then the `OUT` accounts, the next to free first,
+then the accounts that failed or were not checked. "Least used" goes by the
+fullest window of the account; a limit on one model or feature does not
+count, and an account with no figure yet comes after the ones that have one.
+An account with model groups is placed by its most open group. An account
+that takes several lines has a blank line above and below it.
 
 - On Telegram, Discord, Slack, Matrix and Mattermost the reply is sent as a
   code block, so the columns line up. This needs Hermes 0.22.3 or later, which

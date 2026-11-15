@@ -46,7 +46,11 @@ Hermes gateway，使其加载 plugin。
 
 零配置：在 `~/.hermes/.env` 中设置 `CPA_LOCAL_API_KEY`（一个 CPA client key），
 即可获得指向 `http://127.0.0.1:8317` 上 CPA 的 `cpa-local`；可用
-`CPA_LOCAL_BASE_URL` 覆盖 URL。
+`CPA_LOCAL_BASE_URL` 覆盖 URL，带不带 `/v1` 均可。plugin 在 Hermes 启动时读取它，
+修改后需重启 Hermes。它遵循下文 `base_url` 的规则：不符合规则的值（例如以明文
+`http://` 指向公网地址）会使 `cpa-local` 不被注册，并在日志中记录一条警告。在为多个
+Hermes profile 提供服务的 gateway 上，plugin 可能在 profile 的 `.env` 可读之前就已
+加载，此时会使用默认 URL：这种情况请配置具名 instance。
 
 对于具名 instance 或远程 instance，在 `~/.hermes/config.yaml` 中添加：
 
@@ -58,6 +62,12 @@ cliproxyapi:
       key_env: CPA_MAIN_API_KEY           # env var holding a CPA client key
       mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Public mode or management mode"
 ```
+
+plugin 只会给它自己读取的 URL 补上 `/v1`：上面的 `base_url` 和 `CPA_LOCAL_BASE_URL`。
+你直接交给 Hermes 的 URL 会被原样使用：`config.yaml` 中的 `model.base_url`、
+`fallback_providers` 条目的 `base_url`，以及 `--base-url`。对这些 profile 请不要设置
+它们，因为每个 profile 已自带 URL。如果一定要设置，请以 `/v1` 结尾：否则 Hermes 会请求
+`<root>/chat/completions` 或 `<root>/responses`，CPA 返回 404，而 model 列表仍能正常加载。
 
 然后运行一次 `hermes model`（或任何会列出 model 的命令）。plugin 会读取该 instance 的 model 列表，
 注册找到的 provider 并写入 cache，之后每次启动时直接注册，无需网络请求：
@@ -393,12 +403,16 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
 pre quota · live 21:40
 
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
-    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
-    codex-cu…@… pro   wk 40%
     codex-bd…@… pro   wk 31%
+    codex-cu…@… pro   wk 40%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
 
-antigravity · 1 account: 1 have room
+antigravity · 2 accounts: 2 have room
+antigravity-02…@… pro
+  gemini          5h 0% · wk 8%
+  claude and gpt  5h 10% · wk 41%
+
 antigravity-01…@… pro  out: claude and gpt
   gemini          5h 0% · wk 12%
   claude and gpt  5h 100% → 23:10 · wk 64%
@@ -433,6 +447,12 @@ header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已�
 划分的每周限额（Fable、Opus、Sonnet、apps、Cowork）同样如此：满的那个显示为
 `out: fable`，account 继续提供其他 model。Codex 针对单个 feature 或 model 的限额
 也一样。
+
+在一个 provider 内，还能接请求的 account 排在前面：先是有余量的 account，用得最少的
+在最上面；然后是 `OUT` 的 account，最先恢复的排前面；最后是失败或未检查的 account。
+“用得最少”按该 account 最满的 window 计算；针对单个 model 或 feature 的限额不算，
+还没有数字的 account 排在有数字的之后。带 model group 的 account 按它最空的 group
+排序。占多行的 account 上下各有一个空行。
 
 - 在 Telegram、Discord、Slack、Matrix 和 Mattermost 上，回复以 code block 发送，
   让各列对齐。这需要 Hermes 0.22.3 或更高版本，它会把 platform 告诉命令；在其他地方
