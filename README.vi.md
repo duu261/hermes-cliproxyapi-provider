@@ -54,7 +54,13 @@ không cần bật. `cpa-status` thì cần bật (xem
 
 Không cần cấu hình: đặt `CPA_LOCAL_API_KEY` (một client key của CPA) trong
 `~/.hermes/.env`. Bạn sẽ có `cpa-local` cho CPA tại `http://127.0.0.1:8317`; đổi
-URL bằng `CPA_LOCAL_BASE_URL`.
+URL bằng `CPA_LOCAL_BASE_URL`, có hoặc không có `/v1` đều được. Plugin đọc biến
+này khi Hermes khởi động, nên hãy khởi động lại Hermes sau khi đổi. Giá trị này
+theo cùng quy tắc với `base_url` bên dưới: một giá trị vi phạm (ví dụ `http://`
+thường tới một địa chỉ công khai) khiến `cpa-local` không được đăng ký và ghi
+một cảnh báo vào log. Trên gateway phục vụ nhiều profile Hermes, plugin có thể
+được nạp trước khi đọc được `.env` của profile, khi đó nó dùng URL mặc định:
+trường hợp đó hãy cấu hình một instance có tên.
 
 Với instance có tên hoặc instance từ xa, thêm vào `~/.hermes/config.yaml`:
 
@@ -66,6 +72,14 @@ cliproxyapi:
       key_env: CPA_MAIN_API_KEY           # env var holding a CPA client key
       mgmt_key_env: CPA_MAIN_MGMT_KEY     # optional, see "Public mode or management mode"
 ```
+
+Plugin chỉ tự thêm `/v1` vào các URL do chính nó đọc: `base_url` ở trên và
+`CPA_LOCAL_BASE_URL`. Hermes dùng nguyên văn URL mà bạn đưa thẳng cho nó:
+`model.base_url` trong `config.yaml`, `base_url` của một mục
+`fallback_providers`, và `--base-url`. Với các profile này, hãy bỏ trống những
+chỗ đó, vì mỗi profile đã mang sẵn URL của mình. Nếu vẫn đặt, hãy kết thúc URL
+bằng `/v1`: thiếu nó, Hermes gửi tới `<root>/chat/completions` hoặc
+`<root>/responses` và CPA trả 404, trong khi danh sách model vẫn tải được.
 
 Sau đó chạy `hermes model` (hoặc bất kỳ lệnh nào liệt kê model) một lần. Plugin
 đọc danh sách model của instance, đăng ký các provider tìm thấy và lưu cache, nên

@@ -32,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover - Windows
     fcntl = None  # type: ignore[assignment]
 
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 USER_AGENT = f"hermes-cliproxyapi-provider/{VERSION}"
 # CPA serves its richest public list (context window, reasoning levels) only to
 # Grok Shell clients: internal/client/grokbuild IsGrokShellUserAgent.
@@ -163,7 +163,6 @@ class InstanceSpec:
     root: str
     key_env: str
     mgmt_key_env: str = ""
-    url_env: str = ""
     display_name: str = ""
     overrides: dict[str, GroupOverride] = field(default_factory=dict)
     # Billing route: inference goes to an operator's gateway in front of this CPA.
@@ -197,16 +196,6 @@ class InstanceSpec:
             if override.route_key_env and override.route_key_env not in names:
                 names.append(override.route_key_env)
         return names
-
-
-def default_instance() -> InstanceSpec:
-    """Used when no instances are configured: one local CPA on the default port."""
-    return InstanceSpec(
-        name=DEFAULT_INSTANCE,
-        root=DEFAULT_ROOT,
-        key_env=DEFAULT_KEY_ENV,
-        url_env=DEFAULT_URL_ENV,
-    )
 
 
 def wire_for(group: str, override: GroupOverride | None = None) -> str:
@@ -294,18 +283,23 @@ def _url_shape_ok(url: str) -> bool:
 
 
 def parse_config(
-    config: Any, *, resolver: Resolver | None = None
+    config: Any,
+    *,
+    resolver: Resolver | None = None,
+    env: Callable[[str], str | None] = os.environ.get,
 ) -> tuple[list[InstanceSpec], list[str]]:
     """Build instance specs from the ``cliproxyapi`` config section.
 
-    Returns ``(instances, errors)``. With no instances configured, returns the
-    default local instance. An instance with any error is skipped. Error strings
-    name the instance and field only, never URLs or values.
+    Returns ``(instances, errors)``. With no instances configured, the default
+    local instance is parsed like a configured one, its URL taken from
+    ``CPA_LOCAL_BASE_URL`` when set. An instance with any error is skipped.
+    Error strings name the instance and field only, never URLs or values.
     """
     section = config.get("cliproxyapi") if isinstance(config, dict) else None
     instances = section.get("instances") if isinstance(section, dict) else None
     if not isinstance(instances, dict) or not instances:
-        return [default_instance()], []
+        url = (env(DEFAULT_URL_ENV) or "").strip() or DEFAULT_ROOT
+        instances = {DEFAULT_INSTANCE: {"base_url": url, "key_env": DEFAULT_KEY_ENV}}
     specs: list[InstanceSpec] = []
     errors: list[str] = []
     for name, body in instances.items():
