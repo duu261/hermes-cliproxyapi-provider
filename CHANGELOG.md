@@ -15,6 +15,29 @@ Ideas that are parked. None of them is in any release, and none is promised.
 - Address masking in `/cpa` (hosts, IPs, paths in error text): drop it, or
   make it a setting. Emails, tokens and project ids stay masked either way.
 
+## 0.8.3
+
+- `/cpa quota`: within a provider, the accounts that can take work are listed
+  first. Accounts with room lead, the least used on top; then the accounts
+  that are out, the next to free first and one with no reset time last; then
+  the accounts that failed; then the ones the run did not reach. Before, the
+  accounts that were out led and the fullest account came next, so the
+  emptiest one was at the bottom.
+  - "Least used" goes by the fullest window of the account. A limit on one
+    model or feature does not count. An account with no figure yet comes
+    after the ones that have one.
+  - An account with model groups (Antigravity) is placed by its most open
+    group, then by the next one: CPA holds back only the group that ran out,
+    so an account with one full group and one untouched group can still take
+    work. Before, its fullest window in any group decided.
+  - Accounts with the same figures are listed by name, as before.
+- `/cpa quota`: an account that takes several lines (one per model group) has
+  a blank line above and below it, so each account reads as one block.
+  One-line accounts stay together.
+- No new request and no change to what is read, counted or masked. The
+  counts on the provider line are unchanged. The provider plugin is
+  unchanged; both plugins carry the same version.
+
 ## 0.8.2
 
 - Provider: `CPA_LOCAL_BASE_URL` works with or without `/v1`

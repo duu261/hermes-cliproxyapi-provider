@@ -1369,20 +1369,35 @@ def _until_text(until: datetime, now: datetime) -> str:
     return text + (" (past)" if until <= now else "")
 
 
-def _sort_key(item: AccountResult) -> tuple[int, float, str]:
-    out, _ = item.out_until()
+def _open_key(usage: Usage) -> tuple[float, ...]:
+    """How used an account with room is, for the order: the lower one leads.
+
+    The fullest account-wide window decides, as it is the one that stops the
+    account. With model groups CPA holds back only the group that ran out, so
+    each group counts on its own: the most open group first, then the next.
+    An account with no figure sorts after every account that has one.
+    """
+    fullest: dict[str, float] = {}
+    for window in usage.windows:
+        if not window.scoped:
+            fullest[window.group] = max(fullest.get(window.group, 0.0), window.used)
+    return tuple(sorted(fullest.values())) or (math.inf,)
+
+
+def _sort_key(item: AccountResult) -> tuple[Any, ...]:
+    """The order of a provider block: the accounts that can take work first.
+
+    Accounts with room, the most open on top; then the accounts that are out,
+    the next one to free first and one with no reset time last; then the
+    accounts that failed; then the ones the run did not reach. Then by name.
+    """
+    if item.error or item.usage is None:
+        return (3 if item.error == "not checked" else 2, item.name)
+    out, until = item.out_until()
     if out:
-        rank = 0
-    elif item.error:
-        rank = 1
-    else:
-        rank = 2
-    top = (
-        max((w.used for w in item.usage.windows if not w.scoped), default=0.0)
-        if item.usage
-        else 0.0
-    )
-    return rank, -top, item.name
+        # Two aware times compare safely even at the edge of the calendar.
+        return (1, until is None, until, item.name)
+    return (0, _open_key(item.usage), item.name)
 
 
 def _provider_block(provider: str, items: list[AccountResult], now: datetime) -> list[str]:
@@ -1418,46 +1433,61 @@ def _provider_block(provider: str, items: list[AccountResult], now: datetime) ->
         if not item.error and item.usage is not None
     }
     plan_width = min(max((len(text) for text in plans.values()), default=0), _PLAN_PAD)
-    for item in rows:
-        is_out, _ = item.out_until()
-        # OUT leads the line; the other accounts of the block are indented to match.
-        lead = "OUT " if is_out else "    " if any_out else ""
-        if item.error or item.usage is None:
-            lines.append(f"{lead}{item.name.ljust(name_width)}  {item.error}".rstrip())
-            continue
-        plan = plans[id(item)]
-        groups = item.full_groups()
-        suffix = ""
-        if not is_out and groups:
-            suffix = "  out: " + ", ".join(sorted(_short_group(key) for key in groups))
-        elif not is_out and item.scoped_full():
-            suffix = "  out: " + ", ".join(item.scoped_full())
-        grouped = [w for w in item.usage.windows if w.group]
-        rest = (
-            [_window_text(w, now) for w in item.usage.windows if not w.group]
-            + [_pending_text(w, now) for w in item.usage.pending]
-            + ([item.usage.extra] if item.usage.extra else [])
-        )
-        if grouped:
-            # One line per model group under the account: CPA cools per group.
-            head = item.name + (f" {plan}" if plan else "")
-            lines.append(lead + "  ".join(x for x in (head, " · ".join(rest)) if x) + suffix)
-            keys = list(dict.fromkeys(w.group for w in grouped))
-            width = max(len(_short_group(key)) for key in keys)
-            for key in keys:
-                name = key.split(":", 1)[-1]
-                texts = [
-                    _window_text(w, now, w.label.removeprefix(name).strip())
-                    for w in grouped
-                    if w.group == key
-                ]
-                label = _short_group(key).ljust(width)
-                lines.append(f"{' ' * len(lead)}  {label}  {' · '.join(texts)}")
-            continue
+    blocks = [_account_lines(item, now, any_out, name_width, plans, plan_width) for item in rows]
+    for index, block in enumerate(blocks):
+        # An account that takes several lines is set apart from its neighbours.
+        if index and (len(block) > 1 or len(blocks[index - 1]) > 1):
+            lines.append("")
+        lines.extend(block)
+    return lines
+
+
+def _account_lines(
+    item: AccountResult,
+    now: datetime,
+    any_out: bool,
+    name_width: int,
+    plans: dict[int, str],
+    plan_width: int,
+) -> list[str]:
+    """One account of a provider block: its line, then one line per model group."""
+    is_out, _ = item.out_until()
+    # OUT leads the line; the other accounts of the block are indented to match.
+    lead = "OUT " if is_out else "    " if any_out else ""
+    if item.error or item.usage is None:
+        return [f"{lead}{item.name.ljust(name_width)}  {item.error}".rstrip()]
+    plan = plans[id(item)]
+    groups = item.full_groups()
+    suffix = ""
+    if not is_out and groups:
+        suffix = "  out: " + ", ".join(sorted(_short_group(key) for key in groups))
+    elif not is_out and item.scoped_full():
+        suffix = "  out: " + ", ".join(item.scoped_full())
+    grouped = [w for w in item.usage.windows if w.group]
+    rest = (
+        [_window_text(w, now) for w in item.usage.windows if not w.group]
+        + [_pending_text(w, now) for w in item.usage.pending]
+        + ([item.usage.extra] if item.usage.extra else [])
+    )
+    if not grouped:
         head = item.name.ljust(name_width)
         if plan_width:
             head += " " + plan.ljust(plan_width)
-        lines.append((lead + "  ".join(x for x in (head, " · ".join(rest)) if x) + suffix).rstrip())
+        return [(lead + "  ".join(x for x in (head, " · ".join(rest)) if x) + suffix).rstrip()]
+    # One line per model group under the account: CPA cools per group.
+    head = item.name + (f" {plan}" if plan else "")
+    lines = [lead + "  ".join(x for x in (head, " · ".join(rest)) if x) + suffix]
+    keys = list(dict.fromkeys(w.group for w in grouped))
+    width = max(len(_short_group(key)) for key in keys)
+    for key in keys:
+        name = key.split(":", 1)[-1]
+        texts = [
+            _window_text(w, now, w.label.removeprefix(name).strip())
+            for w in grouped
+            if w.group == key
+        ]
+        label = _short_group(key).ljust(width)
+        lines.append(f"{' ' * len(lead)}  {label}  {' · '.join(texts)}")
     return lines
 
 
