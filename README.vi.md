@@ -467,12 +467,16 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
 pre quota · live 21:40
 
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
-    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
-    codex-cu…@… pro   wk 40%
     codex-bd…@… pro   wk 31%
+    codex-cu…@… pro   wk 40%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
 
-antigravity · 1 account: 1 have room
+antigravity · 2 accounts: 2 have room
+antigravity-02…@… pro
+  gemini          5h 0% · wk 8%
+  claude and gpt  5h 10% · wk 41%
+
 antigravity-01…@… pro  out: claude and gpt
   gemini          5h 0% · wk 12%
   claude and gpt  5h 100% → 23:10 · wk 64%
@@ -511,6 +515,14 @@ hiện là `out: <group>`. Các giới hạn tuần theo model của Claude
 (Fable, Opus, Sonnet, apps, Cowork) cũng vậy: cái nào đầy hiện là `out: fable`
 và account vẫn phục vụ các model khác. Các giới hạn của Codex cho một feature
 hoặc model cũng vậy.
+
+Trong một provider, các account còn nhận được việc đứng trước: account còn
+quota, dùng ít nhất ở trên cùng, rồi đến các account `OUT`, cái nào được mở lại
+sớm nhất đứng trước, rồi đến các account bị lỗi hoặc chưa được kiểm tra. "Dùng
+ít nhất" tính theo window đầy nhất của account; giới hạn riêng cho một model
+hoặc feature không tính, và account chưa có số liệu đứng sau các account đã
+có. Account có model group được xếp theo group còn trống nhiều nhất của nó.
+Account chiếm nhiều dòng có một dòng trống ở trên và ở dưới.
 
 - Trên Telegram, Discord, Slack, Matrix và Mattermost, câu trả lời được gửi
   dưới dạng code block để các cột thẳng hàng. Cần Hermes 0.22.3 trở lên, bản

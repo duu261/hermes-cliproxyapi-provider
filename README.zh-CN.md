@@ -403,12 +403,16 @@ codex-bo…@…  cooling until 17:20 (vendor limit reached)
 pre quota · live 21:40
 
 codex · 4 accounts: 3 have room · 1 out (next free 22:10)
-OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
-    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
-    codex-cu…@… pro   wk 40%
     codex-bd…@… pro   wk 31%
+    codex-cu…@… pro   wk 40%
+    codex-ab…@… plus  5h 23% · wk 85% → Oct 29
+OUT codex-xy…@… plus  5h 100% → 22:10 · wk 60%
 
-antigravity · 1 account: 1 have room
+antigravity · 2 accounts: 2 have room
+antigravity-02…@… pro
+  gemini          5h 0% · wk 8%
+  claude and gpt  5h 10% · wk 41%
+
 antigravity-01…@… pro  out: claude and gpt
   gemini          5h 0% · wk 12%
   claude and gpt  5h 100% → 23:10 · wk 64%
@@ -443,6 +447,12 @@ header（包括各厂商 CLI 的 `User-Agent`）沿用 web UI。百分比是已�
 划分的每周限额（Fable、Opus、Sonnet、apps、Cowork）同样如此：满的那个显示为
 `out: fable`，account 继续提供其他 model。Codex 针对单个 feature 或 model 的限额
 也一样。
+
+在一个 provider 内，还能接请求的 account 排在前面：先是有余量的 account，用得最少的
+在最上面；然后是 `OUT` 的 account，最先恢复的排前面；最后是失败或未检查的 account。
+“用得最少”按该 account 最满的 window 计算；针对单个 model 或 feature 的限额不算，
+还没有数字的 account 排在有数字的之后。带 model group 的 account 按它最空的 group
+排序。占多行的 account 上下各有一个空行。
 
 - 在 Telegram、Discord、Slack、Matrix 和 Mattermost 上，回复以 code block 发送，
   让各列对齐。这需要 Hermes 0.22.3 或更高版本，它会把 platform 告诉命令；在其他地方
