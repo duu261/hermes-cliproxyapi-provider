@@ -16,7 +16,7 @@ From the [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/plug
 (reviewed pin). Development install, latest `main`:
 `hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status`.
 
-Requires Hermes 0.21.7 or newer and `mgmt_key_env` on each instance you want
+Requires Hermes 0.23.2 or newer and `mgmt_key_env` on each instance you want
 to see (an instance without it on the same CPA `base_url` as one with it is
 shown under that one as `same CPA`). Restart running gateways after enabling.
 Upgrade it together with the provider plugin: both share one lock per CPA.
@@ -63,16 +63,12 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   account index, the Codex account id, the Antigravity project id and the CPA
   plugin id are used only to build the quota requests, never shown or stored.
 - Idle chats only: sent during an agent turn it goes to Hermes' busy handling.
-- The management key is full admin on CPA. On Hermes 0.23.1 or later this
-  plugin removes each `mgmt_key_env`, and the CPA `key_env` of an instance
-  with `route_via`, from the environment of the terminal commands a chat
-  session runs (checked on the local terminal backend only). It does not
-  protect the file the keys are loaded from, and shell hooks, cron job
-  scripts and any process Hermes starts with no session bound can still see
-  them. Setting `hide_keys_from_shells`, on by default and read when
-  the plugin loads; turn it off with
-  `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`.
-  On older Hermes nothing is hidden. Details and limits:
+- The management key is full admin on CPA. Hermes 0.23.2 and later remove
+  every `mgmt_key_env` (and every other key-pointer field the config names,
+  `mcp_servers` excepted) from
+  the environment of agent commands and cron job scripts; this plugin adds
+  nothing to that and has no setting for it. Hermes does not protect the
+  file the keys are loaded from. Details and limits:
   [Security](../README.md#security).
 - CPA bans an IP after five failed management keys in a row; a
   rejected key is never sent again (salted HMAC in

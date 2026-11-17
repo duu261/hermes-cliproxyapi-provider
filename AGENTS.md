@@ -17,9 +17,9 @@ front of the same CPA (New API or similar, see Billing route). CPA stays the
 only source of what is served; the gateway only carries and bills requests.
 
 The repo also ships `cpa-status/`, a separate `kind: standalone` plugin. It
-registers the `/cpa` status command (see `/cpa status` below) and, on Hermes
-0.23.1 or later, hides from a chat session's terminal commands the key
-variables that no provider declares (setting `hide_keys_from_shells`). A
+registers the `/cpa` status command (see `/cpa status` below). Key hiding is
+Hermes' job (0.23.2+ removes every config-declared `*key_env` from agent
+commands); the companion registers no session env and has no settings. A
 model-provider plugin has no `register`, hence two plugins in one repo.
 
 ## Grouping (which models belong to which provider)

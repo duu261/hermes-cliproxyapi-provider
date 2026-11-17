@@ -44,7 +44,7 @@ hermes plugins install duu261/hermes-cliproxyapi-provider
 hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
 ```
 
-Requires Hermes 0.21.7 or newer. Model-provider plugins are active once
+Requires Hermes 0.23.2 or newer. Model-provider plugins are active once
 installed; there is nothing to enable. `cpa-status` needs enabling (see
 [/cpa](#cpa-pool-status-companion-plugin)). Restart running Hermes gateways so
 they load the plugins.
@@ -195,9 +195,9 @@ Public mode is the default and needs only a client key. Management mode adds
 Public mode is enough when each model has one provider and CPA's vendor labels
 match its providers. Management mode is the precise one; its cost is the key.
 A CPA management key can change config and add or remove accounts. The plugin
-only sends the reads below, but Hermes does not strip `mgmt_key_env` from agent
-shells, so any agent tool that can read your environment can read it too,
-unless the `cpa-status` plugin hides it (Hermes 0.23.1 or later, see Security).
+only sends the reads below. Hermes removes `mgmt_key_env` from the environment
+of agent commands (see Security), but a command that can read the file Hermes
+loads keys from can still read it.
 
 What management mode sends:
 
@@ -274,14 +274,6 @@ cliproxyapi:
   name. The plugin cannot see or prevent that.
 - The plugin uses only the gateway's client endpoints, never its admin,
   channel, pricing or billing APIs.
-- Known limit: Hermes strips from agent subprocesses only the key names a
-  registered provider declares. Routed providers declare the gateway key, so
-  Hermes leaves the CPA `key_env` (needed for discovery) visible to agent
-  shells on a routed instance. `mgmt_key_env` is never declared on a provider,
-  so Hermes does not strip it on routed or unrouted instances. The
-  `cpa-status` plugin hides both from the commands of a chat session on
-  Hermes 0.23.1 or later; Security says what that covers and what it does
-  not.
 
 ## Metadata
 
@@ -314,32 +306,20 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
 ## Security
 
 - Keys are referenced by environment variable name and resolved by Hermes.
-- Hermes strips from agent subprocesses only the env names a registered
-  provider declares. Every profile declares its inference key (`key_env`, or
-  the gateway key on a routed instance), so Hermes leaves `mgmt_key_env`, and
-  on a routed instance the CPA `key_env`, readable by agent shells.
-- The `cpa-status` plugin hides those variables on Hermes 0.23.1 or later. It
-  removes them from the environment of the commands a chat session runs:
-  terminal commands in the foreground and background, the ones `execute_code`
-  starts included, and the helper processes Hermes starts from its cleaned
-  environment (language servers, lint, text to speech and similar). It does
-  not cover shell hooks, cron job scripts, processes Hermes starts with the
-  profile's credentials (a `key_cmd` helper, for example), or any process
-  started with no session bound: those can still see the variables. Checked
-  on the local terminal backend with one profile only. Remote backends
-  (docker, ssh and others) do not apply the hiding: a variable that is
-  forwarded to one is not hidden there. It hides environment variables and
-  nothing else: a command that can read the file Hermes loads keys from
-  (`~/.hermes/.env`) can still read them. A variable whose name starts with
-  `HERMES_`, or that another plugin already manages, stays visible, and a log
-  warning names it. The names are read when the plugin loads, so a
-  `mgmt_key_env` or `route_via` added later is hidden only after the next
-  Hermes restart. On older Hermes, or without `cpa-status` enabled, nothing
-  is hidden.
-- Hiding is on by default. A script you run through the agent that reads one
-  of these variables stops finding it. To turn hiding off, run
-  `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
-  and restart Hermes.
+- Hermes 0.23.2 and later remove from agent commands every variable that a
+  key-pointer field in `config.yaml` names (`key_env`, `api_key_env` and
+  similar; `mcp_servers` excepted): `key_env`, `mgmt_key_env` and
+  `route_key_env` here. Checked on the local terminal backend for
+  terminal commands, `execute_code` and cron job scripts. Hermes removes
+  environment variables and nothing else: a command that can read the file
+  Hermes loads keys from (`~/.hermes/.env`) can still read them, and a
+  variable under a name `config.yaml` does not mention is not removed by
+  this rule.
+- Earlier plugin releases (0.8.x) hid these keys themselves on Hermes 0.23.1
+  and had a `hide_keys_from_shells` setting. 0.9.0 drops both: Hermes now
+  does it, cron job scripts included, and the setting cannot bring a key back. A
+  script that needs a management key in an agent shell must read it from
+  somewhere other than these variables.
 - Plain `http://` is allowed only when every address the host resolves to is
   loopback, RFC 1918, 100.64/10 or IPv6 ULA. Anything else needs `https://`.
 - No redirects, capped responses, and failures reported as an HTTP status and
