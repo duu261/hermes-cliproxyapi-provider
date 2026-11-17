@@ -307,12 +307,14 @@ Precedence, highest first: your `model_overrides`, this plugin, models.dev.
 
 - Keys are referenced by environment variable name and resolved by Hermes.
 - Hermes 0.23.2 and later remove from agent commands every variable that a
-  `config.yaml` field ending in `key_env` names: `key_env`, `mgmt_key_env`
-  and `route_key_env` here. Checked on the local terminal backend for
+  key-pointer field in `config.yaml` names (`key_env`, `api_key_env` and
+  similar; `mcp_servers` excepted): `key_env`, `mgmt_key_env` and
+  `route_key_env` here. Checked on the local terminal backend for
   terminal commands, `execute_code` and cron job scripts. Hermes removes
   environment variables and nothing else: a command that can read the file
   Hermes loads keys from (`~/.hermes/.env`) can still read them, and a
-  variable under a name `config.yaml` does not mention is not removed.
+  variable under a name `config.yaml` does not mention is not removed by
+  this rule.
 - Earlier plugin releases (0.8.x) hid these keys themselves on Hermes 0.23.1
   and had a `hide_keys_from_shells` setting. 0.9.0 drops both: Hermes now
   does it, cron job scripts included, and the setting cannot bring a key back. A

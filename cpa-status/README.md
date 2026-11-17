@@ -64,7 +64,8 @@ Upgrade it together with the provider plugin: both share one lock per CPA.
   plugin id are used only to build the quota requests, never shown or stored.
 - Idle chats only: sent during an agent turn it goes to Hermes' busy handling.
 - The management key is full admin on CPA. Hermes 0.23.2 and later remove
-  every `mgmt_key_env` (and every other `*key_env` the config names) from
+  every `mgmt_key_env` (and every other key-pointer field the config names,
+  `mcp_servers` excepted) from
   the environment of agent commands and cron job scripts; this plugin adds
   nothing to that and has no setting for it. Hermes does not protect the
   file the keys are loaded from. Details and limits:

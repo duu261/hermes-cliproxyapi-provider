@@ -507,12 +507,14 @@ class _Ctx:
     def __init__(self):
         self.commands: list[str] = []
         self.asked: list[str] = []
+        self.settings_read: list[str] = []
 
     def register_command(self, name, handler, description="", **kw):
         self.commands.append(name)
 
     def get_config(self, key, default=None):
-        raise AssertionError("cpa-status has no settings to read")
+        self.settings_read.append(key)
+        return default
 
     def register_session_env(self, names, resolver):
         self.asked.extend([names] if isinstance(names, str) else list(names))
@@ -534,9 +536,12 @@ class RegisterTests(unittest.TestCase):
         }
         (home / "config.yaml").write_text(json.dumps({"cliproxyapi": {"instances": instances}}))
         ctx = _Ctx()
-        with mock.patch.object(status, "_hermes_home", return_value=home):
+        with (
+            mock.patch.object(status, "_hermes_home", return_value=home),
+            self.assertNoLogs(level="WARNING"),
+        ):
             _load_plugin_module().register(ctx)
-        self.assertEqual((ctx.commands, ctx.asked), (["cpa"], []))
+        self.assertEqual((ctx.commands, ctx.asked, ctx.settings_read), (["cpa"], [], []))
 
 
 class VersionTests(unittest.TestCase):

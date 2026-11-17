@@ -267,11 +267,12 @@ providers:
 ## 安全
 
 - key 通过环境变量名引用，由 Hermes 解析。
-- Hermes 0.23.2 及以上会从 agent 命令中移除 `config.yaml` 里任何以 `key_env` 结尾的字段所
-  指向的变量：这里是 `key_env`、`mgmt_key_env` 和 `route_key_env`。已在 local terminal
-  backend 上对 terminal 命令、`execute_code` 和 cron job 的脚本核对过。Hermes 只移除环境
-  变量，不移除其他任何东西：能读取 Hermes 加载 key 的文件（`~/.hermes/.env`）的命令仍然能
-  读到 key，`config.yaml` 未提到的变量名也不会被移除。
+- Hermes 0.23.2 及以上会从 agent 命令中移除 `config.yaml` 里 key 指针字段（`key_env`、
+  `api_key_env` 等；`mcp_servers` 除外）所指向的变量：这里是 `key_env`、`mgmt_key_env` 和
+  `route_key_env`。已在 local terminal backend 上对 terminal 命令、`execute_code` 和
+  cron job 的脚本核对过。Hermes 只移除环境变量，不移除其他任何东西：能读取 Hermes 加载 key
+  的文件（`~/.hermes/.env`）的命令仍然能读到 key，`config.yaml` 未提到的变量名也不会因这条
+  规则被移除。
 - 本 plugin 的早期版本（0.8.x）在 Hermes 0.23.1 上自行隐藏这些 key，并有
   `hide_keys_from_shells` 设置。0.9.0 两者都去掉了：现在由 Hermes 完成（包括 cron job 的
   脚本），该设置也无法让 key 重新出现。需要在 agent shell 中使用 management key 的脚本，必须

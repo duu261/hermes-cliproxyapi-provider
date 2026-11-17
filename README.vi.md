@@ -308,13 +308,13 @@ Thứ tự ưu tiên, cao nhất trước: `model_overrides` của bạn, plugin
 ## Bảo mật
 
 - Key được tham chiếu theo tên biến môi trường và do Hermes phân giải.
-- Hermes 0.23.2 trở lên gỡ khỏi các lệnh agent mọi biến mà một trường
-  `config.yaml` có tên kết thúc bằng `key_env` trỏ tới: ở đây là `key_env`,
-  `mgmt_key_env` và `route_key_env`. Đã kiểm tra trên local terminal backend với
-  lệnh terminal, `execute_code` và script của cron job. Hermes chỉ gỡ biến môi
-  trường, không gỡ gì khác: một lệnh đọc được file mà Hermes nạp key từ đó
-  (`~/.hermes/.env`) thì vẫn đọc được key, và một biến có tên mà `config.yaml`
-  không nhắc tới thì không bị gỡ.
+- Hermes 0.23.2 trở lên gỡ khỏi các lệnh agent mọi biến mà một trường trỏ tới key
+  trong `config.yaml` nêu tên (`key_env`, `api_key_env` và tương tự; trừ
+  `mcp_servers`): ở đây là `key_env`, `mgmt_key_env` và `route_key_env`. Đã kiểm
+  tra trên local terminal backend với lệnh terminal, `execute_code` và script của
+  cron job. Hermes chỉ gỡ biến môi trường, không gỡ gì khác: một lệnh đọc được file
+  mà Hermes nạp key từ đó (`~/.hermes/.env`) thì vẫn đọc được key, và một biến có
+  tên mà `config.yaml` không nhắc tới thì không bị gỡ theo quy tắc này.
 - Các bản phát hành trước của plugin (0.8.x) tự ẩn các key này trên Hermes 0.23.1
   và có setting `hide_keys_from_shells`. Bản 0.9.0 bỏ cả hai: giờ Hermes làm việc
   đó, kể cả với script của cron job, và setting đó không đưa key trở lại được.

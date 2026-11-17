@@ -20,9 +20,9 @@ Ideas that are parked. None of them is in any release, and none is promised.
 - Both plugins now require Hermes 0.23.2 or newer (`requires_hermes`). CI
   tests v0.23.2 only.
 - `cpa-status`: key hiding and the `hide_keys_from_shells` setting are
-  removed. Hermes 0.23.2 removes every variable a `config.yaml` field ending
-  in `key_env` names (`key_env`, `mgmt_key_env`, `route_key_env`) from agent
-  commands and cron job scripts itself
+  removed. Hermes 0.23.2 removes every variable a key-pointer field in
+  `config.yaml` names (`key_env`, `mgmt_key_env`, `route_key_env` here) from
+  agent commands and cron job scripts itself
   ([NousResearch/hermes-agent#155511](https://github.com/NousResearch/hermes-agent/pull/155511)),
   which covers everything the plugin hid and more. On 0.23.2 the setting no
   longer did anything: `false` could not bring a key back, though the docs
