@@ -45,7 +45,7 @@ hermes plugins install duu261/hermes-cliproxyapi-provider
 hermes plugins install duu261/hermes-cliproxyapi-provider#cpa-status
 ```
 
-Yêu cầu Hermes 0.21.7 trở lên. Plugin model-provider hoạt động ngay sau khi cài,
+Yêu cầu Hermes 0.23.2 trở lên. Plugin model-provider hoạt động ngay sau khi cài,
 không cần bật. `cpa-status` thì cần bật (xem
 [/cpa](#cpa-trạng-thái-pool-plugin-đi-kèm)). Khởi động lại các Hermes gateway
 đang chạy để chúng nạp plugin.
@@ -194,10 +194,9 @@ Chế độ công khai là mặc định và chỉ cần client key. Chế độ
 Chế độ công khai là đủ khi mỗi model có một provider và nhãn vendor
 của CPA khớp với provider. Chế độ management là chế độ chính xác; cái giá của nó
 là key. Một management key của CPA có thể đổi cấu hình và thêm hoặc xóa account.
-Plugin chỉ gửi các thao tác đọc bên dưới, nhưng Hermes không gỡ `mgmt_key_env` khỏi
-shell của agent, nên bất kỳ công cụ agent nào đọc được biến môi trường của bạn
-cũng đọc được key này, trừ khi plugin `cpa-status` ẩn nó (Hermes 0.23.1 trở
-lên, xem Bảo mật).
+Plugin chỉ gửi các thao tác đọc bên dưới. Hermes gỡ `mgmt_key_env` khỏi môi
+trường của các lệnh agent (xem Bảo mật), nhưng một lệnh đọc được file mà Hermes
+nạp key từ đó thì vẫn đọc được key.
 
 Chế độ management gửi những gì:
 
@@ -275,14 +274,6 @@ cliproxyapi:
   không thấy và không ngăn được việc đó.
 - Plugin chỉ dùng các endpoint dành cho client của gateway, không bao giờ dùng API
   admin, kênh, giá hay tính phí của nó.
-- Giới hạn đã biết: Hermes chỉ gỡ khỏi tiến trình con của agent những tên key mà một
-  provider đã đăng ký khai báo. Provider được định tuyến khai báo key gateway, nên
-  Hermes để `key_env` của CPA (cần cho discovery) vẫn hiện trong shell của agent
-  trên một instance có định tuyến. `mgmt_key_env` không bao giờ được khai báo trên
-  provider, nên Hermes không gỡ nó trên cả instance có hay không có định tuyến.
-  Plugin `cpa-status` ẩn cả hai khỏi các lệnh của một chat session trên Hermes
-  0.23.1 trở lên; mục Bảo mật nêu rõ việc đó bao phủ những gì và không bao phủ
-  những gì.
 
 ## Metadata
 
@@ -317,31 +308,18 @@ Thứ tự ưu tiên, cao nhất trước: `model_overrides` của bạn, plugin
 ## Bảo mật
 
 - Key được tham chiếu theo tên biến môi trường và do Hermes phân giải.
-- Hermes chỉ gỡ khỏi tiến trình con của agent những tên biến môi trường mà một
-  provider đã đăng ký khai báo. Mỗi profile khai báo key inference của nó (`key_env`,
-  hoặc key gateway trên instance có định tuyến), nên Hermes để `mgmt_key_env`, và
-  trên instance có định tuyến là `key_env` của CPA, vẫn đọc được từ shell của agent.
-- Plugin `cpa-status` ẩn các biến đó trên Hermes 0.23.1 trở lên. Nó gỡ chúng khỏi
-  môi trường của các lệnh mà một chat session chạy: lệnh terminal chạy foreground
-  và background, kể cả lệnh do `execute_code` khởi chạy, và các tiến trình phụ trợ
-  mà Hermes khởi chạy từ môi trường đã được làm sạch của nó (language server,
-  lint, text to speech và tương tự). Nó không bao gồm shell hook, script của cron
-  job, tiến trình mà Hermes khởi chạy kèm credential của profile (ví dụ một helper
-  `key_cmd`), và mọi tiến trình được khởi chạy khi không có session nào được gắn:
-  các tiến trình đó vẫn có thể thấy các biến này. Chỉ mới kiểm tra trên local
-  terminal backend với một profile. Các remote backend (docker, ssh và các
-  backend khác) không áp dụng việc ẩn: một biến được forward tới đó thì không bị
-  ẩn ở đó. Nó chỉ ẩn biến môi trường, không ẩn gì khác: một lệnh đọc được file mà
-  Hermes nạp key từ đó (`~/.hermes/.env`) thì vẫn đọc được key. Biến có tên bắt
-  đầu bằng `HERMES_`, hoặc đã do plugin khác quản lý, vẫn hiện, và một cảnh báo
-  trong log nêu tên nó. Tên các biến được đọc khi plugin được nạp, nên một
-  `mgmt_key_env` hoặc `route_via` thêm vào sau đó chỉ được ẩn sau lần khởi động
-  lại Hermes kế tiếp. Trên Hermes cũ hơn, hoặc khi không bật `cpa-status`, không
-  có gì bị ẩn.
-- Việc ẩn được bật mặc định. Script bạn chạy qua agent mà đọc một trong các biến
-  này sẽ không còn thấy nó. Để tắt việc ẩn, chạy
-  `hermes config set plugins.entries.cpa-status.settings.hide_keys_from_shells false`
-  rồi khởi động lại Hermes.
+- Hermes 0.23.2 trở lên gỡ khỏi các lệnh agent mọi biến mà một trường
+  `config.yaml` có tên kết thúc bằng `key_env` trỏ tới: ở đây là `key_env`,
+  `mgmt_key_env` và `route_key_env`. Đã kiểm tra trên local terminal backend với
+  lệnh terminal, `execute_code` và script của cron job. Hermes chỉ gỡ biến môi
+  trường, không gỡ gì khác: một lệnh đọc được file mà Hermes nạp key từ đó
+  (`~/.hermes/.env`) thì vẫn đọc được key, và một biến có tên mà `config.yaml`
+  không nhắc tới thì không bị gỡ.
+- Các bản phát hành trước của plugin (0.8.x) tự ẩn các key này trên Hermes 0.23.1
+  và có setting `hide_keys_from_shells`. Bản 0.9.0 bỏ cả hai: giờ Hermes làm việc
+  đó, kể cả với script của cron job, và setting đó không đưa key trở lại được.
+  Script cần management key trong shell của agent phải đọc key từ nơi khác ngoài
+  các biến này.
 - Chỉ cho phép plain `http://` (HTTP không mã hóa) khi mọi địa chỉ mà host phân giải ra đều là loopback,
   RFC 1918, 100.64/10 hoặc IPv6 ULA. Mọi trường hợp khác cần `https://`.
 - Không theo redirect, giới hạn kích thước response, và lỗi chỉ được báo bằng mã

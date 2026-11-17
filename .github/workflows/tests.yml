@@ -29,8 +29,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Oldest supported (plugin.yaml requires_hermes) and the latest release.
-        hermes: ["v0.21.7", "v0.23.1"]
+        # Oldest supported (plugin.yaml requires_hermes), also the latest release.
+        hermes: ["v0.23.2"]
     name: hermes ${{ matrix.hermes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
